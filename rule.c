@@ -237,7 +237,6 @@ int match_rule_from_packet(struct rule* rule, int n, void* flow_, void* packet)
     if(flow->protocol == NDPI_PROTOCOL_UNKNOWN)
       continue;
 
-    //printf("%d %d\n", rule[i].protocol, flow->protocol); 
     if(rule[i].protocol != flow->protocol) 
       continue;
     
@@ -262,6 +261,7 @@ int match_rule_from_packet(struct rule* rule, int n, void* flow_, void* packet)
 	lower_port = htons(rule[i].dport);
 	upper_port = htons(rule[i].sport);
       }
+      
       if(lower_ip && flow->lower_ip != lower_ip && flow->upper_ip != lower_ip) continue;
       if(upper_ip && flow->upper_ip != upper_ip && flow->lower_ip != upper_ip) continue;      
       if(lower_port && flow->lower_port != lower_port && flow->upper_port != lower_port) continue;
@@ -270,8 +270,10 @@ int match_rule_from_packet(struct rule* rule, int n, void* flow_, void* packet)
     
     //TODO add mac match
     //if(rule[i].smac[0] && memcmp(rule[i].smac)
-      
-    if(rule[i].condition.host[0] && strcasecmp(rule[i].condition.host, flow->host_server_name) != 0)
+    char* host = flow->host_server_name;
+    if(host[0] == 0 || ((char*)&flow->ssl)[0] != 0)
+      host = &flow->ssl;
+    if(rule[i].condition.host[0] && strcasecmp(rule[i].condition.host,  host) != 0)
       continue;
     //TODO add user-agent match
     
