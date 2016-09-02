@@ -42,49 +42,52 @@ static inline uint8_t get_action(const char* action)
   return 0;
 }
 
-static inline uint8_t get_protocol(const char* protocol, uint8_t* master)
+static inline uint8_t get_protocol(const char* protocol, uint8_t* master, NDPI_PROTOCOL_BITMASK* mask)
 {
+  int prot = 0;
   if(strcasecmp(protocol, "http") == 0){
     *master = NDPI_PROTOCOL_HTTP;
-    return IPPROTO_TCP;
+    prot = IPPROTO_TCP;
   } else if (strcasecmp(protocol, "https") == 0){
     *master = NDPI_PROTOCOL_SSL;
-    return IPPROTO_TCP;
+    prot = IPPROTO_TCP;
   } else if (strcasecmp(protocol, "dns") == 0){
     *master = NDPI_PROTOCOL_DNS;
-    return IPPROTO_UDP;
+    prot = IPPROTO_UDP;
   } else if (strcasecmp(protocol, "ssh") == 0){
     *master = NDPI_PROTOCOL_SSH;
-    return IPPROTO_TCP;
+    prot = IPPROTO_TCP;
   } else if (strcasecmp(protocol, "icmp") == 0){
     *master = NDPI_PROTOCOL_IP_ICMP;
-    return IPPROTO_ICMP;
+    prot = IPPROTO_ICMP;
   } else if (strcasecmp(protocol, "icmpv6") == 0){
     *master = NDPI_PROTOCOL_IP_ICMPV6;
-    return IPPROTO_ICMPV6;
+    prot = IPPROTO_ICMPV6;
   } else if (strcasecmp(protocol, "ipsec") == 0){
     *master = NDPI_PROTOCOL_IP_IPSEC;
-    return IPPROTO_IP;
+    prot = IPPROTO_IP;
   } else if (strcasecmp(protocol, "pptp") == 0){
     *master = NDPI_PROTOCOL_PPTP;
-    return IPPROTO_TCP;
+    prot = IPPROTO_TCP;
   } else if (strcasecmp(protocol, "socks") == 0){
     *master = NDPI_PROTOCOL_SOCKS;
-    return IPPROTO_UDP;
+    prot = IPPROTO_UDP;
   } else if (strcasecmp(protocol, "dhcp") == 0){
     *master = NDPI_PROTOCOL_DHCP;
-    return IPPROTO_UDP;
+    prot = IPPROTO_UDP;
   } else if (strcasecmp(protocol, "tcp") == 0){
     *master = 0;
-    return IPPROTO_TCP;
+    prot = IPPROTO_TCP;
   } else if (strcasecmp(protocol, "udp") == 0){
     *master = 0;
-    return IPPROTO_UDP;
+    prot = IPPROTO_UDP;
   } 
-  return 0;
+  if(*master)
+    NDPI_BITMASK_ADD(*mask, *master);
+  return prot;
 }
 
-void parse_one_rule(cJSON* json, struct rule* rule)
+void parse_one_rule(cJSON* json, struct rule* rule, NDPI_PROTOCOL_BITMASK* mask)
 {
   cJSON* item = cJSON_GetObjectItem(json, "smac");
   if(item){
@@ -120,7 +123,7 @@ void parse_one_rule(cJSON* json, struct rule* rule)
 
   item = cJSON_GetObjectItem(json, "protocol");
   if(item){
-    rule->protocol = get_protocol(item->valuestring, &(rule->master_protocol));
+    rule->protocol = get_protocol(item->valuestring, &(rule->master_protocol), mask);
   }
   
   item = cJSON_GetObjectItem(json, "condition");
@@ -150,11 +153,12 @@ void parse_one_rule(cJSON* json, struct rule* rule)
   }
 }
 
-int load_rules_from_file(const char* filename, struct rule** rule)
+int load_rules_from_file(const char* filename, struct rule** rule, void* ndpi_mask)
 {
   FILE *f;
   long size;
   char *data;
+  NDPI_PROTOCOL_BITMASK* mask = (NDPI_PROTOCOL_BITMASK*)ndpi_mask;
 
   f = fopen(filename,"rb");
   if(!f){
@@ -202,7 +206,7 @@ int load_rules_from_file(const char* filename, struct rule** rule)
       continue;
     }
     
-    parse_one_rule(item, &((*rule)[i]));
+    parse_one_rule(item, &((*rule)[i]), mask);
   }
   ret = n;
    
@@ -271,8 +275,8 @@ int match_rule_from_packet(struct rule* rule, int n, void* flow_, void* packet)
     //TODO add mac match
     //if(rule[i].smac[0] && memcmp(rule[i].smac)
     char* host = flow->host_server_name;
-    if(host[0] == 0 || ((char*)&flow->ssl)[0] != 0)
-      host = &flow->ssl;
+    if(host[0] == 0 || flow->ssl.client_certificate[0] != 0 || flow->ssl.server_certificate[0] != 0)
+      host = flow->ssl.client_certificate[0] == 0 ? flow->ssl.server_certificate : flow->ssl.client_certificate;
     if(rule[i].condition.host[0] && strcasecmp(rule[i].condition.host,  host) != 0)
       continue;
     //TODO add user-agent match
@@ -282,25 +286,3 @@ int match_rule_from_packet(struct rule* rule, int n, void* flow_, void* packet)
   
   return -1;
 }
-
-#ifdef TEST
-int main(int argc, char* argv[])
-{
-  struct rule* rule;
-  int n = load_rules_from_file(argv[1], &rule);
-  int i;
-  
-  for(i = 0; i < n; i++){
-    printf("%x %x %x %x %d %d\n", rule[i].shost, rule[i].dhost, rule[i].saddr, rule[i].daddr, rule[i].sport, rule[i].dport);
-    printf("%d %d\t action=%d\n", rule[i].protocol, rule[i].master_protocol, rule[i].action);
-    printf("%s %s\n", rule[i].condition.host, rule[i].condition.ua);
-    int j = 0;
-    while(rule[i].action_params[j]){
-      printf("params %d: %s\n", j, rule[i].action_params[j]);
-      j ++;
-    }
-  }
-  
-  destroy_rules(&rule, n);
-}
-#endif

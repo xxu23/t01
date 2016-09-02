@@ -43,7 +43,7 @@ struct rule
 #define T01_ACTION_REJECT		2
 #define T01_ACTION_CONFUSE		3
 
-int load_rules_from_file(const char* filename, struct rule** rule);
+int load_rules_from_file(const char* filename, struct rule** rule, void* ndpi_mask);
 
 void destroy_rules(struct rule** rule,  int n);
 
