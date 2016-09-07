@@ -220,7 +220,7 @@ static void* report_thread(void* args)
     printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
     printf("\tIP packets:            %-13llu of %llu packets total\n", curr_ip_packet_count, curr_raw_packet_count);
     /* In order to prevent Floating point exception in case of no traffic*/
-    if(stat->total_ip_bytes && stat->raw_packet_count)
+    if(curr_total_ip_bytes && curr_raw_packet_count)
       avg_pkt_size = (unsigned int)(curr_total_ip_bytes/curr_raw_packet_count);
     printf("\tIP bytes:              %-13llu (avg pkt size %u bytes)\n", curr_total_ip_bytes, avg_pkt_size);
     printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
