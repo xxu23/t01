@@ -280,7 +280,7 @@ int make_http_redirect_packet(const char* target_url,  const char* hdr, char* re
 
   tcph->doff = 5;
   tcph->seq = src_tcph->ack_seq;    
-  tcph->ack_seq = htonl(ntohl(src_tcph->seq)+ntohs((u_int16_t)(src_iph->tot_len))-(u_int16_t)40);
+  tcph->ack_seq = htonl(ntohl(src_tcph->seq)+ntohs(src_iph->tot_len)-4*src_tcph->doff-sizeof(*src_iph));
 
   tcph->fin = 0;
   tcph->syn = 0;
