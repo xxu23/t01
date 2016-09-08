@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/poll.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <sys/socket.h>
 
 #include <net/netmap_user.h>
 #include "ndpi_api.h"
@@ -93,6 +96,64 @@ static char* formatPackets(float numPkts, char *buf) {
   }
 
   return(buf);
+}
+
+
+static int manage_interface_promisc_mode(const char* interface, int switch_on) {
+    // We need really any socket for ioctl
+    int fd;
+    struct ifreq ethreq;    
+    int ioctl_res;
+    int promisc_enabled_on_device;
+    int ioctl_res_set;
+
+    fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (!fd) {
+        fprintf(stderr, "Can't create socket for promisc mode manager\n");
+        return -1;
+    }
+
+    bzero(&ethreq, sizeof(ethreq));
+    strncpy(ethreq.ifr_name, interface, IFNAMSIZ);
+
+    ioctl_res = ioctl(fd, SIOCGIFFLAGS, &ethreq);
+    if (ioctl_res == -1) {
+        fprintf(stderr, "Can't get interface flags\n");
+        return -1;
+    }
+ 
+    promisc_enabled_on_device = ethreq.ifr_flags & IFF_PROMISC;
+    if (switch_on) {
+        if (promisc_enabled_on_device) {
+            printf("Interface %s in promisc mode already\n", interface);
+            return 0;
+        } else {
+             printf("Interface %s in non promisc mode now, switch it on\n", interface);
+             ethreq.ifr_flags |= IFF_PROMISC;
+             ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
+             if (ioctl_res_set == -1) {
+                 fprintf(stderr, "Can't set interface flags\n");
+                 return -1;
+             }
+
+             return 1;
+        }
+    } else { 
+        if (!promisc_enabled_on_device) {
+            printf("Interface %s in normal mode already\n", interface);
+            return 0;
+        } else {
+            fprintf(stderr, "Interface in promisc mode now, switch it off\n");
+            ethreq.ifr_flags &= ~IFF_PROMISC;
+            ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
+            if (ioctl_res_set == -1) {
+                fprintf(stderr, "Can't set interface flags\n");
+                return -1;
+            }
+
+            return 1;
+        }
+    }
 }
 
 static void on_protocol_discovered(struct ndpi_workflow * workflow,
@@ -289,11 +350,11 @@ static void parse_options(int argc, char **argv) {
   while ((opt = getopt(argc, argv, "hi:o:c:m:v")) != EOF) {
     switch (opt) {
     case 'i':
-      sprintf(ifname, "netmap:%s", optarg);
+      strncpy(ifname, optarg, sizeof(ifname));
       break;
     
     case 'o':
-      sprintf(ofname, "netmap:%s", optarg);
+      strncpy(ofname, optarg, sizeof(ofname));
       break;
 
     case 'm':
@@ -338,11 +399,17 @@ static void signal_hander(int sig)
 
 int main(int argc, char **argv)
 {
-  parse_options(argc, argv);
-  
   struct nmreq base;
+  char interface[64];
+
+  parse_options(argc, argv);  
+
+  manage_interface_promisc_mode(ifname, 1); 
+  printf("Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off\n", ifname);
+
   bzero(&base, sizeof(base));
-  nmr = nm_open(ifname, &base, 0, NULL); 
+  sprintf(interface, "netmap:%s", ifname);      
+  nmr = nm_open(interface, &base, 0, NULL); 
   if (nmr == NULL){
     printf("Unable to open %s: %s\n", ifname, strerror(errno));
     return 1;
@@ -351,13 +418,13 @@ int main(int argc, char **argv)
   if(ofname[0] == 0){
     out_nmr = nmr;
   } else {
-    out_nmr = nm_open(ofname, &base, 0, NULL); 
+    sprintf(interface, "netmap:%s", ofname);      
+    out_nmr = nm_open(interface, &base, 0, NULL); 
     if (out_nmr == NULL){
       printf("Unable to open %s: %s, use %s instead\n", ofname, strerror(errno), ifname);
       out_nmr = nmr;
     }
   }
-  
   
   if(configfile){
     rule_num = load_rules_from_file(configfile, &rules, &ndpi_mask);
