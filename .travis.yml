@@ -9,7 +9,7 @@ branches:
 
 before_install:
   - sudo apt-get -qq update
-  - sudo apt-get -qq cmake
+  - sudo apt-get -qq install cmake
 
 script:
   - mkdir build && cd build && cmake ../ && make
