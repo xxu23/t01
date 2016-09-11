@@ -1,0 +1,15 @@
+sudo: required
+dist: trusty
+language: c
+cache: apt
+
+branches:
+  only:
+    - 'master'
+
+before_install:
+  - sudo apt-get -qq update
+  - sudo apt-get -qq cmake
+
+script:
+  - mkdir build && cd build && cmake ../ && make
