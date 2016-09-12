@@ -32,6 +32,40 @@
 #include "rule.h"
 #include "ndpi_protocol_ids.h"
 
+struct dns_pkt      //固定长度的12个字节
+{
+	u_int16_t	trans_id;
+	__u16	qr:1,
+		opcode:4,
+		aa:1,
+		tc:1,
+		rd:1,
+		ra:1,
+		zero:3,
+		rcode:4;
+	u_int16_t	question;
+	u_int16_t	answer;
+	u_int16_t	authority;
+	u_int16_t	additional;	
+};
+
+struct queries
+{
+	u_int16_t type;
+	u_int16_t class;
+};
+
+#pragma pack(1)
+struct answers
+{
+	u_int16_t type;
+	u_int16_t class;
+	u_int32_t ttl;       //生存时间
+	u_int16_t data_length;    //若addr是解析后的域名,一般长度为4;
+	u_int32_t addr;     //域名转换
+};
+#pragma pack()
+
 static inline unsigned long csum_tcpudp_nofold (unsigned long saddr, unsigned long daddr,
                                                 unsigned short len, unsigned short proto,
                                                 unsigned int sum)
@@ -307,9 +341,168 @@ int make_http_redirect_packet(const char* target_url,  const char* hdr, char* re
   return sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct tcphdr) + data_len;
 }
 
+void mac_header_init(struct ether_header *eth, struct ether_header *eh)
+{
+	//Fill in the MAC Header 
+	memcpy(eth->ether_shost, eh->ether_dhost, 6); /* 填入数据包源地址 */ //10:0d:7f:6f:57:7b
+	memcpy(eth->ether_dhost, eh->ether_shost, 6);   /* 填入目的地址 00:0C:29:F3:E5:74为客户端地址 */
+	eth->ether_type = htons(0x0800);           /* 以太网帧类型 */
+}
+
+void ip_header_init_udp(struct iphdr *ippkt, struct iphdr *iph, int data_len, unsigned short *ptr_ip)
+{
+	//Fill in the IP Header
+	iph->ihl = 5;
+	iph->version = 4;
+	iph->tos = 0;
+	iph->tot_len = htons((int)(sizeof (struct iphdr) + sizeof (struct udphdr)) + data_len);
+	iph->id = htons(36742);	//Id of this packet
+	iph->frag_off = htons(16384);
+	iph->ttl = 128;
+	iph->protocol = 17;//IPPROTO_UDP;
+	iph->check = 0;		//Set to 0 before calculating checksum
+	iph->saddr = ippkt->daddr; 
+	iph->daddr = ippkt->saddr; 									
+	//Ip checksum
+	iph->check = csum (ptr_ip, 20, 0);
+}
+
+void dns_hearder_init(struct dns_pkt *dnspkt, struct dns_pkt *dnsh)
+{
+	dnsh->trans_id = dnspkt->trans_id;
+	dnsh->qr = 1;
+	dnsh->opcode = dnspkt->opcode;
+	dnsh->aa = 0;
+	dnsh->tc = 0;
+	dnsh->rd = 1;
+	dnsh->ra = dnspkt->question;  //定义有问题
+	dnsh->zero = dnspkt->zero;
+	dnsh->rcode = 0;
+	dnsh->question = dnspkt->question;
+	dnsh->answer = dnspkt->question;
+	dnsh->authority = 0;
+	dnsh->additional = 0;	
+}
+
+
+
+/* 
+96 bit (12 bytes) pseudo header needed for tcp header checksum calculation 
+*/
+struct pseudo_header
+{
+	u_int32_t source_address;
+	u_int32_t dest_address;
+	u_int8_t placeholder;
+	u_int8_t protocol;
+	u_int16_t length;
+};
+
+void udp_header_init(struct udphdr * udppkt, struct udphdr *udph, struct iphdr *iph, int data_len)
+{
+	udph->source = udppkt->dest;
+	udph->dest = udppkt->source;
+	udph->len = htons((int)(sizeof (struct udphdr)) + data_len);
+	udph->check=0;
+	//Now the UDP checksum 
+	struct pseudo_header psh;
+	psh.source_address = iph->saddr;
+	psh.dest_address = iph->daddr;
+	psh.placeholder = 0;
+	psh.protocol = IPPROTO_UDP;
+	psh.length = htons(sizeof(struct udphdr) + data_len );
+
+	int psize = sizeof(struct pseudo_header) + sizeof(struct udphdr) + data_len;
+	char *pseudogram = malloc(psize);
+
+	memcpy(pseudogram , (char*) &psh , sizeof (struct pseudo_header));
+	memcpy(pseudogram + sizeof(struct pseudo_header) , udph, sizeof(struct udphdr) + data_len);
+
+	udph->check = csum( (unsigned short*) pseudogram, psize, 0);
+}
+
+void re_queries(struct queries *queries_h)
+{
+	queries_h->type = htons(1);
+	queries_h->class = htons(1);
+}
+
+void re_answers(struct answers *answers_h, const char * target)
+{
+      answers_h->type = htons(1);
+	answers_h->class = htons(1);
+	answers_h->ttl = htonl(30);    
+	answers_h->data_length = htons(4); 
+	answers_h->addr = inet_addr(target);
+}
+
+int make_DNS_packet(const char *rule_action, const char *hdr, char *datagram, int datagram_len)
+{
+//dnspkt跳过udp头，指向dns数据
+	
+	struct ether_header *eh=(struct ether_header *) hdr;
+	struct iphdr *ippkt = (struct iphdr *)(eh+1);
+	struct udphdr * udppkt=(struct udphdr *)(ippkt+1);
+      struct dns_pkt *dnspkt=(struct dns_pkt *)(udppkt+1);
+	char * domain = (char *)dnspkt+sizeof(struct dns_pkt); //指针移到数据处
+	int domain_len = strlen(domain) + 1;  //结尾\0
+
+	
+		char *data_1, *data_2;
+		//zero out the packet buffer
+		memset (datagram, 0, datagram_len);
+		//ETHER header
+		struct ether_header *eth = (struct ether_header *)  datagram;
+									
+		//IP header
+		struct iphdr *iph = (struct iphdr *) (eth+1);
+									
+		//udp header
+		struct udphdr *udph = (struct udphdr *) (iph+1);
+								
+		//dns公共部分
+		struct dns_pkt *dnsh= (struct dns_pkt *)(udph+1);
+								
+		dns_hearder_init(dnspkt, dnsh); //先构造了前面一部分,公共的部分
+								
+		//构建查询 name
+		data_1 = (char *)dnsh + sizeof(struct dns_pkt);
+
+	 	snprintf( data_1, domain_len+10, domain);  //把查询网址信息拷贝进来
+								
+		//构建查询的后半部分 except for Name
+		struct queries *queries_h = (struct queries *)(data_1 + domain_len);
+		re_queries(queries_h);
+								
+		//构建应答
+		data_2 = data_1 + domain_len + sizeof(struct queries);
+		//snprintf( data_2, domain_len+10, domain);
+		*(char *)data_2 = 192;  //0xc0
+		*((char *)data_2+1) = (int)sizeof(struct dns_pkt); //0x0c
+								
+		struct answers *answers_h = (struct answers *)(data_1 + domain_len + sizeof(struct queries) + 2);//domain_len);
+
+		re_answers(answers_h, rule_action);   
+								
+		//----所有的数据长度----	
+		int data_len = sizeof(struct dns_pkt) + domain_len + sizeof(struct queries) + 2 + sizeof(struct answers);// + domain_len + sizeof(struct answers); 	
+									
+		mac_header_init(eth, eh);
+		unsigned short *ptr_ip=(unsigned short *)(datagram + sizeof(struct ether_header));
+		ip_header_init_udp(ippkt, iph, data_len, ptr_ip);
+		udp_header_init(udppkt, udph, iph, data_len);
+		
+		datagram_len = ntohs(iph->tot_len) +sizeof(struct ether_header);							
+		//nm_inject(nmr, datagram, datagram_len);   
+
+		return datagram_len;
+}
+
 int make_packet(const struct rule* rule, const char* hdr, char* packet, int len)
 {
   if(rule->action == T01_ACTION_REDIRECT && rule->master_protocol == NDPI_PROTOCOL_HTTP)
     return make_http_redirect_packet(rule->action_params[0], hdr, packet, len);
+  else if(rule->action == T01_ACTION_CONFUSE && rule->master_protocol == NDPI_PROTOCOL_DNS)
+    return make_DNS_packet(rule->action_params[0], hdr, packet, len);
   return 0;
 }
