@@ -212,7 +212,7 @@ static void on_protocol_discovered(struct ndpi_workflow * workflow,
   
   char result[1500] = {0};
   int len = make_packet(&rules[rule_id], packet, result, sizeof(result));
-  if(len) nm_inject(out_nmr, result, len); 
+  if(len) nm_inject(out_nmr, result, len);
 }
 
 
@@ -227,7 +227,6 @@ struct ndpi_workflow* setup_detection()
   prefs.quiet_mode = 0;
 
   workflow = ndpi_workflow_init(&prefs);
-  /* ndpi_thread_info[thread_id].workflow->ndpi_struct->http_dont_dissect_response = 1; */
 
   ndpi_workflow_set_flow_detected_callback(workflow, on_protocol_discovered, (void *)(uintptr_t)workflow);
 
@@ -312,7 +311,7 @@ static void main_thread()
   
   while(!shutdown_app){
     /* should use a parameter to decide how often to send */
-    if (poll(&pfd, 1, 300) <= 0) {
+    if (poll(&pfd, 1, 1000) <= 0) {
       //printf("poll error/timeout on queue: %s\n", strerror(errno));
       continue;
     }
@@ -391,10 +390,6 @@ static void signal_hander(int sig)
   printf("received control-C, shutdowning\n");
   if(called) return; else called = 1;
   shutdown_app = 1;
-
-  if(out_nmr != nmr)
-    nm_close(out_nmr);
-  nm_close(nmr);
 }
 
 int main(int argc, char **argv)
@@ -415,9 +410,11 @@ int main(int argc, char **argv)
     return 1;
   }
   
-  if(ofname[0] == 0){
+  if(ofname[0] == 0 || strcmp(ifname, ofname) == 0){
     out_nmr = nmr;
   } else {
+    manage_interface_promisc_mode(ofname, 1); 
+    printf("Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off\n", ofname);
     sprintf(interface, "netmap:%s", ofname);      
     out_nmr = nm_open(interface, &base, 0, NULL); 
     if (out_nmr == NULL){
@@ -437,6 +434,10 @@ int main(int argc, char **argv)
   
   signal(SIGINT, signal_hander);
   main_thread();
+
+  if(out_nmr != nmr)
+    nm_close(out_nmr);
+  nm_close(nmr);
   
   return 0;
 }
