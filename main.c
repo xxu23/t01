@@ -1,4 +1,4 @@
-#define NETMAP_WITH_LIBS 
+#define NETMAP_WITH_LIBS 1
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -303,11 +303,16 @@ static void* report_thread(void* args)
 
 static void main_thread()
 {
+  int err;
   struct pollfd pfd = { .fd = nmr->fd, .events = POLLIN };
   struct ndpi_workflow* workflow = setup_detection();
-  pthread_t report_thread_id = NULL;
+  pthread_t report_thread_id;
   
-  pthread_create(&report_thread_id, NULL, report_thread,  workflow);
+  err = pthread_create(&report_thread_id, NULL, report_thread,  workflow);
+  if (err != 0) {
+    printf("create report thread failed(%d)\n", err);
+    return;
+  }
   
   while(!shutdown_app){
     /* should use a parameter to decide how often to send */
@@ -323,8 +328,11 @@ static void main_thread()
     ndpi_workflow_process_packet(workflow, &h, data);
   }
   
-  if(report_thread_id)
-    pthread_join(report_thread_id, NULL);
+  err = pthread_join(report_thread_id, NULL);
+  if (err != 0) {
+    printf("join report thread failed(%d)\n", err);
+    return;
+  }
 }
 
 static void usage()
