@@ -93,7 +93,7 @@ typedef struct ndpi_workflow_prefs {
 
 struct ndpi_workflow;
 /** workflow, flow, user data */
-typedef void (*ndpi_workflow_callback_ptr) (struct ndpi_workflow *, struct ndpi_flow_info *, void *, void *);
+typedef void (*ndpi_workflow_callback_ptr) (struct ndpi_workflow *, struct ndpi_flow_info *, void *, void *, void *);
 
 typedef struct ndpi_workflow {
   u_int64_t last_time;
