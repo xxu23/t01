@@ -80,8 +80,6 @@ typedef struct ndpi_stats {
   u_int32_t ndpi_flow_count;
   u_int64_t tcp_count, udp_count;
   u_int64_t mpls_count, pppoe_count, vlan_count, fragmented_count;
-  u_int64_t packet_len[6];
-  u_int16_t max_packet_len;
 } ndpi_stats_t;
 
 typedef struct ndpi_workflow_prefs {
