@@ -92,13 +92,13 @@ void parse_one_rule(cJSON* json, struct rule* rule, NDPI_PROTOCOL_BITMASK* mask)
   cJSON* item = cJSON_GetObjectItem(json, "smac");
   if(item){
     uint8_t* mac = rule->shost;
-    sscanf(item->valuestring, "%x-%x-%x-%x-%x-%x ", mac, mac+1, mac+2, mac+3, mac+4, mac+5); 
+    sscanf(item->valuestring, "%02x-%02x-%02x-%02x-%02x-%02x", mac, mac+1, mac+2, mac+3, mac+4, mac+5); 
   }
   
   item = cJSON_GetObjectItem(json, "dmac");
   if(item){
     uint8_t* mac = rule->dhost;
-    sscanf(item->valuestring, "%x-%x-%x-%x-%x-%x ", mac, mac+1, mac+2, mac+3, mac+4, mac+5); 
+    sscanf(item->valuestring, "%02x-%02x-%02x-%02x-%02x-%02x", mac, mac+1, mac+2, mac+3, mac+4, mac+5); 
   }
 
   item = cJSON_GetObjectItem(json, "saddr");
