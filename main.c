@@ -301,12 +301,34 @@ static void* report_thread(void* args)
   return NULL;
 }
 
+static inline int receive_packets(struct netmap_ring *ring,
+				  struct ndpi_workflow *workflow)
+{
+  u_int cur, rx, n;
+  struct nm_pkthdr hdr;
+  cur = ring->cur;
+  n = nm_ring_space(ring);
+  for (rx = 0; rx < n; rx++) {
+    struct netmap_slot *slot = &ring->slot[cur];
+    char *data = NETMAP_BUF(ring, slot->buf_idx);
+    hdr.ts = ring->ts;
+    hdr.len = hdr.caplen = slot->len;
+    cur = nm_ring_next(ring, cur);
+    ndpi_workflow_process_packet(workflow, &hdr, (u_char *) data);
+  }
+
+  ring->head = ring->cur = cur;
+  return (rx);
+}
+
 static void main_thread()
 {
-  int err;
+  int err, i;
   struct pollfd pfd = { .fd = nmr->fd, .events = POLLIN };
   struct ndpi_workflow* workflow = setup_detection();
   pthread_t report_thread_id;
+  struct netmap_ring *rxring = NULL;
+  struct netmap_if *nifp = nmr->nifp;
   
   err = pthread_create(&report_thread_id, NULL, report_thread,  workflow);
   if (err != 0) {
@@ -317,15 +339,15 @@ static void main_thread()
   while(!shutdown_app){
     /* should use a parameter to decide how often to send */
     if (poll(&pfd, 1, 1000) <= 0) {
-      //printf("poll error/timeout on queue: %s\n", strerror(errno));
       continue;
+     }
+    
+    for (i = nmr->first_rx_ring; i <= nmr->last_rx_ring; i++) {
+      rxring = NETMAP_RXRING(nifp, i);
+      if (nm_ring_empty(rxring))
+        continue;
+      receive_packets(rxring, workflow);
     }
-    
-    struct nm_pkthdr h;
-    u_char* data = nm_nextpkt(nmr, &h);         /* 接收到来的数据包 why not h??? */
-    if(!data) continue;
-    
-    ndpi_workflow_process_packet(workflow, &h, data);
   }
   
   err = pthread_join(report_thread_id, NULL);
@@ -434,7 +456,7 @@ int main(int argc, char **argv)
   if(configfile){
     rule_num = load_rules_from_file(configfile, &rules, &ndpi_mask);
     if(rule_num > 0){
-      printf("Load %d rules from file\n", rule_num, configfile);
+      printf("Load %d rules from file %s\n", rule_num, configfile);
     } else {
       rule_num = 0;
     }
