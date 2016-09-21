@@ -30,6 +30,7 @@
 #include "ndpi_api.h"
 #include "ndpi_util.h"
 #include "ndpi_protocol_ids.h"
+#include "zmalloc.h"
 
 static inline uint8_t get_action(const char* action)
 {

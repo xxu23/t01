@@ -34,6 +34,7 @@
 
 #include "ndpi_main.h"
 #include "ndpi_util.h"
+#include "zmalloc.h"
 
 #ifndef ETH_P_IP
 #define ETH_P_IP               0x0800 	/* IPv4 */
