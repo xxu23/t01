@@ -18,11 +18,11 @@ static char ifname[32], ofname[32];
 static char configfile[256];
 static struct nm_desc *nmr, *out_nmr;
 static u_int8_t shutdown_app = 0;
-static struct rule* rules;
 static int rule_num = 0;
 static int verbose = 0;
 static int enable_all_protocol = 1;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
+static struct list_head rule_list;
 
 static char* ipProto2Name(u_short proto_id) {
 
@@ -169,52 +169,44 @@ static void on_protocol_discovered(struct ndpi_workflow * workflow,
         flow->detected_protocol.master_protocol = NDPI_PROTOCOL_UNKNOWN;
   }
   
-  if(verbose){
-    FILE *out = stdout;
-    fprintf(out, "\t%s %s%s%s:%u <-> %s%s%s:%u ",
+  struct rule* rule = match_rule_from_packet(&rule_list, flow, packet);
+  if(!rule) return;
+  rule->hits ++;
+  
+  char result[1500] = {0};
+  int len = make_packet(rule, packet, result, sizeof(result));
+  if(len) {
+    nm_inject(out_nmr, result, len);
+  
+    if(verbose){
+      printf("\tHits: %s %s:%u <-> %s:%u ",
 	    ipProto2Name(flow->protocol),
-	    (flow->ip_version == 6) ? "[" : "",
 	    flow->lower_name,
-	    (flow->ip_version == 6) ? "]" : "",
 	    ntohs(flow->lower_port),
-	    (flow->ip_version == 6) ? "[" : "",
 	    flow->upper_name,
-	    (flow->ip_version == 6) ? "]" : "",
 	    ntohs(flow->upper_port));
 
-    if(flow->vlan_id > 0) fprintf(out, "[VLAN: %u]", flow->vlan_id);
-
-    if(flow->detected_protocol.master_protocol) {
-      char buf[64];
-
-      fprintf(out, "[proto: %u.%u/%s]",
+      if(flow->detected_protocol.master_protocol) {
+        char buf[64];
+        printf("[proto: %u.%u/%s]",
 	      flow->detected_protocol.master_protocol, flow->detected_protocol.protocol,
 	      ndpi_protocol2name(workflow->ndpi_struct,
 				 flow->detected_protocol, buf, sizeof(buf)));
-    } else
-      fprintf(out, "[proto: %u/%s]",
+      } else
+        printf("[proto: %u/%s]",
 	      flow->detected_protocol.protocol,
 	      ndpi_get_proto_name(workflow->ndpi_struct, flow->detected_protocol.protocol));
 
-    fprintf(out, "[%u pkts/%llu bytes]",
-	    flow->packets, (long long unsigned int)flow->bytes);
+      printf("[%u pkts/%llu bytes]", flow->packets, flow->bytes);
 
-    if(flow->host_server_name[0] != '\0') fprintf(out, "[Host: %s]", flow->host_server_name);
-    if(flow->ssl.client_certificate[0] != '\0') fprintf(out, "[SSL client: %s]", flow->ssl.client_certificate);
-    if(flow->ssl.server_certificate[0] != '\0') fprintf(out, "[SSL server: %s]", flow->ssl.server_certificate);
-    if(flow->bittorent_hash[0] != '\0') fprintf(out, "[BT Hash: %s]", flow->bittorent_hash);
+      if(flow->host_server_name[0] != '\0') printf("[Host: %s]", flow->host_server_name);
+      if(flow->ssl.client_certificate[0] != '\0') printf("[SSL client: %s]", flow->ssl.client_certificate);
+      if(flow->ssl.server_certificate[0] != '\0') printf("[SSL server: %s]", flow->ssl.server_certificate);
 
-    fprintf(out, "\n");
+      printf("\n");
+    }
   }
-  
-  int rule_id = match_rule_from_packet(rules, rule_num, flow, packet);
-  if(rule_id < 0) return;
-  
-  char result[1500] = {0};
-  int len = make_packet(&rules[rule_id], packet, result, sizeof(result));
-  if(len) nm_inject(out_nmr, result, len);
 }
-
 
 struct ndpi_workflow* setup_detection()
 {
@@ -254,7 +246,8 @@ static void* report_thread(void* args)
   u_int64_t ip_packet_count = 0;
   u_int64_t total_wire_bytes = 0, total_ip_bytes = 0;
   u_int64_t tcp_count = 0, udp_count = 0;
-  
+  u_int64_t hits = 0; 
+
   while(!shutdown_app){
     gettimeofday(&begin, NULL);
     sleep(5);
@@ -267,7 +260,7 @@ static void* report_thread(void* args)
     u_int64_t curr_total_wire_bytes = stat->total_wire_bytes - total_wire_bytes; 
     u_int64_t curr_total_ip_bytes = stat->total_ip_bytes - total_ip_bytes;
     u_int64_t curr_tcp_count = stat->tcp_count - tcp_count;
-    uint64_t curr_udp_count = stat->udp_count - udp_count;
+    u_int64_t curr_udp_count = stat->udp_count - udp_count;
     
     raw_packet_count = stat->raw_packet_count;
     ip_packet_count = stat->ip_packet_count;
@@ -278,11 +271,11 @@ static void* report_thread(void* args)
     
     printf("\nTraffic statistics:\n");
     printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
+    printf("\tIP bytes:              %-13llu (avg pkt size %u bytes)\n", curr_total_ip_bytes, avg_pkt_size);
     printf("\tIP packets:            %-13llu of %llu packets total\n", curr_ip_packet_count, curr_raw_packet_count);
     /* In order to prevent Floating point exception in case of no traffic*/
     if(curr_total_ip_bytes && curr_raw_packet_count)
       avg_pkt_size = (unsigned int)(curr_total_ip_bytes/curr_raw_packet_count);
-    printf("\tIP bytes:              %-13llu (avg pkt size %u bytes)\n", curr_total_ip_bytes, avg_pkt_size);
     printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
     printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
 
@@ -297,6 +290,17 @@ static void* report_thread(void* args)
       printf("\tTraffic throughput:    %s pps / %s/sec\n", formatPackets(t, buf), formatTraffic(b, 1, buf1));
       printf("\tTraffic duration:      %.3f sec\n", traffic_duration/1000000);
     }
+
+    struct list_head* pos;
+    u_int64_t total_hits = 0;
+    list_for_each(pos, &rule_list) {
+      struct rule* rule = list_entry(pos, struct rule, list);
+      if(rule->used == 0) 
+          continue;
+      total_hits += rule->hits;
+    }
+    printf("\tRules hits:            %-13lu (total %llu)\n", total_hits - hits, total_hits);
+    hits = total_hits;
   }
   return NULL;
 }
@@ -454,7 +458,8 @@ int main(int argc, char **argv)
   }
   
   if(configfile){
-    rule_num = load_rules_from_file(configfile, &rules, &ndpi_mask);
+    INIT_LIST_HEAD(&rule_list);
+    rule_num = load_rules_from_file(configfile, &rule_list, &ndpi_mask);
     if(rule_num > 0){
       printf("Load %d rules from file %s\n", rule_num, configfile);
     } else {
@@ -468,6 +473,7 @@ int main(int argc, char **argv)
   if(out_nmr != nmr)
     nm_close(out_nmr);
   nm_close(nmr);
+  destroy_rules(&rule_list);
   
   return 0;
 }

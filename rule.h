@@ -19,6 +19,8 @@
 #ifndef __RULE_H__
 #define __RULE_H__
 
+#include "list.h"
+
 struct match_payload{
   char host[256];
   char ua[64];
@@ -26,27 +28,30 @@ struct match_payload{
 
 struct rule
 {
+  u_int8_t protocol;
+  u_int8_t master_protocol;
   u_int8_t  shost[6];
   u_int8_t  dhost[6];
   u_int32_t saddr;
   u_int32_t daddr;
   u_int16_t sport;
   u_int16_t dport;
-  u_int8_t protocol;
-  u_int8_t master_protocol;
   struct match_payload condition;
   u_int8_t action;
+  u_int8_t used;
   char *action_params[10];
+  u_int64_t hits;
+  struct list_head list;
 };
 
 #define T01_ACTION_REDIRECT 		1
 #define T01_ACTION_REJECT		2
 #define T01_ACTION_CONFUSE		3
 
-int load_rules_from_file(const char* filename, struct rule** rule, void* ndpi_mask);
+int load_rules_from_file(const char* filename, struct list_head *head, void* ndpi_mask);
 
-void destroy_rules(struct rule** rule,  int n);
+void destroy_rules(struct list_head *head);
 
-int match_rule_from_packet(struct rule* rule, int n, void* flow, void* packet);
+struct rule* match_rule_from_packet(struct list_head *head, void* flow, void* packet);
 
 #endif /* __RULE_H__ */

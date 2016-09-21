@@ -154,7 +154,7 @@ void parse_one_rule(cJSON* json, struct rule* rule, NDPI_PROTOCOL_BITMASK* mask)
   }
 }
 
-int load_rules_from_file(const char* filename, struct rule** rule, void* ndpi_mask)
+int load_rules_from_file(const char* filename, struct list_head* head, void* ndpi_mask)
 {
   FILE *f;
   long size;
@@ -191,13 +191,6 @@ int load_rules_from_file(const char* filename, struct rule** rule, void* ndpi_ma
   int n = cJSON_GetArraySize(json);
   if(n == 0)
     goto out;
-  *rule = (struct rule*)malloc(n * sizeof(struct rule));
-  if(*rule == NULL){
-    msg = "Out of memory";
-    ret = -2;
-    goto out;
-  }
-  bzero(*rule,  n * sizeof(struct rule));
   
   int i;
   for(i = 0;  i < n; i++){
@@ -205,9 +198,19 @@ int load_rules_from_file(const char* filename, struct rule** rule, void* ndpi_ma
     if(!item){
       printf("failed to get %d json object: %s\n", i+1, cJSON_GetErrorPtr());
       continue;
-    }
+     }
+
+    struct rule* rule = malloc(sizeof(*rule));
+    if(!rule) {
+      msg = "Out of memory";
+      ret = -2;
+      goto out;
+     }
+    bzero(rule,  sizeof(*rule));
     
-    parse_one_rule(item, &((*rule)[i]), mask);
+    parse_one_rule(item, rule, mask);
+    rule->used = 1;
+    list_add(&rule->list, head);
   }
   ret = n;
    
@@ -219,52 +222,54 @@ out:
   return ret;
 }
 
-void destroy_rules(struct rule** rule,  int n)
+void destroy_rules(struct list_head *head)
 {
-  if(n == 0 || !rule) return;
-  for(n = n-1; n >= 0; n--){
-    int j;
-    for(j = 0; j < 10; j++){
-      if((*rule)[n].action_params[j] == NULL)
-	break;
-      free((*rule)[n].action_params[j]);
-    }
+  if(!head || list_empty(head)) return;
+  
+  struct list_head *pos, *n;
+  struct rule *rule;
+  list_for_each_safe(pos, n, head) {
+    list_del(pos);
+    rule = list_entry(pos, struct rule, list);
+    free(rule);
   }
-  free(*rule);
-  *rule = NULL;
 }
 
-int match_rule_from_packet(struct rule* rule, int n, void* flow_, void* packet)
+struct rule* match_rule_from_packet(struct list_head *head, void* flow_, void* packet)
 {
   struct ndpi_flow_info* flow = (struct ndpi_flow_info *)flow_;
-  int i;
-  for(i = 0; i < n; i++){
+  struct list_head* pos;
+  list_for_each(pos, head) {
+    struct rule* rule = list_entry(pos, struct rule, list);
+    if(rule->used == 0) 
+        continue;
+
     if(flow->protocol == NDPI_PROTOCOL_UNKNOWN)
       continue;
 
-    if(rule[i].protocol != flow->protocol) 
+    if(rule->protocol != flow->protocol) 
       continue;
     
-    if(rule[i].master_protocol){
+    if(rule->master_protocol){
       uint8_t master_protocol = flow->detected_protocol.master_protocol;
       if(master_protocol == 0) master_protocol = flow->detected_protocol.protocol;
-      if(master_protocol != rule[i].master_protocol)
+      if(master_protocol != rule->master_protocol)
 	continue; 
     }
     
-    if(rule[i].dport || rule[i].sport || rule[i].daddr || rule[i].saddr){
+    if(rule->dport || rule->sport || rule->daddr || rule->saddr){
       uint32_t lower_ip, upper_ip;
       u_int16_t lower_port, upper_port;
-      if(rule[i].saddr < rule[i].daddr) {
-	lower_ip = rule[i].saddr;
-	upper_ip = rule[i].daddr;
-	lower_port = htons(rule[i].sport);
-	upper_port = htons(rule[i].dport);
+      if(rule->saddr < rule->daddr) {
+	lower_ip = rule->saddr;
+	upper_ip = rule->daddr;
+	lower_port = htons(rule->sport);
+	upper_port = htons(rule->dport);
       } else {
-	lower_ip = rule[i].daddr;
-	upper_ip = rule[i].saddr;
-	lower_port = htons(rule[i].dport);
-	upper_port = htons(rule[i].sport);
+	lower_ip = rule->daddr;
+	upper_ip = rule->saddr;
+	lower_port = htons(rule->dport);
+	upper_port = htons(rule->sport);
       }
       
       if(lower_ip && flow->lower_ip != lower_ip && flow->upper_ip != lower_ip) continue;
@@ -274,16 +279,16 @@ int match_rule_from_packet(struct rule* rule, int n, void* flow_, void* packet)
     }
     
     //TODO add mac match
-    //if(rule[i].smac[0] && memcmp(rule[i].smac)
+    //if(rule->smac[0] && memcmp(rule->smac)
     char* host = flow->host_server_name;
     if(host[0] == 0 || flow->ssl.client_certificate[0] != 0 || flow->ssl.server_certificate[0] != 0)
       host = flow->ssl.client_certificate[0] == 0 ? flow->ssl.server_certificate : flow->ssl.client_certificate;
-    if(rule[i].condition.host[0] && strcasecmp(rule[i].condition.host,  host) != 0)
+    if(rule->condition.host[0] && strcasecmp(rule->condition.host,  host) != 0)
       continue;
     //TODO add user-agent match
     
-    return i;
+    return rule;
   }
   
-  return -1;
+  return NULL;
 }
