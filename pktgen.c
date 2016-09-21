@@ -58,6 +58,18 @@ struct answers {
 };
 #pragma pack()
 
+struct pptp_setlink {
+	u_int16_t length;
+	u_int16_t m_type;
+	u_int32_t cookie;
+	u_int16_t c_type;	//通过这个判断是set-link-info 
+	u_int16_t reserve1;
+	u_int16_t id;
+	u_int16_t reserve2;
+	u_int32_t s_accm;
+	u_int32_t r_accm;
+};
+
 static inline unsigned long csum_tcpudp_nofold(unsigned long saddr,
 					       unsigned long daddr,
 					       unsigned short len,
@@ -320,6 +332,68 @@ int make_dns_spoof_packet(const char *target, const char *hdr, char *datagram,
 	    sizeof(struct udphdr) + data_len;
 }
 
+int make_pptp_rst_packet(const char *hdr, char *datagram, int datagram_len)
+{
+	struct ether_header *eh = (struct ether_header *)hdr;
+	struct iphdr *ippkt = (struct iphdr *)(eh + 1);
+	struct tcphdr *tcppkt = (struct tcphdr *)(ippkt + 1);
+	struct pptp_setlink *pptppkt = (struct pptp_setlink *)(tcppkt + 1);
+	//ETHER header
+	struct ether_header *eth = (struct ether_header *)datagram;
+	//IP header
+	struct iphdr *iph = (struct iphdr *)(eth + 1);
+	//TCP header
+	struct tcphdr *tcph = (struct tcphdr *)(iph + 1);
+
+	memcpy(eth->ether_shost, eh->ether_dhost, 6);
+	memcpy(eth->ether_dhost, eh->ether_shost, 6);
+	eth->ether_type = htons(0x0800);
+
+	//////ip_header_init
+	iph->ihl = 5;
+	iph->version = 4;
+	iph->tos = 0;
+	iph->tot_len =
+	    htons((int)(sizeof(struct iphdr) + sizeof(struct tcphdr)));
+	iph->id = htons(36742);	//Id of this packet
+	iph->frag_off = htons(16384);
+	iph->ttl = 128;
+	iph->protocol = 6;	//IPPROTO_TCP;
+	iph->check = 0;		//Set to 0 before calculating checksum
+	iph->saddr = ippkt->daddr;
+	iph->daddr = ippkt->saddr;
+
+	//Ip checksum
+	iph->check = csum_fold(do_csum((unsigned char *)iph, 20));
+
+	//////_tcp_header_init
+	tcph->source = tcppkt->dest;
+	tcph->dest = tcppkt->source;
+	tcph->doff = 5;
+	tcph->seq = tcppkt->ack_seq;
+	tcph->ack_seq =
+	    htonl(ntohl(tcppkt->seq) + ntohs(ippkt->tot_len) -
+		  4 * tcppkt->doff - sizeof(*ippkt));
+	tcph->fin = 1;
+	tcph->syn = 0;
+	tcph->rst = 0;
+	tcph->psh = 0;
+	tcph->ack = 1;
+	tcph->urg = 0;
+	tcph->window = htons(64240);	/* maximum allowed window size */
+	tcph->check = 0;	//leave checksum 0 now, filled later by pseudo header
+	tcph->urg_ptr = 0;
+
+	//Now the TCP checksum 
+	tcph->check =
+	    tcp_v4_check(sizeof(struct tcphdr), iph->saddr,
+			 iph->daddr, do_csum((unsigned char *)(tcph),
+					     sizeof(struct tcphdr)));
+
+	return sizeof(struct ether_header) + sizeof(struct iphdr) +
+	    sizeof(struct tcphdr);
+}
+
 int make_packet(const struct rule *rule, const char *hdr, char *packet, int len)
 {
 	if (rule->action == T01_ACTION_REDIRECT
@@ -330,5 +404,8 @@ int make_packet(const struct rule *rule, const char *hdr, char *packet, int len)
 		 && rule->master_protocol == NDPI_PROTOCOL_DNS)
 		return make_dns_spoof_packet(rule->action_params[0], hdr,
 					     packet, len);
+	else if (rule->action == T01_ACTION_REJECT
+		 && rule->master_protocol == NDPI_PROTOCOL_PPTP)
+		return make_pptp_rst_packet(hdr, packet, len);
 	return 0;
 }
