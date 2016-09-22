@@ -6,6 +6,7 @@
 #include <sys/poll.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include <sys/sysinfo.h>
 #include <sys/socket.h>
 
 #include <net/netmap_user.h>
@@ -212,10 +213,18 @@ struct ndpi_workflow* setup_detection()
 {
   struct ndpi_workflow * workflow;
   struct ndpi_workflow_prefs prefs;
+  struct sysinfo si;
+  u_int32_t max_ndpi_flows;
+
+  sysinfo(&si);
+  max_ndpi_flows = si.totalram/ 2/ sizeof(struct ndpi_flow_info);
+  if(max_ndpi_flows > MAX_NDPI_FLOWS) 
+    max_ndpi_flows = MAX_NDPI_FLOWS;
+
   memset(&prefs, 0, sizeof(prefs));
   prefs.decode_tunnels = 0;
   prefs.num_roots = NUM_ROOTS;
-  prefs.max_ndpi_flows = MAX_NDPI_FLOWS;
+  prefs.max_ndpi_flows = max_ndpi_flows;
   prefs.quiet_mode = 0;
 
   workflow = ndpi_workflow_init(&prefs);
@@ -352,6 +361,8 @@ static void main_thread()
         continue;
       receive_packets(rxring, workflow);
     }
+
+    ndpi_workflow_clean_idle_flows(workflow, 0);
   }
   
   err = pthread_join(report_thread_id, NULL);

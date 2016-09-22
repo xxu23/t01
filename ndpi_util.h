@@ -31,10 +31,10 @@
 #define __NDPI_UTIL_H__
 
 #define MAX_NUM_READER_THREADS     16
-#define IDLE_SCAN_PERIOD           10 /* msec (use TICK_RESOLUTION = 1000) */
+#define IDLE_SCAN_PERIOD          200 /* msec (use TICK_RESOLUTION = 1000) */
 #define MAX_IDLE_TIME           30000
-#define IDLE_SCAN_BUDGET         1024
-#define NUM_ROOTS                 512
+#define IDLE_SCAN_BUDGET        65536
+#define NUM_ROOTS                1023
 #define MAX_NDPI_FLOWS      200000000
 #define TICK_RESOLUTION          1000
 
@@ -99,6 +99,11 @@ typedef struct ndpi_workflow {
   struct ndpi_workflow_prefs prefs;
   struct ndpi_stats stats;
 
+  u_int64_t last_idle_scan_time;
+  u_int32_t idle_scan_idx;
+  u_int32_t num_idle_flows;
+  struct ndpi_flow_info *idle_flows[IDLE_SCAN_BUDGET];
+
   ndpi_workflow_callback_ptr __flow_detected_callback;
   void * __flow_detected_udata;
   void * __flow_packet_data;
@@ -122,6 +127,9 @@ void ndpi_free_flow_info_half(struct ndpi_flow_info *flow);
 
 /** Process a @packet and update the @workflow.  */
 void ndpi_workflow_process_packet (struct ndpi_workflow * workflow, struct nm_pkthdr *header, const u_char *packet);
+
+/* Idle flows cleanup periodly */
+void ndpi_workflow_clean_idle_flows(struct ndpi_workflow * workflow, int mandatory);
 
 /* flow callbacks: ndpi_flow_info will be freed right after */
 static inline void ndpi_workflow_set_flow_detected_callback(struct ndpi_workflow * workflow,

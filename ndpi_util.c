@@ -181,6 +181,64 @@ int ndpi_workflow_node_cmp(const void *a, const void *b) {
   return(0);
 }
 
+
+/* ***************************************************** */
+
+/**
+ * @brief Idle Scan Walker
+ */
+static void node_idle_scan_walker(const void *node, ndpi_VISIT which, int depth, void *user_data) {
+
+  struct ndpi_flow_info *flow = *(struct ndpi_flow_info **) node;
+  struct ndpi_workflow * workflow = (struct ndpi_workflow *)user_data;
+
+  if(workflow->num_idle_flows == IDLE_SCAN_BUDGET) /* TODO optimise with a budget-based walk */
+    return;
+
+  if((which == ndpi_preorder) || (which == ndpi_leaf)) { /* Avoid walking the same node multiple times */
+    if(flow->last_seen + MAX_IDLE_TIME < workflow->last_time) {
+
+      ndpi_free_flow_info_half(flow);
+      workflow->stats.ndpi_flow_count--;
+
+      /* adding to a queue (we can't delete it from the tree inline ) */
+      workflow->idle_flows[workflow->num_idle_flows++] = flow;
+    }
+  }
+}
+
+/* ***************************************************** */
+
+void ndpi_workflow_clean_idle_flows(struct ndpi_workflow * workflow, int mandatory) {
+
+    int ntries = 0;
+    uint64_t total_flows = 0;
+    if(mandatory || workflow->last_idle_scan_time + IDLE_SCAN_PERIOD < workflow->last_time) {
+ check:
+      /* scan for idle flows */
+      ndpi_twalk(workflow->ndpi_flows_root[workflow->idle_scan_idx], node_idle_scan_walker, workflow);
+      total_flows += workflow->num_idle_flows;
+      
+      /* remove idle flows (unfortunately we cannot do this inline) */
+      while (workflow->num_idle_flows > 0) {
+
+	/* search and delete the idle flow from the "ndpi_flow_root" - here flows are the node of a b-tree */
+	ndpi_tdelete(workflow->idle_flows[--workflow->num_idle_flows],
+        &workflow->ndpi_flows_root[workflow->idle_scan_idx],
+        ndpi_workflow_node_cmp);
+
+	/* free the memory associated to idle flow in "idle_flows" - (see struct reader thread)*/
+	ndpi_free_flow_info_half(workflow->idle_flows[workflow->num_idle_flows]);
+	ndpi_free(workflow->idle_flows[workflow->num_idle_flows]);
+      }
+
+      if(++workflow->idle_scan_idx == workflow->prefs.num_roots) workflow->idle_scan_idx = 0;
+      workflow->last_idle_scan_time = workflow->last_time;
+
+      if(mandatory && ++ntries < workflow->prefs.num_roots && total_flows < IDLE_SCAN_BUDGET) goto check;
+    }
+  }
+
 /* ***************************************************** */
 
 static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow,
@@ -315,9 +373,12 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
   ret = ndpi_tfind(&flow, &workflow->ndpi_flows_root[idx], ndpi_workflow_node_cmp);
 
   if(ret == NULL) {
+    if(workflow->stats.ndpi_flow_count == workflow->prefs.max_ndpi_flows)
+      ndpi_workflow_clean_idle_flows(workflow, 1);
+   
     if(workflow->stats.ndpi_flow_count == workflow->prefs.max_ndpi_flows) {
       NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_ERROR, "maximum flow count (%u) has been exceeded\n", workflow->prefs.max_ndpi_flows);
-      exit(-1);
+      return NULL;
     } else {
       struct ndpi_flow_info *newflow = (struct ndpi_flow_info*)malloc(sizeof(struct ndpi_flow_info));
 
