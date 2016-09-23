@@ -14,16 +14,40 @@
 #include "ndpi_util.h"
 #include "pktgen.h"
 #include "rule.h"
+#include "ioengine.h"
 
+
+struct backup_data {
+  char *buffer;
+  int len;
+  struct ndpi_flow_info *flow;
+  u_int32_t lower_ip;
+  u_int32_t upper_ip;
+  u_int16_t lower_port;
+  u_int16_t upper_port;
+  ndpi_protocol detected_protocol;
+  u_int8_t protocol;
+  struct timeval	ts;
+};
+
+#define MAX_BACKUP_DATA 512
+
+static struct backup_data backup_copy[MAX_BACKUP_DATA];
+static int bak_produce_idx = 0;
+static int bak_consume_idx = 0;
 static char ifname[32], ofname[32];
-static char configfile[256];
+static char rulefile[256];
 static struct nm_desc *nmr, *out_nmr;
 static u_int8_t shutdown_app = 0;
-static int rule_num = 0;
+static char engine[64];
+static char engine_opt[256];
+static struct ioengine_data engine_data;
+static int backup = 0;
 static int verbose = 0;
 static int enable_all_protocol = 1;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
-static struct list_head rule_list;
+static LIST_HEAD(rule_list);
+    
 
 static char* ipProto2Name(u_short proto_id) {
 
@@ -168,6 +192,27 @@ static void on_protocol_discovered(struct ndpi_workflow * workflow,
 							   ntohl(flow->upper_ip),
 							   ntohs(flow->upper_port));
         flow->detected_protocol.master_protocol = NDPI_PROTOCOL_UNKNOWN;
+  } 
+
+  if(backup){
+    int next_idx = bak_produce_idx + 1;
+    if (next_idx >= MAX_BACKUP_DATA) next_idx -= MAX_BACKUP_DATA;
+    if(likely(next_idx != bak_consume_idx)) {
+      struct backup_data* d = &backup_copy[bak_produce_idx];
+      struct nm_pkthdr* h = (struct nm_pkthdr*)header;
+      //printf("P %d %d\n", bak_produce_idx, flow->protocol);
+
+      d->len = h->len;
+      d->buffer = malloc(h->len+1);
+      memcpy(d->buffer, packet, h->len);
+      d->buffer[h->len] = 0;
+      d->flow = flow;
+      d->ts = h->ts;
+next:
+      bak_produce_idx ++;
+      if(bak_produce_idx == MAX_BACKUP_DATA) 
+        bak_produce_idx = 0;
+    }
   }
   
   struct rule* rule = match_rule_from_packet(&rule_list, flow, packet);
@@ -180,11 +225,14 @@ static void on_protocol_discovered(struct ndpi_workflow * workflow,
     nm_inject(out_nmr, result, len);
   
     if(verbose){
+      char l[48], u[48];
+      inet_ntop(AF_INET, &flow->lower_ip, l, sizeof(l));
+	inet_ntop(AF_INET, &flow->upper_ip, u, sizeof(u));
       printf("\tHits: %s %s:%u <-> %s:%u ",
 	    ipProto2Name(flow->protocol),
-	    flow->lower_name,
+	    l,
 	    ntohs(flow->lower_port),
-	    flow->upper_name,
+	    u,
 	    ntohs(flow->upper_port));
 
       if(flow->detected_protocol.master_protocol) {
@@ -244,6 +292,42 @@ struct ndpi_workflow* setup_detection()
   return workflow;
 }
 
+static void* backup_thread(void* args)
+{
+  struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
+  struct timespec ts = {.tv_sec = 0, .tv_nsec = 1};
+  char protocol[64];
+
+  while(!shutdown_app){
+    if(bak_consume_idx == bak_produce_idx){
+      nanosleep(&ts, NULL);
+      continue;
+    }
+    struct backup_data* d = &backup_copy[bak_consume_idx];
+    struct ndpi_flow_info *flow = (struct ndpi_flow_info *)d->flow;
+    
+    /*Whether the flow info is deleted? */
+    if(flow->magic != NDPI_FLOW_MAGIC || flow->last_seen + MAX_IDLE_TIME < workflow->last_time)
+      goto next;
+
+    if(flow->detected_protocol.master_protocol) 
+      ndpi_protocol2name(workflow->ndpi_struct, flow->detected_protocol, protocol, sizeof(protocol));
+    else
+      strcpy(protocol, ndpi_get_proto_name(workflow->ndpi_struct, flow->detected_protocol.protocol));
+
+    //printf("C %d %d %s\n", bak_consume_idx, flow->protocol, protocol);
+    store_via_ioengine(&engine_data, flow, protocol, d->buffer, d->len);
+
+next:
+    free(d->buffer);
+    bak_consume_idx ++;
+    if(bak_consume_idx == MAX_BACKUP_DATA) 
+      bak_consume_idx = 0;
+  }
+  
+  return NULL;
+}
+
 static void* report_thread(void* args)
 {
   struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
@@ -277,14 +361,14 @@ static void* report_thread(void* args)
     total_ip_bytes = stat->total_ip_bytes;
     tcp_count = stat->tcp_count;
     udp_count = stat->udp_count;
+    /* In order to prevent Floating point exception in case of no traffic*/
+    if(curr_total_ip_bytes && curr_raw_packet_count)
+      avg_pkt_size = (unsigned int)(curr_total_ip_bytes/curr_raw_packet_count);
     
     printf("\nTraffic statistics:\n");
     printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
     printf("\tIP bytes:              %-13llu (avg pkt size %u bytes)\n", curr_total_ip_bytes, avg_pkt_size);
     printf("\tIP packets:            %-13llu of %llu packets total\n", curr_ip_packet_count, curr_raw_packet_count);
-    /* In order to prevent Floating point exception in case of no traffic*/
-    if(curr_total_ip_bytes && curr_raw_packet_count)
-      avg_pkt_size = (unsigned int)(curr_total_ip_bytes/curr_raw_packet_count);
     printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
     printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
 
@@ -339,7 +423,7 @@ static void main_thread()
   int err, i;
   struct pollfd pfd = { .fd = nmr->fd, .events = POLLIN };
   struct ndpi_workflow* workflow = setup_detection();
-  pthread_t report_thread_id;
+  pthread_t report_thread_id, backup_thread_id;
   struct netmap_ring *rxring = NULL;
   struct netmap_if *nifp = nmr->nifp;
   
@@ -347,6 +431,19 @@ static void main_thread()
   if (err != 0) {
     printf("create report thread failed(%d)\n", err);
     return;
+  }
+
+  if(engine_data.io_ops && engine_opt[0]){
+    if(init_ioengine(&engine_data, engine_opt) < 0){
+      fprintf(stderr, "Unable to init engine %s\n", engine);
+    } else {
+      err = pthread_create(&backup_thread_id, NULL, backup_thread, workflow);
+      if (err != 0) {
+        printf("create backup thread failed(%d)\n", err);
+        return;
+      }
+      backup = 1;
+    }
   }
   
   while(!shutdown_app){
@@ -370,6 +467,15 @@ static void main_thread()
     printf("join report thread failed(%d)\n", err);
     return;
   }
+
+  if(backup){
+    err = pthread_join(backup_thread_id, NULL);
+    if (err != 0) {
+      printf("join backup thread failed(%d)\n", err);
+      return;
+    }
+  }
+
 }
 
 static void usage()
@@ -378,10 +484,12 @@ static void usage()
   fprintf(stderr,
 	  "Usage:\n"
 	  "%s arguments\n"
-	  "\t-i interface                interface that captures incoming traffic\n"
-	  "\t-o interface               interface that sends outcoming traffic (default same as incoming interface)\n"
-	  "\t-c configfile               json rule file for traffic action\n"
-	  "\t-m mask                  enable all ndpi protocol or not (default 1)\n"
+	  "\t-i interface              interface that captures incoming traffic\n"
+	  "\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
+	  "\t-c rulefile               json rule file for traffic action\n"
+	  "\t-m mask                   enable all ndpi protocol or not (default 1)\n"
+	  "\t-e engine                 backend engine to store network flow data\n"
+	  "\t-E eigine_opt             arguments attached to specified engine\n"
 	  "",
 	  cmd);
 
@@ -391,7 +499,7 @@ static void usage()
 static void parse_options(int argc, char **argv) {
   int opt;
 
-  while ((opt = getopt(argc, argv, "hi:o:c:m:v")) != EOF) {
+  while ((opt = getopt(argc, argv, "hi:o:c:m:e:E:v")) != EOF) {
     switch (opt) {
     case 'i':
       strncpy(ifname, optarg, sizeof(ifname));
@@ -406,11 +514,19 @@ static void parse_options(int argc, char **argv) {
       break;
 
     case 'c':
-      strcpy(configfile, optarg);
+      strcpy(rulefile, optarg);
       break;
       
     case 'v':
       verbose = 1;
+      break;
+
+    case 'e':
+      strcpy(engine, optarg);
+      break; 
+
+    case 'E':
+      strcpy(engine_opt, optarg);
       break;
 
     case 'h':
@@ -424,7 +540,7 @@ static void parse_options(int argc, char **argv) {
   }
 
    // check parameters
-  if(ifname[0] ==0 && configfile[0] == 0) {
+  if(ifname[0] ==0 && rulefile[0] == 0) {
     usage();
   }
 }
@@ -468,13 +584,18 @@ int main(int argc, char **argv)
     }
   }
   
-  if(configfile){
-    INIT_LIST_HEAD(&rule_list);
-    rule_num = load_rules_from_file(configfile, &rule_list, &ndpi_mask);
+  if(rulefile[0]){
+    int rule_num = load_rules_from_file(rulefile, &rule_list, &ndpi_mask);
     if(rule_num > 0){
-      printf("Load %d rules from file %s\n", rule_num, configfile);
+      printf("Load %d rules from file %s\n", rule_num, rulefile);
     } else {
       rule_num = 0;
+    }
+  }
+
+  if(engine[0]){
+    if(load_ioengine(&engine_data, engine) < 0){
+      fprintf(stderr, "Unable to load engine %s\n", engine);
     }
   }
   

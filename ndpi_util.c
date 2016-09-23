@@ -149,6 +149,7 @@ static void ndpi_flow_info_freer(void *node) {
   struct ndpi_flow_info *flow = (struct ndpi_flow_info*)node;
 
   ndpi_free_flow_info_half(flow);
+  flow->magic = 0;
   ndpi_free(flow);
 }
 
@@ -388,18 +389,19 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       }
 
       memset(newflow, 0, sizeof(struct ndpi_flow_info));
+      newflow->magic = NDPI_FLOW_MAGIC;
       newflow->protocol = iph->protocol, newflow->vlan_id = vlan_id;
       newflow->lower_ip = lower_ip, newflow->upper_ip = upper_ip;
       newflow->lower_port = lower_port, newflow->upper_port = upper_port;
       newflow->ip_version = version;
 
-      if(version == 4) {
+     /* if(version == 4) {
 	inet_ntop(AF_INET, &lower_ip, newflow->lower_name, sizeof(newflow->lower_name));
 	inet_ntop(AF_INET, &upper_ip, newflow->upper_name, sizeof(newflow->upper_name));
       } else {
 	inet_ntop(AF_INET6, &iph6->ip6_src, newflow->lower_name, sizeof(newflow->lower_name));
 	inet_ntop(AF_INET6, &iph6->ip6_dst, newflow->upper_name, sizeof(newflow->upper_name));
-      }
+      } */
 
       if((newflow->ndpi_flow = ndpi_malloc(SIZEOF_FLOW_STRUCT)) == NULL) {
 	NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_ERROR, "[NDPI] %s(2): not enough memory\n", __FUNCTION__);
@@ -517,6 +519,7 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
     ndpi_flow = flow->ndpi_flow;
     flow->packets++, flow->bytes += rawsize;
     flow->last_seen = time;
+    flow->payload_offset = payload-(u_int8_t *)workflow->__flow_packet_data;
   } else {
     return(0);
   }
@@ -540,7 +543,7 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
 
     snprintf(flow->host_server_name, sizeof(flow->host_server_name), "%s", flow->ndpi_flow->host_server_name);
   
-    if(flow->detected_protocol.protocol == NDPI_PROTOCOL_BITTORRENT) {
+    /*if(flow->detected_protocol.protocol == NDPI_PROTOCOL_BITTORRENT) {
       int i, j, n = 0;
 
       for(i=0, j = 0; i<20; i++) {
@@ -549,7 +552,7 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
       }
 
       if(n == 0) flow->bittorent_hash[0] = '\0';
-    }
+    }*/
 
     if((proto == IPPROTO_TCP) && (flow->detected_protocol.protocol != NDPI_PROTOCOL_DNS)) {
       snprintf(flow->ssl.client_certificate, sizeof(flow->ssl.client_certificate), "%s", flow->ndpi_flow->protos.ssl.client_certificate);

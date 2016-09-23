@@ -38,29 +38,32 @@
 #define MAX_NDPI_FLOWS      200000000
 #define TICK_RESOLUTION          1000
 
+#define NDPI_FLOW_MAGIC    0xbeafdead
+
 #define NETMAP_WITH_LIBS 1
 #include <net/netmap_user.h>
 
 // flow tracking
 typedef struct ndpi_flow_info {
+  u_int32_t magic;
   u_int32_t lower_ip;
   u_int32_t upper_ip;
   u_int16_t lower_port;
   u_int16_t upper_port;
   u_int8_t detection_completed, protocol;
   u_int16_t vlan_id;
-  struct ndpi_flow_struct *ndpi_flow;
-  char lower_name[48], upper_name[48];
   u_int8_t ip_version;
+  u_int8_t payload_offset;
   u_int64_t last_seen;
   u_int64_t bytes;
   u_int32_t packets;
+
+  struct ndpi_flow_struct *ndpi_flow;
 
   // result only, not used for flow identification
   ndpi_protocol detected_protocol;
 
   char host_server_name[192];
-  char bittorent_hash[41];
 
   struct {
     char client_certificate[48], server_certificate[48];
