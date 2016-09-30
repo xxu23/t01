@@ -1,14 +1,3 @@
-/*
- * The io parts of the fio tool, includes workers for sync and mmap'ed
- * io, as well as both posix and linux libaio support.
- *
- * sync io is implemented on top of aio.
- *
- * This is not really specific to fio, if the get_io_u/put_io_u and
- * structures was pulled into this as well it would be a perfectly
- * generic io engine that could be used for other projects.
- *
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -40,7 +29,6 @@ void register_ioengine(struct ioengine_ops *ops)
 void close_ioengine(struct ioengine_data *td)
 {
 	printf("close ioengine %s\n", td->io_ops->name);
-
 	if (td->io_ops->disconnect) {
 		td->io_ops->disconnect(td);
 		td->private = NULL;
@@ -50,7 +38,6 @@ void close_ioengine(struct ioengine_data *td)
 int init_ioengine(struct ioengine_data* td, const char *args)
 {
 	printf("init ioengine %s with opt %s\n", td->io_ops->name, args);
-
 	if (td->io_ops->connect) {
 		return td->io_ops->connect(td, args);
 	}
@@ -60,7 +47,7 @@ int init_ioengine(struct ioengine_data* td, const char *args)
 int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protocol, const char * packet, int pkt_len)
 {
 	struct ndpi_flow_info *flow = (struct ndpi_flow_info *)flow_;
-      int (*write)(struct ioengine_data *, const char *, int) = td->io_ops->write;
+	int (*write)(struct ioengine_data *, const char *, int) = td->io_ops->write;
 	if(!write) return 0;
 
 	u_int32_t lower_ip = flow->lower_ip;
@@ -124,7 +111,7 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
 	}
 
 	char l[48], u[48];
-      inet_ntop(AF_INET, &lower_ip, l, sizeof(l));
+	inet_ntop(AF_INET, &lower_ip, l, sizeof(l));
 	inet_ntop(AF_INET, &upper_ip, u, sizeof(u));
 
 	msgpack_pack_str(&pk, 8);

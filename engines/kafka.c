@@ -1,5 +1,5 @@
 /*
- * Redis engine
+ * Kafka engine
  *
  */
 #define _GNU_SOURCE 
@@ -74,11 +74,14 @@ static int kafka_disconnect(struct ioengine_data *td)
 	while (run-- > 0 && rd_kafka_wait_destroyed(1000) == -1)
 		;
 
+	/* Destroy conf*/
+	rd_kafka_conf_destroy(kd->conf);
 	/* Destroy topic */
 	rd_kafka_topic_destroy(kd->rkt);
-
 	/* Destroy the handle */
 	rd_kafka_destroy(kd->rk);
+	
+	free(kd);
 
 	return 0;
 }

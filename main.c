@@ -21,16 +21,9 @@ struct backup_data {
   char *buffer;
   int len;
   struct ndpi_flow_info *flow;
-  u_int32_t lower_ip;
-  u_int32_t upper_ip;
-  u_int16_t lower_port;
-  u_int16_t upper_port;
-  ndpi_protocol detected_protocol;
-  u_int8_t protocol;
-  struct timeval	ts;
 };
 
-#define MAX_BACKUP_DATA 512
+#define MAX_BACKUP_DATA 65536
 
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
 static int bak_produce_idx = 0;
@@ -203,11 +196,9 @@ static void on_protocol_discovered(struct ndpi_workflow * workflow,
       //printf("P %d %d\n", bak_produce_idx, flow->protocol);
 
       d->len = h->len;
-      d->buffer = malloc(h->len+1);
+      d->buffer = malloc(h->len);
       memcpy(d->buffer, packet, h->len);
-      d->buffer[h->len] = 0;
       d->flow = flow;
-      d->ts = h->ts;
 next:
       bak_produce_idx ++;
       if(bak_produce_idx == MAX_BACKUP_DATA) 
