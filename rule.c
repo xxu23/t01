@@ -32,6 +32,15 @@
 #include "ndpi_protocol_ids.h"
 #include "zmalloc.h"
 
+#undef strdup
+char *strdup(const char *s) {
+    size_t l = strlen(s)+1;
+    char *p = malloc(l);
+
+    memcpy(p,s,l);
+    return p;
+}
+
 static inline uint8_t get_action(const char* action)
 {
   if (strcmp(action, "reject") == 0)
@@ -228,9 +237,12 @@ void destroy_rules(struct list_head *head)
   
   struct list_head *pos, *n;
   struct rule *rule;
+  int i;
   list_for_each_safe(pos, n, head) {
     list_del(pos);
     rule = list_entry(pos, struct rule, list);
+    for(i = 0; i < sizeof(rule->action_params)/sizeof(rule->action_params[0]); i++)
+      if(rule->action_params[i]) free(rule->action_params[i]);
     free(rule);
   }
 }
