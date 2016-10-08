@@ -412,12 +412,22 @@ static inline int receive_packets(struct netmap_ring *ring,
 static void main_thread()
 {
   int err, i;
-  struct pollfd pfd = { .fd = nmr->fd, .events = POLLIN };
+  struct pollfd pfd[2];
+  int nfds = 1;
   struct ndpi_workflow* workflow = setup_detection();
   pthread_t report_thread_id, backup_thread_id;
   struct netmap_ring *rxring = NULL;
   struct netmap_if *nifp = nmr->nifp;
-  
+
+  memset(pfd, 0, sizeof(pfd));
+  pfd[0].fd = nmr->fd;
+  pfd[0].events = POLLIN;
+  if(out_nmr != nmr) {
+    pfd[1].fd = out_nmr->fd;
+    pfd[1].events = POLLOUT;
+    nfds ++;
+  }
+    
   err = pthread_create(&report_thread_id, NULL, report_thread,  workflow);
   if (err != 0) {
     printf("create report thread failed(%d)\n", err);
@@ -439,7 +449,8 @@ static void main_thread()
   
   while(!shutdown_app){
     /* should use a parameter to decide how often to send */
-    if (poll(&pfd, 1, 1000) <= 0) {
+    pfd[0].revents = pfd[1].revents = 0;
+    if (poll(pfd, nfds, 1000) < nfds) {
       continue;
      }
     
