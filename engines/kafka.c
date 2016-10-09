@@ -6,6 +6,7 @@
 #include <string.h>
 #include <signal.h>
 #include "../ioengine.h"
+#include "../zmalloc.h"
 #include "rdkafka.h"
 
 struct kafka_data {
@@ -18,7 +19,7 @@ struct kafka_data {
 static int kafka_connect(struct ioengine_data *td, const char * args)
 {
 	struct kafka_data *kd = malloc(sizeof(*kd));
-	char *sep, *host = args;
+	char *sep, *host = (char*)args;
 	int port = 9092;
 	char brokers[512];
 	char tmp[16];
@@ -101,7 +102,7 @@ static int kafka_write(struct ioengine_data *td, const char* buffer, int len)
 
 	/* Send/Produce message. */
 	len = rd_kafka_produce(kd->rkt, partition, RD_KAFKA_MSG_F_COPY,
-					buffer, len, NULL, 0, NULL);
+					(void*)buffer, len, NULL, 0, NULL);
 	if(len == -1) {
 		fprintf(stderr, "Failed to produce to topic %s partition %i: %s\n",
 			rd_kafka_topic_name(kd->rkt), partition,

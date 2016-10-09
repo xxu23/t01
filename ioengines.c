@@ -69,7 +69,7 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
 		detected_protocol = flow->detected_protocol.protocol;
 
 	if(detected_protocol == NDPI_PROTOCOL_HTTP) {
-		char* payload = packet + flow->payload_offset;
+		const char* payload = packet + flow->payload_offset;
 		pkt_len -= flow->payload_offset;
 
 		map_size += 2;
@@ -200,10 +200,11 @@ int fio_show_ioengine_help(const char *engine)
 		return 0;
 	}
 
-	io_ops = load_ioengine(&id, engine);
-	if (!io_ops) {
+	if (load_ioengine(&id, engine) < 0) {
 		printf("IO engine %s not found\n", engine);
 		return 1;
+	} else {
+		io_ops = id.io_ops;
 	}
 
 	if (io_ops->show_help)
