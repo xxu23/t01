@@ -46,11 +46,12 @@ struct t01_header
 #define INIT_T01_HEADER(cmd, resp) {T01_HEADER_MAGIC, cmd, resp, 0, 0}
 #define IS_HEADER_VALID(hdr) (memcmp(T01_HEADER_MAGIC, (hdr).magic, 3) == 0)
 
-#define T01_COMMAND_GET_RULE 	1
-#define T01_COMMAND_PUT_RULE 	2
-#define T01_COMMAND_DEL_RULE 	3
-#define T01_COMMAND_ADD_RULE 	4
-#define T01_COMMAND_GET_RULES 	5
+#define T01_COMMAND_GET_RULE 		1
+#define T01_COMMAND_PUT_RULE 		2
+#define T01_COMMAND_DEL_RULE 		3
+#define T01_COMMAND_ADD_RULE 		4
+#define T01_COMMAND_GET_RULEIDS 	5
+#define T01_COMMAND_GET_RULES 		6
 
 #define T01_ERR_NOTFOUND		-1
 #define T01_ERR_NOTSUPPORT	-2

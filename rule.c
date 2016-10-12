@@ -308,6 +308,42 @@ int get_rule_by_id(uint32_t id, void* out, int len)
   return -1; 
 }
 
+int get_rule_ids(void* out, int out_len)
+{
+  uint32_t* result = (uint32_t*)out;
+  int offset = 0;
+  struct list_head *pos;
+  list_for_each(pos, &rule_list) {
+    struct rule* rule = list_entry(pos, struct rule, list);
+    if(rule->used == 0) continue;
+    *result = rule->id;
+    result ++;
+    offset += sizeof(uint32_t);
+    if(offset >= out_len) break;
+  }
+  return offset;
+}
+
+int get_rules_by_ids(uint32_t* ids, int len, void* out, int out_len)
+{
+  int offset = 0, i;
+  struct list_head *pos;
+  list_for_each(pos, &rule_list) {
+    struct rule* rule = list_entry(pos, struct rule, list);
+    if(rule->used == 0) continue;
+    for(i = 0; i < len; i++) {
+      if(rule->id == ids[i]){
+        int l = (char*)&(rule->protocol) - (char*)rule;
+        memcpy(out+offset, rule, l);
+        offset += l;
+        break;
+      }
+    }
+    if(offset >= out_len) break;
+  }
+  return offset;
+}
+
 int update_rule(void* in, int in_len, void* out, int len)
 {
   struct list_head *pos;

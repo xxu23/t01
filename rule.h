@@ -71,12 +71,11 @@ void destroy_rules(struct list_head *head);
 
 struct rule* match_rule_from_packet(struct list_head *head, void* flow, void* packet);
 
-int get_rule_by_id(uint32_t id, void* out, int len);
-
-int update_rule(void* in, int in_len, void* out, int len);
-
-int delete_rule_by_id(uint32_t id, void* out, int len);
-
-int add_rule(void* in, int in_len, void* out, int len);
+int get_rule_ids(void* out, int out_len);
+int get_rule_by_id(uint32_t id, void* out, int out_len);
+int get_rules_by_ids(uint32_t* ids, int len, void* out, int out_len);
+int update_rule(void* in, int in_len, void* out, int out_len);
+int delete_rule_by_id(uint32_t id, void* out, int out_len);
+int add_rule(void* in, int in_len, void* out, int out_len);
 
 #endif /* __RULE_H__ */

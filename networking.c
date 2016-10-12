@@ -178,6 +178,19 @@ static int getRule(void* in, int len, void* out, int out_len) {
     return ret;
 }
 
+static int getRulesByIds(void* in, int len, void* out, int out_len) {
+    uint32_t* ids = (uint32_t*)in;
+    len /= sizeof(uint32_t);
+    int ret = get_rules_by_ids(ids, len, out, out_len);
+    return ret;
+}
+
+
+static int getRuleIds(void* in, int len, void* out, int out_len) {
+    int ret = get_rule_ids(out, out_len);
+    return ret;
+}
+
 static int putRule(void* in, int len, void* out, int out_len) {
     int ret = update_rule(in, len, out, out_len);
     if(ret < 0){
@@ -215,6 +228,8 @@ static struct t01Command {
     { T01_COMMAND_PUT_RULE, putRule },
     { T01_COMMAND_DEL_RULE, delRule },
     { T01_COMMAND_ADD_RULE, addRule },
+    { T01_COMMAND_GET_RULEIDS, getRuleIds },
+    { T01_COMMAND_GET_RULES,  getRulesByIds },
 };
 
 static void dispatchCommand(aeEventLoop *el, t01Client *c, int fd) {
