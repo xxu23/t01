@@ -27,40 +27,28 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef IO_IOENGINE_H
-#define IO_IOENGINE_H
+/* inclusion guard */
+#ifndef __LOGGER_H__
+#define __LOGGER_H__
 
-#define io_init	__attribute__((constructor))
-#define io_exit	__attribute__((destructor))
+/* Log levels */
+#define T01_DEBUG 0
+#define T01_VERBOSE 1
+#define T01_NOTICE 2
+#define T01_WARNING 3
+#define T01_LOG_RAW (1<<10) /* Modifier to log without timestamp */
+#define T01_DEFAULT_VERBOSITY T01_NOTICE
 
-#include "list.h"
+void t01Log(int level, const char *fmt, ...);
+void t01LogRaw(int level, const char *msg);
+void t01LogFromHandler(int level, const char *msg);
+void initLog(int verbosity, const char *logfile);
 
-struct ioengine_ops;
+/* Debugging stuff */
+void _t01Assert(char *estr, char *file, int line);
+void _t01Panic(char *msg, char *file, int line);
 
-struct ioengine_data {
-	void *private;
-	struct ioengine_ops* io_ops;
-};
+#define t01Assert(_e) ((_e)?(void)0 : (_t01Assert(#_e,__FILE__,__LINE__),_exit(1)))
+#define t01Panic(_e) _t01Panic(#_e,__FILE__,__LINE__),_exit(1)
 
-struct ioengine_ops {
-	struct list_head list;
-	const char *name;
-	int (*connect)(struct ioengine_data *, const char *);
-	int (*disconnect)(struct ioengine_data *);
-	int (*show_help)();
-	int (*write)(struct ioengine_data *, const char *, int);
-};
-
-
-extern int load_ioengine(struct ioengine_data *, const char *);
-extern int init_ioengine(struct ioengine_data *, const char *);
-extern void close_ioengine(struct ioengine_data *);
-extern int store_via_ioengine(struct ioengine_data *, void *, const char *, const char *, int);
-
-extern void register_ioengine(struct ioengine_ops *);
-extern void unregister_ioengine(struct ioengine_ops *);
-
-extern int fio_show_ioengine_help(const char *engine);
-
-
-#endif
+#endif /* __LOGGER_H__ */

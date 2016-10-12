@@ -1,3 +1,32 @@
+/*
+ * Copyright (c) 2016, YAO Wei <njustyw at gmail dot com>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   * Neither the name of Redis nor the names of its contributors may be used
+ *     to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #define NETMAP_WITH_LIBS 1
 #include <unistd.h>
 #include <stdio.h>
@@ -14,6 +43,10 @@
 #include "ndpi_util.h"
 #include "pktgen.h"
 #include "rule.h"
+#include "ae.h"
+#include "anet.h"
+#include "logger.h"
+#include "networking.h"
 #include "ioengine.h"
 
 
@@ -24,22 +57,33 @@ struct backup_data {
 };
 
 #define MAX_BACKUP_DATA 65536
+#define DEFAULT_HZ      10
+
+#define run_with_period(_ms_) if ((_ms_ <= 1000/DEFAULT_HZ) || !(cronloops%((_ms_)/(1000/DEFAULT_HZ))))  	
 
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
+static u_int64_t cronloops;
 static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
 static char ifname[32], ofname[32];
+static char unix_socket[64];
+static int unix_sofd;
+static int port = 9899;
+static char bind_ip[32];
+static int tcp_sofd;
+static aeEventLoop *el;
 static char rulefile[256];
+static char logfile[256];
 static struct nm_desc *nmr, *out_nmr;
 static u_int8_t shutdown_app = 0;
 static char engine[64];
 static char engine_opt[256];
 static struct ioengine_data engine_data;
 static int backup = 0;
-static int verbose = 0;
+static int verbose = T01_VERBOSE;
 static int enable_all_protocol = 1;
+static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
-static LIST_HEAD(rule_list);
     
 
 static char* ipProto2Name(u_short proto_id) {
@@ -127,7 +171,7 @@ static int manage_interface_promisc_mode(const char* interface, int switch_on) {
 
     fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (!fd) {
-        fprintf(stderr, "Can't create socket for promisc mode manager\n");
+        t01Log(T01_WARNING, "Can't create socket for promisc mode manager");
         return -1;
     }
 
@@ -136,21 +180,21 @@ static int manage_interface_promisc_mode(const char* interface, int switch_on) {
 
     ioctl_res = ioctl(fd, SIOCGIFFLAGS, &ethreq);
     if (ioctl_res == -1) {
-        fprintf(stderr, "Can't get interface flags\n");
+        t01Log(T01_WARNING, "Can't get interface flags");
         return -1;
     }
  
     promisc_enabled_on_device = ethreq.ifr_flags & IFF_PROMISC;
     if (switch_on) {
         if (promisc_enabled_on_device) {
-            printf("Interface %s in promisc mode already\n", interface);
+             t01Log(T01_DEBUG, "Interface %s in promisc mode already", interface);
             return 0;
         } else {
-             printf("Interface %s in non promisc mode now, switch it on\n", interface);
+             t01Log(T01_DEBUG, "Interface %s in non promisc mode now, switch it on", interface);
              ethreq.ifr_flags |= IFF_PROMISC;
              ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
              if (ioctl_res_set == -1) {
-                 fprintf(stderr, "Can't set interface flags\n");
+                 t01Log(T01_WARNING, "Can't set interface flags");
                  return -1;
              }
 
@@ -158,14 +202,14 @@ static int manage_interface_promisc_mode(const char* interface, int switch_on) {
         }
     } else { 
         if (!promisc_enabled_on_device) {
-            printf("Interface %s in normal mode already\n", interface);
+            t01Log(T01_DEBUG, "Interface %s in normal mode already", interface);
             return 0;
         } else {
-            fprintf(stderr, "Interface in promisc mode now, switch it off\n");
+            t01Log(T01_DEBUG, "Interface in promisc mode now, switch it off");
             ethreq.ifr_flags &= ~IFF_PROMISC;
             ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
             if (ioctl_res_set == -1) {
-                fprintf(stderr, "Can't set interface flags\n");
+                t01Log(T01_WARNING, "Can't set interface flags");
                 return -1;
             }
 
@@ -217,33 +261,32 @@ next:
   
     if(verbose){
       char l[48], u[48];
-      inet_ntop(AF_INET, &flow->lower_ip, l, sizeof(l));
-	inet_ntop(AF_INET, &flow->upper_ip, u, sizeof(u));
-      printf("\tHits: %s %s:%u <-> %s:%u ",
+      char msg[4096];
+      int offset = 0;
+      inet_ntop(AF_INET, &flow->src_ip, l, sizeof(l));
+	inet_ntop(AF_INET, &flow->dst_ip, u, sizeof(u));
+      offset += snprintf(msg, sizeof(msg)-offset, "Hits: %s %s:%u <-> %s:%u ",
 	    ipProto2Name(flow->protocol),
-	    l,
-	    ntohs(flow->lower_port),
-	    u,
-	    ntohs(flow->upper_port));
+	    l, flow->src_port, u, flow->dst_port);
 
       if(flow->detected_protocol.master_protocol) {
         char buf[64];
-        printf("[proto: %u.%u/%s]",
+        offset += snprintf(msg+offset, sizeof(msg)-offset, "[proto: %u.%u/%s]",
 	      flow->detected_protocol.master_protocol, flow->detected_protocol.protocol,
 	      ndpi_protocol2name(workflow->ndpi_struct,
 				 flow->detected_protocol, buf, sizeof(buf)));
       } else
-        printf("[proto: %u/%s]",
+        offset += snprintf(msg+offset, sizeof(msg)-offset, "[proto: %u/%s]",
 	      flow->detected_protocol.protocol,
 	      ndpi_get_proto_name(workflow->ndpi_struct, flow->detected_protocol.protocol));
 
-      printf("[%u pkts/%llu bytes]", flow->packets, flow->bytes);
+      offset += snprintf(msg+offset, sizeof(msg)-offset, "[%u pkts/%llu bytes]", flow->packets, flow->bytes);
 
-      if(flow->host_server_name[0] != '\0') printf("[Host: %s]", flow->host_server_name);
-      if(flow->ssl.client_certificate[0] != '\0') printf("[SSL client: %s]", flow->ssl.client_certificate);
-      if(flow->ssl.server_certificate[0] != '\0') printf("[SSL server: %s]", flow->ssl.server_certificate);
+      if(flow->host_server_name[0] != '\0') offset += snprintf(msg+offset, sizeof(msg)-offset, "[Host: %s]", flow->host_server_name);
+      if(flow->ssl.client_certificate[0] != '\0') offset += snprintf(msg+offset, sizeof(msg)-offset, "[SSL client: %s]", flow->ssl.client_certificate);
+      if(flow->ssl.server_certificate[0] != '\0') offset += snprintf(msg+offset, sizeof(msg)-offset, "[SSL server: %s]", flow->ssl.server_certificate);
 
-      printf("\n");
+      t01Log(T01_NOTICE, msg);
     }
   }
 }
@@ -319,24 +362,29 @@ next:
   return NULL;
 }
 
-static void* report_thread(void* args)
+static void* backdoor_thread(void* args)
 {
-  struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
-  struct ndpi_stats* stat = &workflow->stats;
-  u_int64_t total_flow_bytes = 0;
-  struct timeval begin, end;
-  u_int64_t tot_usec;
-  u_int64_t raw_packet_count = 0;
-  u_int64_t ip_packet_count = 0;
-  u_int64_t total_wire_bytes = 0, total_ip_bytes = 0;
-  u_int64_t tcp_count = 0, udp_count = 0;
-  u_int64_t hits = 0; 
+  aeMain(el);
+  aeDeleteEventLoop(el);
+}
 
-  while(!shutdown_app){
-    gettimeofday(&begin, NULL);
-    sleep(5);
-    gettimeofday(&end, NULL);
-    tot_usec = end.tv_sec*1000000 + end.tv_usec - (begin.tv_sec*1000000 + begin.tv_usec);
+static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
+{
+  run_with_period(5000) {
+    struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
+    struct ndpi_stats* stat = &workflow->stats;
+    struct timeval curr_ts;
+    u_int64_t tot_usec;
+    static u_int64_t total_flow_bytes = 0;
+    static u_int64_t raw_packet_count = 0;
+    static u_int64_t ip_packet_count = 0;
+    static u_int64_t total_wire_bytes = 0, total_ip_bytes = 0;
+    static u_int64_t tcp_count = 0, udp_count = 0;
+    static u_int64_t hits = 0; 
+
+    gettimeofday(&curr_ts, NULL);
+    tot_usec = curr_ts.tv_sec*1000000 + curr_ts.tv_usec - (last_report_ts.tv_sec*1000000 + last_report_ts.tv_usec);
+    last_report_ts = curr_ts;
 
     u_int avg_pkt_size = 0;
     u_int64_t curr_raw_packet_count = stat->raw_packet_count - raw_packet_count;
@@ -386,7 +434,9 @@ static void* report_thread(void* args)
     printf("\tRules hits:            %-13lu (total %llu)\n", total_hits - hits, total_hits);
     hits = total_hits;
   }
-  return NULL;
+
+  cronloops++;
+  return 1000/DEFAULT_HZ;
 }
 
 static inline int receive_packets(struct netmap_ring *ring,
@@ -415,7 +465,7 @@ static void main_thread()
   struct pollfd pfd[2];
   int nfds = 1;
   struct ndpi_workflow* workflow = setup_detection();
-  pthread_t report_thread_id, backup_thread_id;
+  pthread_t backup_thread_id, backdoor_thread_id;
   struct netmap_ring *rxring = NULL;
   struct netmap_if *nifp = nmr->nifp;
 
@@ -427,20 +477,26 @@ static void main_thread()
     pfd[1].events = POLLOUT;
     nfds ++;
   }
-    
-  err = pthread_create(&report_thread_id, NULL, report_thread,  workflow);
+
+  /* Create the server_cron() time event. */
+  if(aeCreateTimeEvent(el, 1, server_cron, workflow, NULL) == AE_ERR) {
+    t01Panic("Can't create the serverCron time event.");
+   }
+  gettimeofday(&last_report_ts, NULL);
+
+  err = pthread_create(&backdoor_thread_id, NULL, backdoor_thread, NULL);
   if (err != 0) {
-    printf("create report thread failed(%d)\n", err);
-    return;
+    t01Log(T01_WARNING, "create backdoor thread failed(%d)", err);
+    exit(1);
   }
 
   if(engine_data.io_ops && engine_opt[0]){
     if(init_ioengine(&engine_data, engine_opt) < 0){
-      fprintf(stderr, "Unable to init engine %s\n", engine);
+       t01Log(T01_WARNING, "Unable to init engine %s", engine);
     } else {
       err = pthread_create(&backup_thread_id, NULL, backup_thread, workflow);
       if (err != 0) {
-        printf("create backup thread failed(%d)\n", err);
+        t01Log(T01_WARNING, "create backup thread failed(%d)", err);
         return;
       }
       backup = 1;
@@ -463,17 +519,17 @@ static void main_thread()
 
     ndpi_workflow_clean_idle_flows(workflow, 0);
   }
-  
-  err = pthread_join(report_thread_id, NULL);
+
+  err = pthread_join(backdoor_thread_id, NULL);
   if (err != 0) {
-    printf("join report thread failed(%d)\n", err);
+    t01Log(T01_WARNING, "join backdoor thread failed(%d)", err);
     return;
   }
 
   if(backup){
     err = pthread_join(backup_thread_id, NULL);
     if (err != 0) {
-      printf("join backup thread failed(%d)\n", err);
+      t01Log(T01_WARNING, "join backup thread failed(%d)", err);
       return;
     }
   }
@@ -489,9 +545,14 @@ static void usage()
 	  "\t-i interface              interface that captures incoming traffic\n"
 	  "\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
 	  "\t-c rulefile               json rule file for traffic action\n"
+	  "\t-b ip                     ip address binded\n"
+	  "\t-p port                   port listening for incoming client (default 9899)\n"
+	  "\t-u path                   unix socket file path listening for incoming client\n"
 	  "\t-m mask                   enable all ndpi protocol or not (default 1)\n"
 	  "\t-e engine                 backend engine to store network flow data\n"
 	  "\t-E eigine_opt             arguments attached to specified engine\n"
+	  "\t-v verbosity              logger levels (0:debug, 1:verbose, 2:notice, 3:warning)\n"
+	  "\t-l log_file               logger into file or screen\n"
 	  "",
 	  cmd);
 
@@ -501,7 +562,7 @@ static void usage()
 static void parse_options(int argc, char **argv) {
   int opt;
 
-  while ((opt = getopt(argc, argv, "hi:o:c:m:e:E:v")) != EOF) {
+  while ((opt = getopt(argc, argv, "hi:o:c:m:e:b:p:E:v:l:")) != EOF) {
     switch (opt) {
     case 'i':
       strncpy(ifname, optarg, sizeof(ifname));
@@ -515,12 +576,28 @@ static void parse_options(int argc, char **argv) {
       enable_all_protocol = atoi(optarg);
       break;
 
+    case 'p':
+      port = atoi(optarg);
+      break;
+
+    case 'b':
+      strncpy(bind_ip, optarg, sizeof(bind_ip));
+      break;
+
+    case 'u':
+      strncpy(unix_socket, optarg, sizeof(unix_socket));
+      break;
+
     case 'c':
-      strcpy(rulefile, optarg);
+      strncpy(rulefile, optarg, sizeof(rulefile));
       break;
       
     case 'v':
-      verbose = 1;
+      verbose = atoi(optarg);
+      break;
+
+    case 'l':
+      strncpy(logfile, optarg, sizeof(logfile));
       break;
 
     case 'e':
@@ -550,38 +627,40 @@ static void parse_options(int argc, char **argv) {
 static void signal_hander(int sig)
 {
   static int called = 0;
-  printf("received control-C, shutdowning\n");
+  t01Log(T01_WARNING, "received control-C, shutdowning");
   if(called) return; else called = 1;
   shutdown_app = 1;
+  aeStop(el);
 }
 
-int main(int argc, char **argv)
+static void init_server()
 {
   struct nmreq base;
   char interface[64];
+  char err[ANET_ERR_LEN]; 
 
-  parse_options(argc, argv);  
+  initLog(verbose, logfile);
 
   manage_interface_promisc_mode(ifname, 1); 
-  printf("Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off\n", ifname);
+  t01Log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ifname);
 
   bzero(&base, sizeof(base));
   sprintf(interface, "netmap:%s", ifname);      
   nmr = nm_open(interface, &base, 0, NULL); 
   if (nmr == NULL){
-    printf("Unable to open %s: %s\n", ifname, strerror(errno));
-    return 1;
+    t01Log(T01_WARNING, "Unable to open %s: %s", ifname, strerror(errno));
+    exit(1);
   }
   
   if(ofname[0] == 0 || strcmp(ifname, ofname) == 0){
     out_nmr = nmr;
   } else {
     manage_interface_promisc_mode(ofname, 1); 
-    printf("Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off\n", ofname);
+    t01Log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ofname);
     sprintf(interface, "netmap:%s", ofname);      
     out_nmr = nm_open(interface, &base, 0, NULL); 
     if (out_nmr == NULL){
-      printf("Unable to open %s: %s, use %s instead\n", ofname, strerror(errno), ifname);
+      t01Log(T01_WARNING, "Unable to open %s: %s, use %s instead", ofname, strerror(errno), ifname);
       out_nmr = nmr;
     }
   }
@@ -589,7 +668,7 @@ int main(int argc, char **argv)
   if(rulefile[0]){
     int rule_num = load_rules_from_file(rulefile, &rule_list, &ndpi_mask);
     if(rule_num > 0){
-      printf("Load %d rules from file %s\n", rule_num, rulefile);
+      t01Log(T01_NOTICE, "Load %d rules from file %s", rule_num, rulefile);
     } else {
       rule_num = 0;
     }
@@ -597,17 +676,81 @@ int main(int argc, char **argv)
 
   if(engine[0]){
     if(load_ioengine(&engine_data, engine) < 0){
-      fprintf(stderr, "Unable to load engine %s\n", engine);
+      t01Log(T01_WARNING, "Unable to load engine %s", engine);
     }
   }
-  
-  signal(SIGINT, signal_hander);
-  main_thread();
 
+  /* Open the TCP listening socket for the user commands. */
+  if (port != 0) {
+    if (bind_ip[0] == 0) {
+      tcp_sofd = anetTcpServer(err, port, NULL, 64);
+    } else {
+      tcp_sofd = anetTcpServer(err, port, bind_ip, 64);
+     }
+
+    if (tcp_sofd == ANET_ERR) {
+      t01Log(T01_WARNING, "Could not create server tcp listening socket %s:%d: %s",
+                bind_ip[0] ? bind_ip : "*" , port, err);
+      exit(1);
+    }
+    anetNonBlock(NULL, tcp_sofd);
+  }
+
+  /* Open the listening Unix domain socket. */
+  if (unix_socket[0]) {
+    unlink(unix_socket); 
+    unix_sofd = anetUnixServer(err, unix_socket, 0, 64);
+    if (unix_sofd == ANET_ERR) {
+      t01Log(T01_WARNING, "Opening socket: %s", err);
+      exit(1);
+    }
+    anetNonBlock(NULL, unix_sofd);
+  }
+
+  /* Abort if there are no listening sockets at all. */
+  if (tcp_sofd < 0 && unix_sofd < 0) {
+    t01Log(T01_WARNING, "Configured to not listen anywhere, exiting.");
+    exit(1);
+  }
+
+  el = aeCreateEventLoop(10240);
+ 
+  /* Create an event handler for accepting new connections in TCP and Unix
+     * domain sockets. */
+  if(tcp_sofd > 0 && aeCreateFileEvent(el, tcp_sofd, AE_READABLE,
+            acceptTcpHandler, NULL) == AE_ERR) {
+    t01Panic("Unrecoverable error creating server.ipfd file event.");
+    }
+  if(unix_sofd > 0 && aeCreateFileEvent(el, unix_sofd, AE_READABLE,
+        acceptUnixHandler,NULL) == AE_ERR) {
+    t01Panic("Unrecoverable error creating server.sofd file event.");
+  }
+}
+
+static void exit_server()
+{
   if(out_nmr != nmr)
     nm_close(out_nmr);
   nm_close(nmr);
   destroy_rules(&rule_list);
+
+  if(tcp_sofd!= -1) close(tcp_sofd);
+  if(unix_sofd != -1) close(unix_sofd);
+  if(unix_socket[0]) {
+    t01Log(T01_DEBUG, "Removing the unix socket file.");
+    unlink(unix_socket); /* don't care if this fails */
+   }
+}
+
+int main(int argc, char **argv)
+{  
+  parse_options(argc, argv);  
+  init_server();
+  
+  signal(SIGINT, signal_hander);
+  main_thread();
+
+  exit_server();
   
   return 0;
 }

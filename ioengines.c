@@ -1,3 +1,32 @@
+/*
+ * Copyright (c) 2016, YAO Wei <njustyw at gmail dot com>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   * Neither the name of Redis nor the names of its contributors may be used
+ *     to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -11,24 +40,25 @@
 #include "ndpi_util.h"
 #include "zmalloc.h"
 #include "msgpack.h"
+#include "logger.h"
 
 static LIST_HEAD(engine_list);
 
 void unregister_ioengine(struct ioengine_ops *ops)
 {
-	printf("ioengine %s unregistered\n", ops->name);
+	t01Log(T01_DEBUG, "ioengine %s unregistered", ops->name);
 	list_del(&ops->list);
 }
 
 void register_ioengine(struct ioengine_ops *ops)
 {
-	printf("ioengine %s registered\n", ops->name);
+	t01Log(T01_DEBUG, "ioengine %s registered", ops->name);
 	list_add(&ops->list, &engine_list);
 }
 
 void close_ioengine(struct ioengine_data *td)
 {
-	printf("close ioengine %s\n", td->io_ops->name);
+	t01Log(T01_DEBUG, "close ioengine %s", td->io_ops->name);
 	if (td->io_ops->disconnect) {
 		td->io_ops->disconnect(td);
 		td->private = NULL;
@@ -37,7 +67,7 @@ void close_ioengine(struct ioengine_data *td)
 
 int init_ioengine(struct ioengine_data* td, const char *args)
 {
-	printf("init ioengine %s with opt %s\n", td->io_ops->name, args);
+	t01Log(T01_NOTICE, "init ioengine %s with opt %s", td->io_ops->name, args);
 	if (td->io_ops->connect) {
 		return td->io_ops->connect(td, args);
 	}
@@ -50,10 +80,10 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
 	int (*write)(struct ioengine_data *, const char *, int) = td->io_ops->write;
 	if(!write) return 0;
 
-	u_int32_t lower_ip = flow->lower_ip;
-	u_int32_t upper_ip = flow->upper_ip;
-	int lower_port = ntohs(flow->lower_port);
-	int upper_port = ntohs(flow->upper_port);
+	u_int32_t src_ip = flow->src_ip;
+	u_int32_t dst_ip = flow->dst_ip;
+	int src_port = flow->src_port;
+	int dst_port = flow->dst_port;
 	u_int64_t ts = flow->last_seen;
 	u_int detected_protocol;
 	int map_size = 6, len;
@@ -88,7 +118,7 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
     		msgpack_pack_str_body(&pk, payload, pkt_len);
 	} else if(detected_protocol == NDPI_PROTOCOL_DNS ||
 		detected_protocol == NDPI_PROTOCOL_SSL) {
-		char * host;
+		char * host = NULL;
 		map_size += 1;
 		msgpack_pack_map(&pk, map_size);
 		
@@ -103,16 +133,20 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
 
 		msgpack_pack_str(&pk, 4);
     		msgpack_pack_str_body(&pk, "host", 4);
-		len = strlen(host);
-		msgpack_pack_str(&pk, len);
-    		msgpack_pack_str_body(&pk, host, len);
+		if(host) {
+			len = strlen(host);
+			msgpack_pack_str(&pk, len);
+    			msgpack_pack_str_body(&pk, host, len);
+		} else {
+			msgpack_pack_nil(&pk);
+		}
 	} else {
 		msgpack_pack_map(&pk, map_size);
 	}
 
 	char l[48], u[48];
-	inet_ntop(AF_INET, &lower_ip, l, sizeof(l));
-	inet_ntop(AF_INET, &upper_ip, u, sizeof(u));
+	inet_ntop(AF_INET, &src_ip, l, sizeof(l));
+	inet_ntop(AF_INET, &dst_ip, u, sizeof(u));
 
 	msgpack_pack_str(&pk, 8);
     	msgpack_pack_str_body(&pk, "protocol", 8);
@@ -121,24 +155,24 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
     	msgpack_pack_str_body(&pk, protocol, len);
 
 	msgpack_pack_str(&pk, 8);
-    	msgpack_pack_str_body(&pk, "lower_ip", 8);
+    	msgpack_pack_str_body(&pk, "src_ip", 8);
 	len = strlen(l);
 	msgpack_pack_str(&pk, len);
     	msgpack_pack_str_body(&pk, l, len);
 
 	msgpack_pack_str(&pk, 8);
-    	msgpack_pack_str_body(&pk, "upper_ip", 8);
+    	msgpack_pack_str_body(&pk, "dst_ip", 8);
 	len = strlen(u);
 	msgpack_pack_str(&pk, len);
     	msgpack_pack_str_body(&pk, u, len);
 	
 	msgpack_pack_str(&pk, 10);
-    	msgpack_pack_str_body(&pk, "lower_port", 10);
-	msgpack_pack_int(&pk, lower_port);	
+    	msgpack_pack_str_body(&pk, "src_port", 10);
+	msgpack_pack_int(&pk, src_port);	
 
 	msgpack_pack_str(&pk, 10);
-    	msgpack_pack_str_body(&pk, "upper_port", 10);
-	msgpack_pack_int(&pk, upper_port);
+    	msgpack_pack_str_body(&pk, "dst_port", 10);
+	msgpack_pack_int(&pk, dst_port);
 
 	msgpack_pack_str(&pk, 4);
     	msgpack_pack_str_body(&pk, "when", 4);
@@ -169,14 +203,14 @@ int load_ioengine(struct ioengine_data* data, const char *name)
 	struct ioengine_ops *ops;
 	char engine[64];
 
-	printf("load ioengine %s\n", name);
+	t01Log(T01_NOTICE, "load ioengine %s", name);
 
 	engine[sizeof(engine) - 1] = '\0';
 	strncpy(engine, name, sizeof(engine) - 1);
 
 	ops = find_ioengine(engine);
 	if (!ops) {
-		fprintf(stderr, "engine %s not loadable\n", name);
+		t01Log(T01_WARNING, "engine %s not loadable", name);
 		return -1;
 	}
 

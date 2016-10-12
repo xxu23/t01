@@ -267,6 +267,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
   struct ndpi_flow_info flow;
   void *ret;
   u_int8_t *l3, *l4;
+  u_int8_t flag;
 
   /*
     Note: to keep things simple (ndpiReader is just a demo app)
@@ -290,9 +291,11 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
   if(iph->saddr < iph->daddr) {
     lower_ip = iph->saddr;
     upper_ip = iph->daddr;
+    flag = 0;
   } else {
     lower_ip = iph->daddr;
     upper_ip = iph->saddr;
+    flag = 1;
   }
 
   *proto = iph->protocol;
@@ -394,6 +397,10 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       newflow->lower_ip = lower_ip, newflow->upper_ip = upper_ip;
       newflow->lower_port = lower_port, newflow->upper_port = upper_port;
       newflow->ip_version = version;
+
+      
+      if(flag == 0){ newflow->src_ip = lower_ip; newflow->dst_ip = upper_ip; newflow->src_port = ntohs(lower_port); newflow->dst_port = ntohs(upper_port);}
+      else{ newflow->src_ip = upper_ip; newflow->dst_ip = lower_ip; newflow->src_port = ntohs(upper_port); newflow->dst_port = ntohs(lower_port);}
 
      /* if(version == 4) {
 	inet_ntop(AF_INET, &lower_ip, newflow->lower_name, sizeof(newflow->lower_name));

@@ -1,18 +1,30 @@
 /*
- * Copyright 2016 <copyright holder> <email>
+ * Copyright (c) 2016, YAO Wei <njustyw at gmail dot com>
+ * All rights reserved.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   * Neither the name of Redis nor the names of its contributors may be used
+ *     to endorse or promote products derived from this software without
+ *     specific prior written permission.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <stdio.h>
@@ -30,16 +42,13 @@
 #include "ndpi_api.h"
 #include "ndpi_util.h"
 #include "ndpi_protocol_ids.h"
+#include "logger.h"
 #include "zmalloc.h"
 
-#undef strdup
-char *strdup(const char *s) {
-    size_t l = strlen(s)+1;
-    char *p = malloc(l);
 
-    memcpy(p,s,l);
-    return p;
-}
+LIST_HEAD(rule_list);
+
+static uint32_t max_id;
 
 static inline uint8_t get_action(const char* action)
 {
@@ -92,73 +101,111 @@ static inline uint8_t get_protocol(const char* protocol, uint8_t* master, NDPI_P
     *master = 0;
     prot = IPPROTO_UDP;
   } 
-  if(*master)
+  if(mask && *master)
     NDPI_BITMASK_ADD(*mask, *master);
   return prot;
 }
 
-void parse_one_rule(cJSON* json, struct rule* rule, NDPI_PROTOCOL_BITMASK* mask)
+static void strrpl(char* pDstOut, const char* pSrcIn, const char* pSrcRpl, const char* pDstRpl)
+{ 
+  const char* pi = pSrcIn; 
+  char* po = pDstOut; 
+  int nSrcRplLen = strlen(pSrcRpl); 
+  int nDstRplLen = strlen(pDstRpl); 
+  char *p = NULL; 
+  int nLen = 0; 
+
+  do {
+    p = strstr(pi, pSrcRpl); 
+    if(p != NULL) { 
+      nLen = p - pi; 
+      memcpy(po, pi, nLen);
+      memcpy(po + nLen, pDstRpl, nDstRplLen); 
+    } else { 
+      strcpy(po, pi); 
+      break;
+    } 
+
+    pi = p + nSrcRplLen; 
+    po = po + nLen + nDstRplLen;
+  } while (p != NULL); 
+}
+
+static inline get_ip(const char* ip, u_int32_t* start, u_int32_t* end)
 {
-  cJSON* item = cJSON_GetObjectItem(json, "smac");
-  if(item){
-    uint8_t* mac = rule->shost;
-    sscanf(item->valuestring, "%02x-%02x-%02x-%02x-%02x-%02x", mac, mac+1, mac+2, mac+3, mac+4, mac+5); 
+  if(strchr(ip, '*')){
+    char ip1[16], ip2[16];
+    strrpl(ip1, ip, "*", "1");
+    strrpl(ip2, ip, "*", "255");
+    *start = inet_addr (ip1);
+    *end = inet_addr (ip2);
+    return 2;
+  } else {
+    *start = *end = inet_addr (ip);
+    return 1;
   }
-  
-  item = cJSON_GetObjectItem(json, "dmac");
-  if(item){
-    uint8_t* mac = rule->dhost;
-    sscanf(item->valuestring, "%02x-%02x-%02x-%02x-%02x-%02x", mac, mac+1, mac+2, mac+3, mac+4, mac+5); 
-  }
+}
 
-  item = cJSON_GetObjectItem(json, "saddr");
-  if(item){
-    rule->saddr = inet_addr (item->valuestring);
-  }
-  
-  item = cJSON_GetObjectItem(json, "daddr");
-  if(item){
-    rule->daddr = inet_addr (item->valuestring);      
-  }
-  
-  item = cJSON_GetObjectItem(json, "sport");
-  if(item){
-      rule->sport = item->valueint; 
-  }
+void transform_one_rule(struct rule* rule, NDPI_PROTOCOL_BITMASK* mask)
+{
+  if(rule->human_saddr[0])
+    get_ip(rule->human_saddr, &rule->saddr0, &rule->saddr1);
 
-  item = cJSON_GetObjectItem(json, "dport");
-  if(item){
-      rule->dport = item->valueint; 
-  }
+  if(rule->human_daddr[0])
+    get_ip(rule->human_daddr, &rule->daddr0, &rule->daddr1);      
 
-  item = cJSON_GetObjectItem(json, "protocol");
-  if(item){
-    rule->protocol = get_protocol(item->valuestring, &(rule->master_protocol), mask);
+  if(rule->human_protocol[0])
+    rule->protocol = get_protocol(rule->human_protocol, &(rule->master_protocol), mask);
+ 
+  if(rule->human_action[0])
+    rule->action = get_action(rule->human_action);
+}
+
+#define get_string_from_json(item, json, key, value) 	\
+  item = cJSON_GetObjectItem(json, key); 			\
+  if(item){ 							\
+    strncpy(value, item->valuestring, sizeof(value));	\
+  }									\
+
+#define get_int_from_json(item, json, key, value) 	\
+  item = cJSON_GetObjectItem(json, key); 		\
+  if(item){ 							\
+    value = item->valueint;                             \
+  }									\
+
+#define get_string_from_arrayjson(item, json, j, value) 	\
+  item = cJSON_GetArrayItem(json, j);				\
+  if(item) {								\
+    strncpy(value[j], item->valuestring, sizeof(value[j]));	\
+  }										\
+
+static void parse_one_rule(cJSON* json, struct rule* rule)
+{
+  cJSON *item, *parent;
+
+  get_string_from_json(item, json, "protocol", rule->human_protocol);
+  get_string_from_json(item, json, "saddr", rule->human_saddr);
+  get_string_from_json(item, json, "daddr", rule->human_daddr);
+  get_int_from_json(item, json, "sport", rule->sport);
+  get_int_from_json(item, json, "dport", rule->dport);
+  get_int_from_json(item, json, "id", rule->id);
+  if(rule->id == 0) rule->id = ++max_id;
+  else if(rule->id > max_id) max_id = rule->id;
+
+  parent = cJSON_GetObjectItem(json, "condition");
+  if(parent){
+    get_string_from_json(item, parent, "host", rule->condition.host);
   }
   
-  item = cJSON_GetObjectItem(json, "condition");
-  if(item){
-    cJSON* subitem = cJSON_GetObjectItem(item, "host");
-    if(subitem) strcpy(rule->condition.host, subitem->valuestring);
-    
-    subitem = cJSON_GetObjectItem(item, "ua");
-    if(subitem) strcpy(rule->condition.ua, subitem->valuestring);
-  }
-  
-  item = cJSON_GetObjectItem(json, "action");
-  if(item){
-    rule->action = get_action(item->valuestring);
-  }
-
-  item = cJSON_GetObjectItem(json, "params");
-  if(item){
-    int m = cJSON_GetArraySize(item);
-    if(m <= 9){
+  get_string_from_json(item, json, "action", rule->human_action);
+ 
+  parent = cJSON_GetObjectItem(json, "params");
+  if(parent){
+    int m = cJSON_GetArraySize(parent);
+    if(m <= 4){
       int j;
-      for (j = 0; j < m; j++){
-	cJSON* param = cJSON_GetArrayItem(item, j);
-	if(param) rule->action_params[j] = strdup(param->valuestring);
-      }
+      for (j = 0; j < m; j++)
+        { get_string_from_arrayjson(item, parent, j, rule->action_params); }
     }
   }
 }
@@ -172,7 +219,7 @@ int load_rules_from_file(const char* filename, struct list_head* head, void* ndp
 
   f = fopen(filename,"rb");
   if(!f){
-    printf("Cannot open json file %s: %s\n", filename, strerror(errno));
+    t01Log(T01_WARNING, "Cannot open json file %s: %s", filename, strerror(errno));
     return -1;
   }
   fseek(f, 0, SEEK_END);
@@ -181,7 +228,7 @@ int load_rules_from_file(const char* filename, struct list_head* head, void* ndp
 	
   data = (char*)malloc(size+1);
   if(!data){
-    printf("Out of memory!");
+    t01Log(T01_WARNING, "Out of memory!");
     return -2;
   }
   fread(data, 1, size, f);
@@ -190,7 +237,7 @@ int load_rules_from_file(const char* filename, struct list_head* head, void* ndp
   
   cJSON * json = cJSON_Parse(data);
   if(!json){
-    printf("failed to parse json file %s: %s\n", filename, cJSON_GetErrorPtr());
+    t01Log(T01_WARNING, "Cannot parse json: %s", cJSON_GetErrorPtr());
     free(data);
     return -3;
   }
@@ -205,7 +252,7 @@ int load_rules_from_file(const char* filename, struct list_head* head, void* ndp
   for(i = 0;  i < n; i++){
     cJSON* item = cJSON_GetArrayItem(json, i);
     if(!item){
-      printf("failed to get %d json object: %s\n", i+1, cJSON_GetErrorPtr());
+      t01Log(T01_WARNING, "Cannot parse json: %s", cJSON_GetErrorPtr());
       continue;
      }
 
@@ -217,9 +264,10 @@ int load_rules_from_file(const char* filename, struct list_head* head, void* ndp
      }
     bzero(rule,  sizeof(*rule));
     
-    parse_one_rule(item, rule, mask);
+    parse_one_rule(item, rule);
+    transform_one_rule(rule, mask);
     rule->used = 1;
-    list_add(&rule->list, head);
+    list_add_tail(&rule->list, head);
   }
   ret = n;
    
@@ -227,7 +275,7 @@ out:
   free(data);
   cJSON_Delete(json);
   if(ret < 0)
-    printf("failed to parse json file %s: %s\n", filename, msg);
+    t01Log(T01_WARNING, "Cannot parse json: %s", msg);
   return ret;
 }
 
@@ -241,11 +289,108 @@ void destroy_rules(struct list_head *head)
   list_for_each_safe(pos, n, head) {
     list_del(pos);
     rule = list_entry(pos, struct rule, list);
-    for(i = 0; i < sizeof(rule->action_params)/sizeof(rule->action_params[0]); i++)
-      if(rule->action_params[i]) free(rule->action_params[i]);
     free(rule);
   }
 }
+
+int get_rule_by_id(uint32_t id, void* out, int len)
+{
+  struct list_head *pos;
+  list_for_each(pos, &rule_list) {
+    struct rule* rule = list_entry(pos, struct rule, list);
+    if(rule->id == id && rule->used == 1){
+      len = (char*)&(rule->protocol) - (char*)rule;
+      memcpy(out, rule, len);
+      return len;
+    }
+  }
+
+  return -1; 
+}
+
+int update_rule(void* in, int in_len, void* out, int len)
+{
+  struct list_head *pos;
+  struct rule* new_rule = (struct rule*)in;
+  list_for_each(pos, &rule_list) {
+    struct rule* rule = list_entry(pos, struct rule, list);
+    if(rule->id == new_rule->id && rule->used == 1){
+      int i;
+      if(new_rule->human_protocol[0])
+        strncpy(rule->human_protocol, new_rule->human_protocol, sizeof(rule->human_protocol));
+      if(new_rule->human_saddr[0])
+        strncpy(rule->human_saddr, new_rule->human_saddr, sizeof(rule->human_saddr));
+      if(new_rule->human_daddr[0])
+        strncpy(rule->human_daddr, new_rule->human_daddr, sizeof(rule->human_daddr));
+      if(new_rule->human_action[0])
+        strncpy(rule->human_action, new_rule->human_action, sizeof(rule->human_action));
+      if(((char*)&new_rule->condition)[0])
+        memcpy(&rule->condition, &new_rule->condition, sizeof(rule->condition));
+      for(i = 0; i < 4; i++)
+        if(new_rule->action_params[i][0])
+          strncpy(rule->action_params[i], new_rule->action_params[i], sizeof(rule->action_params[i]));
+      if(new_rule->sport)
+        rule->sport = new_rule->sport;
+      if(new_rule->dport)
+        rule->dport = new_rule->dport;
+
+      transform_one_rule(rule, NULL);
+      
+      return 0;
+    }
+  }
+  return -1;
+}
+
+int delete_rule_by_id(uint32_t id, void* out, int len)
+{
+  struct list_head *pos, *n;
+  struct rule *rule;
+  list_for_each_safe(pos, n, &rule_list) {
+    rule = list_entry(pos, struct rule, list);
+    if(rule->id == id) {
+      rule->used = 0;
+      return 0;
+    }
+  }
+
+  return -1;
+}
+
+int add_rule(void* in, int in_len, void* out, int out_len)
+{
+  struct rule *src_rule = (struct rule *)in;
+  struct rule* new_rule = NULL;
+  struct list_head *pos;
+  int offset;
+  
+  list_for_each(pos, &rule_list) {
+    struct rule* rule = list_entry(pos, struct rule, list);
+    if(rule->used == 0) {
+      new_rule = rule;
+      break;
+    }
+  }
+
+  if(!new_rule) {
+    new_rule = malloc(sizeof(*new_rule));
+    if(!new_rule) {
+      strncpy(out, "Out of memory", out_len);
+      return -1;
+     }
+    bzero(new_rule,  sizeof(*new_rule));
+    list_add_tail(&new_rule->list, &rule_list);
+  }
+  
+  in_len = (char*)&new_rule->protocol - new_rule->human_protocol;
+  offset = new_rule->human_protocol - (char*)new_rule;
+  memcpy(((char*)new_rule)+offset, ((char*)src_rule)+offset, in_len);
+  transform_one_rule(new_rule, NULL);
+  new_rule->used = 1;
+  new_rule->id = ++max_id;
+  return new_rule->id;
+}
+
 
 struct rule* match_rule_from_packet(struct list_head *head, void* flow_, void* packet)
 {
@@ -268,36 +413,19 @@ struct rule* match_rule_from_packet(struct list_head *head, void* flow_, void* p
       if(master_protocol != rule->master_protocol)
 	continue; 
     }
-    
-    if(rule->dport || rule->sport || rule->daddr || rule->saddr){
-      uint32_t lower_ip, upper_ip;
-      u_int16_t lower_port, upper_port;
-      if(rule->saddr < rule->daddr) {
-	lower_ip = rule->saddr;
-	upper_ip = rule->daddr;
-	lower_port = htons(rule->sport);
-	upper_port = htons(rule->dport);
-      } else {
-	lower_ip = rule->daddr;
-	upper_ip = rule->saddr;
-	lower_port = htons(rule->dport);
-	upper_port = htons(rule->sport);
-      }
-      
-      if(lower_ip && flow->lower_ip != lower_ip && flow->upper_ip != lower_ip) continue;
-      if(upper_ip && flow->upper_ip != upper_ip && flow->lower_ip != upper_ip) continue;      
-      if(lower_port && flow->lower_port != lower_port && flow->upper_port != lower_port) continue;
-      if(upper_port && flow->upper_port != upper_port && flow->lower_port != upper_port) continue;
+
+    if(rule->dport || rule->sport || rule->daddr0 || rule->saddr0){
+      if(rule->dport && rule->dport != flow->dst_port) continue;
+      if(rule->daddr0 && (flow->dst_ip < rule->daddr0 || flow->dst_ip > rule->daddr1)) continue;      
+      if(rule->sport && rule->sport != flow->src_port) continue;
+      if(rule->saddr0 && (flow->src_ip < rule->saddr0 || flow->src_ip > rule->saddr1)) continue;
     }
     
-    //TODO add mac match
-    //if(rule->smac[0] && memcmp(rule->smac)
     char* host = flow->host_server_name;
     if(host[0] == 0 || flow->ssl.client_certificate[0] != 0 || flow->ssl.server_certificate[0] != 0)
       host = flow->ssl.client_certificate[0] == 0 ? flow->ssl.server_certificate : flow->ssl.client_certificate;
     if(rule->condition.host[0] && strcasecmp(rule->condition.host,  host) != 0)
       continue;
-    //TODO add user-agent match
     
     return rule;
   }

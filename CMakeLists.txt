@@ -16,7 +16,7 @@ include_directories( "./3rd/include/jemalloc/" )
 set(EXTRA_LIBS ${EXTRA_LIBS} ${PROJECT_SOURCE_DIR}/3rd/lib/libjemalloc.a dl pthread)
 endif (USE_JEMALLOC) 
 
-add_executable(t01 main.c ndpi_util.c pktgen.c cJSON.c rule.c ioengines.c engines/redis.c engines/kafka.c)
+add_executable(t01 logger.c main.c ndpi_util.c pktgen.c cJSON.c rule.c anet.c ae.c networking.c ioengines.c engines/redis.c engines/kafka.c)
 target_link_libraries(t01 m pthread)
 target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libndpi.a)
 target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libhiredis.a)

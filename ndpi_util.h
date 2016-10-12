@@ -50,6 +50,10 @@ typedef struct ndpi_flow_info {
   u_int32_t upper_ip;
   u_int16_t lower_port;
   u_int16_t upper_port;
+  u_int32_t src_ip;
+  u_int32_t dst_ip;
+  u_int16_t src_port;
+  u_int16_t dst_port;
   u_int8_t detection_completed, protocol;
   u_int16_t vlan_id;
   u_int8_t ip_version;

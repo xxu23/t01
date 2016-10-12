@@ -27,40 +27,55 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef IO_IOENGINE_H
-#define IO_IOENGINE_H
+/* inclusion guard */
+#ifndef __NETWORKING_H__
+#define __NETWORKING_H__
 
-#define io_init	__attribute__((constructor))
-#define io_exit	__attribute__((destructor))
-
-#include "list.h"
-
-struct ioengine_ops;
-
-struct ioengine_data {
-	void *private;
-	struct ioengine_ops* io_ops;
+struct t01_header
+{
+	char magic[4];
+	uint8_t command;
+	int8_t response; 
+	uint16_t seq;
+	int body_len;
+	char body[0];
 };
 
-struct ioengine_ops {
-	struct list_head list;
-	const char *name;
-	int (*connect)(struct ioengine_data *, const char *);
-	int (*disconnect)(struct ioengine_data *);
-	int (*show_help)();
-	int (*write)(struct ioengine_data *, const char *, int);
+#define T01_HEADER_MAGIC	"T01"
+
+#define INIT_T01_HEADER(cmd, resp) {T01_HEADER_MAGIC, cmd, resp, 0, 0}
+#define IS_HEADER_VALID(hdr) (memcmp(T01_HEADER_MAGIC, (hdr).magic, 3) == 0)
+
+#define T01_COMMAND_GET_RULE 	1
+#define T01_COMMAND_PUT_RULE 	2
+#define T01_COMMAND_DEL_RULE 	3
+#define T01_COMMAND_ADD_RULE 	4
+#define T01_COMMAND_GET_RULES 	5
+
+#define T01_ERR_NOTFOUND		-1
+#define T01_ERR_NOTSUPPORT	-2
+#define T01_ERR_INTERNAL		-3
+
+
+struct t01_rule
+{
+	uint32_t id;
+	char human_protocol[16];
+	char human_saddr[16];
+	char human_daddr[16];
+	uint16_t sport;
+	uint16_t dport;
+	char human_action[16];
+	char match_payload[256];
+	char action_params[4][256];
 };
 
+/* Networking and Client related operations */
 
-extern int load_ioengine(struct ioengine_data *, const char *);
-extern int init_ioengine(struct ioengine_data *, const char *);
-extern void close_ioengine(struct ioengine_data *);
-extern int store_via_ioengine(struct ioengine_data *, void *, const char *, const char *, int);
-
-extern void register_ioengine(struct ioengine_ops *);
-extern void unregister_ioengine(struct ioengine_ops *);
-
-extern int fio_show_ioengine_help(const char *engine);
+void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask);
+void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask);
+void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask);
+void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask);
 
 
-#endif
+#endif /* __NETWORKING_H__ */
