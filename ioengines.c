@@ -101,6 +101,7 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
 	if(detected_protocol == NDPI_PROTOCOL_HTTP) {
 		const char* payload = packet + flow->payload_offset;
 		pkt_len -= flow->payload_offset;
+		if(pkt_len <= 0) goto clean;
 
 		map_size += 2;
 		msgpack_pack_map(&pk, map_size);
@@ -179,6 +180,7 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
     	msgpack_pack_uint32(&pk, ts/1000);
 
 	len = write(td, sbuf.data, sbuf.size);
+clean:
 	msgpack_sbuffer_destroy(&sbuf);
 	return len; 
 }
