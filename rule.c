@@ -32,11 +32,13 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include "t01.h"
 #include "rule.h"
 #include "cJSON.h"
 #include "ndpi_api.h"
@@ -45,8 +47,13 @@
 #include "logger.h"
 #include "zmalloc.h"
 
+#define T01_TDB_VERSION 1
 
-LIST_HEAD(rule_list);
+#define T01_TDB_TYPE_RULE 1
+#define T01_TDB_TYPE_HIT  2
+#define T01_TDB_TYPE_EOF  255
+
+#define MAX_HITS_PER_RULE 5000
 
 static uint32_t max_id;
 
@@ -146,6 +153,47 @@ static inline get_ip(const char* ip, u_int32_t* start, u_int32_t* end)
   }
 }
 
+static int tdb_write_raw(FILE *fp, void *p, size_t len) {
+  len = fwrite(p, 1, len, fp);
+  if(len < 0) return -1;
+  return len;
+}
+
+static int tdb_load_raw(FILE *fp, void *p, size_t len) {
+  if(fread(p, 1, len, fp) < len) return -1;
+  return len;
+}
+
+static int tdb_save_type(FILE *fp, unsigned char type) {
+  return tdb_write_raw(fp, &type, 1);
+}
+
+static int tdb_save_rule(FILE *fp, struct rule *r) {
+  return tdb_write_raw(fp, r, (char*)&r->list-(char*)r);
+}
+
+static int tdb_save_hit(FILE *fp, struct hit_record *h) {
+  return tdb_write_raw(fp, h, (char*)&h->list-(char*)h);
+}
+
+static int tdb_load_type(FILE *fp) {
+  unsigned char type;
+  if (fread(&type, 1, 1, fp) <= 0) return -1;
+  return type;
+}
+
+static int tdb_load_rule(FILE *fp, struct rule *r) {
+  size_t len = (char*)&r->list-(char*)r;
+  if(fread(r, 1, len, fp) < len) return -1;
+  return len;
+}
+
+static int tdb_load_hit(FILE *fp, struct hit_record *h) {
+  size_t len = (char*)&h->list-(char*)h;
+  if(fread(h, 1, len, fp) < len) return -1;
+  return len;
+}
+
 void transform_one_rule(struct rule* rule, NDPI_PROTOCOL_BITMASK* mask)
 {
   if(rule->human_saddr[0])
@@ -210,35 +258,12 @@ static void parse_one_rule(cJSON* json, struct rule* rule)
   }
 }
 
-int load_rules_from_file(const char* filename, struct list_head* head, void* ndpi_mask)
+static int load_rules_from_json(const char *data, struct list_head *head, void* ndpi_mask)
 {
-  FILE *f;
-  long size;
-  char *data;
-  NDPI_PROTOCOL_BITMASK* mask = (NDPI_PROTOCOL_BITMASK*)ndpi_mask;
-
-  f = fopen(filename,"rb");
-  if(!f){
-    t01Log(T01_WARNING, "Cannot open json file %s: %s", filename, strerror(errno));
-    return -1;
-  }
-  fseek(f, 0, SEEK_END);
-  size = ftell(f);
-  fseek(f, 0, SEEK_SET);
-	
-  data = (char*)malloc(size+1);
-  if(!data){
-    t01Log(T01_WARNING, "Out of memory!");
-    return -2;
-  }
-  fread(data, 1, size, f);
-  data[size]='\0';
-  fclose(f);
-  
-  cJSON * json = cJSON_Parse(data);
+  NDPI_PROTOCOL_BITMASK *mask = (NDPI_PROTOCOL_BITMASK*)ndpi_mask;
+  cJSON *json = cJSON_Parse(data);
   if(!json){
-    t01Log(T01_WARNING, "Cannot parse json: %s", cJSON_GetErrorPtr());
-    free(data);
+    t01_log(T01_WARNING, "Cannot parse json: %s", cJSON_GetErrorPtr());
     return -3;
   }
   
@@ -252,7 +277,7 @@ int load_rules_from_file(const char* filename, struct list_head* head, void* ndp
   for(i = 0;  i < n; i++){
     cJSON* item = cJSON_GetArrayItem(json, i);
     if(!item){
-      t01Log(T01_WARNING, "Cannot parse json: %s", cJSON_GetErrorPtr());
+      t01_log(T01_WARNING, "Cannot parse json: %s", cJSON_GetErrorPtr());
       continue;
      }
 
@@ -263,6 +288,7 @@ int load_rules_from_file(const char* filename, struct list_head* head, void* ndp
       goto out;
      }
     bzero(rule,  sizeof(*rule));
+    INIT_LIST_HEAD(&rule->hit_head);
     
     parse_one_rule(item, rule);
     transform_one_rule(rule, mask);
@@ -272,25 +298,273 @@ int load_rules_from_file(const char* filename, struct list_head* head, void* ndp
   ret = n;
    
 out:
-  free(data);
   cJSON_Delete(json);
   if(ret < 0)
-    t01Log(T01_WARNING, "Cannot parse json: %s", msg);
+    t01_log(T01_WARNING, "Cannot parse json: %s", msg);
   return ret;
 }
 
-void destroy_rules(struct list_head *head)
+int should_save()
 {
-  if(!head || list_empty(head)) return;
+   return dirty != 0;
+}
+
+int load_rules(const char* filename, void* ndpi_mask)
+{
+  uint32_t dbid;
+  int type, tdbver, i = 0;
+  char buf[8];
+  FILE *fp;
+  struct rule *curr_rule;
+  
+  fp = fopen(filename,"r");
+  if(fp == NULL) return -1;
+
+  if(tdb_load_raw(fp, buf, 8) == 0) goto eoferr;
+
+  if(memcmp(buf, "T01", 3) != 0 && memcmp(buf, "[", 1) != 0) {
+    fclose(fp);
+    t01_log(T01_WARNING,"Wrong signature trying to load DB from file");
+    return -1;
+  }
+
+  if(memcmp(buf, "[", 1) == 0) {
+    long size;
+    char *data;
+    int ret;
+
+    fseek(fp, 0, SEEK_END);
+    size = ftell(fp) + 8;
+    fseek(fp, 0, SEEK_SET);	
+    data = (char*)malloc(size+1);
+    if(!data){
+      t01_log(T01_WARNING, "Out of memory!");
+      goto eoferr;
+    }
+    fread(data, 1, size, fp);
+    data[size]='\0';
+    fclose(fp);
+  
+    ret = load_rules_from_json(data, &rule_list, ndpi_mask);
+    free(data);
+    return ret;
+  }
+  
+  tdbver = atoi(buf+3);
+  if (tdbver != T01_TDB_VERSION) {
+    fclose(fp);
+    t01_log(T01_WARNING,"Can't handle TDB format version %d", tdbver);
+    return -1;
+  }
+
+  while(1) {
+    if ((type = tdb_load_type(fp)) == -1)
+      break;
+    
+    if(type == T01_TDB_TYPE_RULE){
+      struct rule *r = malloc(sizeof(*r));
+      if(!r) goto eoferr;
+      bzero(r,  sizeof(*r));
+      INIT_LIST_HEAD(&r->hit_head);
+      if(tdb_load_rule(fp, r) == -1)
+        goto eoferr;
+      list_add_tail(&r->list, &rule_list);
+      curr_rule = r;
+      r->saved_hits = 0;
+      i++;
+    } else if(type == T01_TDB_TYPE_HIT){
+      struct hit_record *h = malloc(sizeof(*h));
+      if(!h) goto eoferr;
+      bzero(h,  sizeof(*h));
+      if(tdb_load_hit(fp, h) == -1) 
+        goto eoferr;
+      if(curr_rule->saved_hits == MAX_HITS_PER_RULE) {
+        free(h);
+        continue;
+      }
+      list_add_tail(&h->list, &curr_rule->hit_head);
+      curr_rule->saved_hits++;
+    } else if(type == T01_TDB_TYPE_EOF) {
+      break;
+    }
+  }
+
+  fclose(fp);
+  return i;
+
+eoferr: /* unexpected end of file is handled here with a fatal exit */
+  t01_log(T01_WARNING, "Short read or OOM loading DB. Unrecoverable error, aborting now.");
+  exit(1);
+  return -1;
+}
+
+int add_one_hit_record(struct rule *r, uint64_t time,
+             	     uint32_t saddr, uint32_t daddr, 
+			     uint16_t sport, uint16_t dport,
+			     uint8_t smac[], uint8_t dmac[])
+{
+  struct hit_record* h = malloc(sizeof(*h));
+  if(!h) return -1;
+  bzero(h,  sizeof(*h));
+
+  h->id = r->id;
+  h->time = time;
+  h->saddr = saddr;
+  h->daddr = daddr;
+  h->sport = sport;
+  h->dport = dport;
+  memcpy(h->smac, smac, 6);
+  memcpy(h->dmac, dmac, 6);
+
+  if(r->saved_hits == MAX_HITS_PER_RULE) {
+    struct list_head *head = r->hit_head.next;
+    struct hit_record* hh = list_entry(head, struct hit_record, list);
+    r->saved_hits --;
+    list_del(head);
+    free(hh);
+  }
+
+  list_add_tail(&h->list, &r->hit_head);
+  r->hits++;
+  r->saved_hits++;
+  dirty ++;
+
+  return 0;
+}
+
+void destroy_rules()
+{
+  if(list_empty(&rule_list)) return;
   
   struct list_head *pos, *n;
   struct rule *rule;
   int i;
-  list_for_each_safe(pos, n, head) {
+  list_for_each_safe(pos, n, &rule_list) {
     list_del(pos);
     rule = list_entry(pos, struct rule, list);
     free(rule);
   }
+}
+
+int save_rules(const char *filename) {
+  char tmpfile[256];
+  FILE *fp;
+  char magic[8];
+  struct list_head *pos;
+  struct rule *rule;
+
+  snprintf(tmpfile, 256, "temp-%d.tdb", (int) getpid());
+  fp = fopen(tmpfile,"w");
+  if (!fp) {
+    t01_log(T01_WARNING, "Failed opening .tdb for saving: %s", strerror(errno));
+    return -1;
+  }
+
+  snprintf(magic, sizeof(magic), "T01%04d", T01_TDB_VERSION);
+  if (tdb_write_raw(fp, magic, 8) == -1) goto werr;
+ 
+  list_for_each(pos, &rule_list) {
+    struct list_head *pos2;
+    struct hit_record *hit;
+    rule = list_entry(pos, struct rule, list);
+    if(rule->used == 0) continue;
+    
+    if(tdb_save_type(fp, T01_TDB_TYPE_RULE) < 0)
+      goto werr;
+    if(tdb_save_rule(fp, rule) < 0) 
+      goto werr;
+
+    list_for_each(pos2, &rule->hit_head) {
+      hit = list_entry(pos2, struct hit_record, list);
+      if(tdb_save_type(fp, T01_TDB_TYPE_HIT) < 0)
+        goto werr;
+      if(tdb_save_hit(fp, hit) < 0) 
+        goto werr;
+    }
+  }
+  if(tdb_save_type(fp, T01_TDB_TYPE_EOF) < 0)
+    goto werr;
+
+  /* Make sure data will not remain on the OS's output buffers */
+  if (fflush(fp) == EOF) goto werr;
+  if (fsync(fileno(fp)) == -1) goto werr;
+  if (fclose(fp) == EOF) goto werr;
+
+  /* Use RENAME to make sure the DB file is changed atomically only
+   * if the generate DB file is ok. */
+  if (rename(tmpfile, filename) == -1) {
+    t01_log(T01_WARNING,"Error moving temp DB file on the final destination: %s", strerror(errno));
+    unlink(tmpfile);
+    return -1;
+  }
+
+  t01_log(T01_NOTICE,"DB saved on disk");
+  dirty = 0;
+  lastsave = time(NULL);
+  lastbgsave_status = 0;
+  return 0;
+
+werr:
+  t01_log(T01_WARNING,"Write error saving DB on disk: %s", strerror(errno));
+  fclose(fp);
+  unlink(tmpfile);
+  return -1;
+}
+
+int save_rules_background(const char *filename)
+{
+  pid_t childpid;
+  long long start;
+
+  if(tdb_child_pid != -1) return -1;
+
+  dirty_before_bgsave = dirty;
+
+  if ((childpid = fork()) == 0) {
+    int retval;
+    /* Child */
+    close_listening_sockets();
+    retval = save_rules(filename);
+    _exit((retval == 0) ? 0 : 1);
+  } else {
+    /* Parent */
+    if (childpid == -1) {
+      lastbgsave_status = -1;
+      t01_log(T01_WARNING,"Can't save in background: fork: %s", strerror(errno));
+      return -1;
+    }
+    t01_log(T01_NOTICE,"Background saving started by pid %d", childpid);
+    //server.rdb_save_time_start = time(NULL);
+    tdb_child_pid = childpid;
+    return 0;
+  }
+  return 0; /* unreached */
+}
+
+
+static void tdb_remove_tempfile(pid_t childpid) {
+    char tmpfile[256];
+    snprintf(tmpfile, 256, "temp-%d.tdb", (int)childpid);
+    unlink(tmpfile);
+}
+
+void background_save_done_handler(int exitcode, int bysignal) {
+  if (!bysignal && exitcode == 0) {
+    t01_log(T01_NOTICE, "Background saving terminated with success");
+    dirty = dirty - dirty_before_bgsave;
+    lastsave = time(NULL);
+    lastbgsave_status = 0;
+  } else if (!bysignal && exitcode != 0) {
+    t01_log(T01_WARNING, "Background saving error");
+    lastbgsave_status = -1;
+  } else {
+    t01_log(T01_WARNING, "Background saving terminated by signal %d", bysignal);
+    tdb_remove_tempfile(tdb_child_pid);
+    if (bysignal != SIGUSR1)
+      lastbgsave_status = -1;
+  }
+   
+  tdb_child_pid = -1;
 }
 
 int get_rule_by_id(uint32_t id, void* out, int len)
@@ -428,11 +702,11 @@ int add_rule(void* in, int in_len, void* out, int out_len)
 }
 
 
-struct rule* match_rule_from_packet(struct list_head *head, void* flow_, void* packet)
+struct rule* match_rule_from_packet(void* flow_, void* packet)
 {
   struct ndpi_flow_info* flow = (struct ndpi_flow_info *)flow_;
   struct list_head* pos;
-  list_for_each(pos, head) {
+  list_for_each(pos, &rule_list) {
     struct rule* rule = list_entry(pos, struct rule, list);
     if(rule->used == 0) 
         continue;

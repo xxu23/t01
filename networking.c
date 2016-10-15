@@ -83,7 +83,7 @@ t01Client *createClient(aeEventLoop *el, int fd) {
 static void acceptCommonHandler(aeEventLoop *el, int fd) {
     t01Client *c;
     if ((c = createClient(el, fd)) == NULL) {
-        t01Log(T01_WARNING,
+        t01_log(T01_WARNING,
             "Error registering fd event for the new client: %s (fd=%d)",
             strerror(errno),fd);
         close(fd); /* May be already closed, just ignore errors */
@@ -100,10 +100,10 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         cfd = anetTcpAccept(err, fd, cip, sizeof(cip), &cport);
         if (cfd == ANET_ERR) {
             if (errno != EWOULDBLOCK)
-                t01Log(T01_WARNING, "Accepting client connection: %s", err);
+                t01_log(T01_WARNING, "Accepting client connection: %s", err);
             return;
         }
-        t01Log(T01_NOTICE, "Accepted %s:%d", cip, cport);
+        t01_log(T01_NOTICE, "Accepted %s:%d", cip, cport);
         acceptCommonHandler(el, cfd);
     }
 }
@@ -116,10 +116,10 @@ void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         cfd = anetUnixAccept(err, fd);
         if (cfd == ANET_ERR) {
             if (errno != EWOULDBLOCK)
-                t01Log(T01_WARNING, "Accepting client connection: %s", err);
+                t01_log(T01_WARNING, "Accepting client connection: %s", err);
             return;
         }
-        t01Log(T01_DEBUG, "Accepted unix socket connection");
+        t01_log(T01_DEBUG, "Accepted unix socket connection");
         acceptCommonHandler(el, cfd);
     }
 }
@@ -146,7 +146,7 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         if (errno == EAGAIN) {
             nwritten = 0;
         } else {
-            t01Log(T01_WARNING, "Error writing header to client: %s", strerror(errno));
+            t01_log(T01_WARNING, "Error writing header to client: %s", strerror(errno));
             freeClient(c);
             return;
         }
@@ -158,7 +158,7 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
             if (errno == EAGAIN) {
                 nwritten = 0;
             } else {
-                t01Log(T01_WARNING, "Error writing body to client: %s", strerror(errno));
+                t01_log(T01_WARNING, "Error writing body to client: %s", strerror(errno));
                 freeClient(c);
                 return;
             }
@@ -269,12 +269,12 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         if (errno == EAGAIN) {
             nread = 0;
         } else {
-            t01Log(T01_WARNING, "Reading header from client: %s",strerror(errno));
+            t01_log(T01_WARNING, "Reading header from client: %s",strerror(errno));
             freeClient(c);
             return;
         }
     } else if (nread == 0) {
-        t01Log(T01_WARNING, "Client closed connection");
+        t01_log(T01_WARNING, "Client closed connection");
         freeClient(c);
         return;
     }
@@ -286,7 +286,7 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         if(datalen > 0) {
             nread = anetRead(fd, c->request, datalen);
             if (nread == -1) {
-                t01Log(T01_WARNING, "Reading body from client: %s",strerror(errno));
+                t01_log(T01_WARNING, "Reading body from client: %s",strerror(errno));
                 freeClient(c);
                 return;
                }
@@ -294,7 +294,7 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         dispatchCommand(el, c, fd);
         sendReplyToClient(el, fd, privdata, mask);
     } else {
-        t01Log(T01_WARNING, "Invalid client, drop connection");
+        t01_log(T01_WARNING, "Invalid client, drop connection");
         freeClient(c);
         return;
     }

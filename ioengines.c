@@ -46,19 +46,19 @@ static LIST_HEAD(engine_list);
 
 void unregister_ioengine(struct ioengine_ops *ops)
 {
-	t01Log(T01_DEBUG, "ioengine %s unregistered", ops->name);
+	t01_log(T01_DEBUG, "ioengine %s unregistered", ops->name);
 	list_del(&ops->list);
 }
 
 void register_ioengine(struct ioengine_ops *ops)
 {
-	t01Log(T01_DEBUG, "ioengine %s registered", ops->name);
+	t01_log(T01_DEBUG, "ioengine %s registered", ops->name);
 	list_add(&ops->list, &engine_list);
 }
 
 void close_ioengine(struct ioengine_data *td)
 {
-	t01Log(T01_DEBUG, "close ioengine %s", td->io_ops->name);
+	t01_log(T01_DEBUG, "close ioengine %s", td->io_ops->name);
 	if (td->io_ops->disconnect) {
 		td->io_ops->disconnect(td);
 		td->private = NULL;
@@ -67,7 +67,7 @@ void close_ioengine(struct ioengine_data *td)
 
 int init_ioengine(struct ioengine_data* td, const char *args)
 {
-	t01Log(T01_NOTICE, "init ioengine %s with opt %s", td->io_ops->name, args);
+	t01_log(T01_NOTICE, "init ioengine %s with opt %s", td->io_ops->name, args);
 	if (td->io_ops->connect) {
 		return td->io_ops->connect(td, args);
 	}
@@ -205,14 +205,14 @@ int load_ioengine(struct ioengine_data* data, const char *name)
 	struct ioengine_ops *ops;
 	char engine[64];
 
-	t01Log(T01_NOTICE, "load ioengine %s", name);
+	t01_log(T01_NOTICE, "load ioengine %s", name);
 
 	engine[sizeof(engine) - 1] = '\0';
 	strncpy(engine, name, sizeof(engine) - 1);
 
 	ops = find_ioengine(engine);
 	if (!ops) {
-		t01Log(T01_WARNING, "engine %s not loadable", name);
+		t01_log(T01_WARNING, "engine %s not loadable", name);
 		return -1;
 	}
 

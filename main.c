@@ -48,6 +48,7 @@
 #include "logger.h"
 #include "networking.h"
 #include "ioengine.h"
+#include "t01.h"
 
 
 struct backup_data {
@@ -60,6 +61,13 @@ struct backup_data {
 #define DEFAULT_HZ      10
 
 #define run_with_period(_ms_) if ((_ms_ <= 1000/DEFAULT_HZ) || !(cronloops%((_ms_)/(1000/DEFAULT_HZ))))  	
+
+LIST_HEAD(rule_list);
+int dirty = 0;
+int dirty_before_bgsave;
+int lastbgsave_status;
+time_t lastsave;
+pid_t tdb_child_pid = -1;
 
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
 static u_int64_t cronloops;
@@ -86,7 +94,7 @@ static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
     
 
-static char* ipProto2Name(u_short proto_id) {
+static char* ipproto_name(u_short proto_id) {
 
   static char proto[8];
 
@@ -115,7 +123,7 @@ static char* ipProto2Name(u_short proto_id) {
   return(proto);
 }
 
-static char* formatTraffic(float numBits, int bits, char *buf) {
+static char* format_traffic(float numBits, int bits, char *buf) {
   char unit;
 
   if(bits)
@@ -146,7 +154,7 @@ static char* formatTraffic(float numBits, int bits, char *buf) {
   return(buf);
 }
 
-static char* formatPackets(float numPkts, char *buf) {
+static char* format_packets(float numPkts, char *buf) {
 
   if(numPkts < 1000) {
     snprintf(buf, 32, "%.2f", numPkts);
@@ -171,7 +179,7 @@ static int manage_interface_promisc_mode(const char* interface, int switch_on) {
 
     fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (!fd) {
-        t01Log(T01_WARNING, "Can't create socket for promisc mode manager");
+        t01_log(T01_WARNING, "Can't create socket for promisc mode manager");
         return -1;
     }
 
@@ -180,21 +188,21 @@ static int manage_interface_promisc_mode(const char* interface, int switch_on) {
 
     ioctl_res = ioctl(fd, SIOCGIFFLAGS, &ethreq);
     if (ioctl_res == -1) {
-        t01Log(T01_WARNING, "Can't get interface flags");
+        t01_log(T01_WARNING, "Can't get interface flags");
         return -1;
     }
  
     promisc_enabled_on_device = ethreq.ifr_flags & IFF_PROMISC;
     if (switch_on) {
         if (promisc_enabled_on_device) {
-             t01Log(T01_DEBUG, "Interface %s in promisc mode already", interface);
+             t01_log(T01_DEBUG, "Interface %s in promisc mode already", interface);
             return 0;
         } else {
-             t01Log(T01_DEBUG, "Interface %s in non promisc mode now, switch it on", interface);
+             t01_log(T01_DEBUG, "Interface %s in non promisc mode now, switch it on", interface);
              ethreq.ifr_flags |= IFF_PROMISC;
              ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
              if (ioctl_res_set == -1) {
-                 t01Log(T01_WARNING, "Can't set interface flags");
+                 t01_log(T01_WARNING, "Can't set interface flags");
                  return -1;
              }
 
@@ -202,14 +210,14 @@ static int manage_interface_promisc_mode(const char* interface, int switch_on) {
         }
     } else { 
         if (!promisc_enabled_on_device) {
-            t01Log(T01_DEBUG, "Interface %s in normal mode already", interface);
+            t01_log(T01_DEBUG, "Interface %s in normal mode already", interface);
             return 0;
         } else {
-            t01Log(T01_DEBUG, "Interface in promisc mode now, switch it off");
+            t01_log(T01_DEBUG, "Interface in promisc mode now, switch it off");
             ethreq.ifr_flags &= ~IFF_PROMISC;
             ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
             if (ioctl_res_set == -1) {
-                t01Log(T01_WARNING, "Can't set interface flags");
+                t01_log(T01_WARNING, "Can't set interface flags");
                 return -1;
             }
 
@@ -250,9 +258,12 @@ next:
     }
   }
   
-  struct rule* rule = match_rule_from_packet(&rule_list, flow, packet);
+  struct rule* rule = match_rule_from_packet(flow, packet);
   if(!rule) return;
-  rule->hits ++;
+  add_one_hit_record(rule, flow->last_seen/1000,
+                     flow->src_ip, flow->dst_ip, 
+                     flow->src_port, flow->dst_port,
+                     (uint8_t*)packet+6, (uint8_t*)packet);
   
   char result[1500] = {0};
   int len = make_packet(rule, packet, result, sizeof(result));
@@ -266,7 +277,7 @@ next:
       inet_ntop(AF_INET, &flow->src_ip, l, sizeof(l));
 	inet_ntop(AF_INET, &flow->dst_ip, u, sizeof(u));
       offset += snprintf(msg, sizeof(msg)-offset, "Hits: %s %s:%u <-> %s:%u ",
-	    ipProto2Name(flow->protocol),
+	    ipproto_name(flow->protocol),
 	    l, flow->src_port, u, flow->dst_port);
 
       if(flow->detected_protocol.master_protocol) {
@@ -286,7 +297,7 @@ next:
       if(flow->ssl.client_certificate[0] != '\0') offset += snprintf(msg+offset, sizeof(msg)-offset, "[SSL client: %s]", flow->ssl.client_certificate);
       if(flow->ssl.server_certificate[0] != '\0') offset += snprintf(msg+offset, sizeof(msg)-offset, "[SSL server: %s]", flow->ssl.server_certificate);
 
-      t01Log(T01_NOTICE, msg);
+      t01_log(T01_NOTICE, msg);
     }
   }
 }
@@ -370,6 +381,13 @@ static void* backdoor_thread(void* args)
 
 static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
 {
+  time_t unix_time = time(NULL);
+
+  static struct saveparam{ 
+    time_t seconds;
+    int changes;
+  }saveparams[] = {{300, 1}, {60, 10}, {5, 500}, {1, 3000}};
+
   run_with_period(5000) {
     struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
     struct ndpi_stats* stat = &workflow->stats;
@@ -416,10 +434,10 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
       float t = (float)(curr_ip_packet_count*1000000)/(float)tot_usec;
       float b = (float)(curr_total_wire_bytes * 8 *1000000)/(float)tot_usec;
       float traffic_duration = tot_usec;
-      printf("\tnDPI throughput:       %s pps / %s/sec\n", formatPackets(t, buf), formatTraffic(b, 1, buf1));
+      printf("\tnDPI throughput:       %s pps / %s/sec\n", format_packets(t, buf), format_traffic(b, 1, buf1));
       t = (float)(curr_ip_packet_count*1000000)/(float)traffic_duration;
       b = (float)(curr_total_wire_bytes * 8 *1000000)/(float)traffic_duration;
-      printf("\tTraffic throughput:    %s pps / %s/sec\n", formatPackets(t, buf), formatTraffic(b, 1, buf1));
+      printf("\tTraffic throughput:    %s pps / %s/sec\n", format_packets(t, buf), format_traffic(b, 1, buf1));
       printf("\tTraffic duration:      %.3f sec\n", traffic_duration/1000000);
     }
 
@@ -433,6 +451,35 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
     }
     printf("\tRules hits:            %-13lu (total %llu)\n", total_hits - hits, total_hits);
     hits = total_hits;
+  }
+
+  /* Check if a background saving or AOF rewrite in progress terminated. */
+  if (tdb_child_pid != -1) {
+    int statloc;
+    pid_t pid;
+
+    if ((pid = wait3(&statloc,WNOHANG,NULL)) != 0) {
+      int exitcode = WEXITSTATUS(statloc);
+      int bysignal = 0;
+
+      if (WIFSIGNALED(statloc)) bysignal = WTERMSIG(statloc);
+      if (pid == tdb_child_pid) {
+        background_save_done_handler(exitcode, bysignal);
+      } else {
+        t01_log(T01_WARNING, "Warning, detected child with unmatched pid: %ld", (long)pid);
+        }
+    }
+  } else{
+    int j;
+    for (j = 0; j < sizeof(saveparams)/sizeof(saveparams[0]); j++) {
+      struct saveparam *sp = saveparams+j;
+      if(dirty >= sp->changes && unix_time-lastsave > sp->seconds && lastbgsave_status == 0){
+        t01_log(T01_NOTICE,"%d changes in %d seconds. Saving...",
+                sp->changes, (int)sp->seconds);
+        save_rules_background(rulefile);
+        break;
+        }
+     }
   }
 
   cronloops++;
@@ -480,23 +527,23 @@ static void main_thread()
 
   /* Create the server_cron() time event. */
   if(aeCreateTimeEvent(el, 1, server_cron, workflow, NULL) == AE_ERR) {
-    t01Panic("Can't create the serverCron time event.");
+    t01_panic("Can't create the serverCron time event.");
    }
   gettimeofday(&last_report_ts, NULL);
 
   err = pthread_create(&backdoor_thread_id, NULL, backdoor_thread, NULL);
   if (err != 0) {
-    t01Log(T01_WARNING, "create backdoor thread failed(%d)", err);
+    t01_log(T01_WARNING, "create backdoor thread failed(%d)", err);
     exit(1);
   }
 
   if(engine_data.io_ops && engine_opt[0]){
     if(init_ioengine(&engine_data, engine_opt) < 0){
-       t01Log(T01_WARNING, "Unable to init engine %s", engine);
+       t01_log(T01_WARNING, "Unable to init engine %s", engine);
     } else {
       err = pthread_create(&backup_thread_id, NULL, backup_thread, workflow);
       if (err != 0) {
-        t01Log(T01_WARNING, "create backup thread failed(%d)", err);
+        t01_log(T01_WARNING, "create backup thread failed(%d)", err);
         return;
       }
       backup = 1;
@@ -522,14 +569,14 @@ static void main_thread()
 
   err = pthread_join(backdoor_thread_id, NULL);
   if (err != 0) {
-    t01Log(T01_WARNING, "join backdoor thread failed(%d)", err);
+    t01_log(T01_WARNING, "join backdoor thread failed(%d)", err);
     return;
   }
 
   if(backup){
     err = pthread_join(backup_thread_id, NULL);
     if (err != 0) {
-      t01Log(T01_WARNING, "join backup thread failed(%d)", err);
+      t01_log(T01_WARNING, "join backup thread failed(%d)", err);
       return;
     }
   }
@@ -627,8 +674,16 @@ static void parse_options(int argc, char **argv) {
 static void signal_hander(int sig)
 {
   static int called = 0;
-  t01Log(T01_WARNING, "received control-C, shutdowning");
+  int save = should_save();
+  t01_log(T01_WARNING, "received control-C, shutdowning");
   if(called) return; else called = 1;
+  if(save) {
+    t01_log(T01_NOTICE,"Saving the final TDB snapshot before exiting.");
+    if (save_rules(rulefile) != 0) {
+        t01_log(T01_WARNING,"Error trying to save the DB, can't exit.");
+        return;
+     }
+  }
   shutdown_app = 1;
   aeStop(el);
 }
@@ -639,16 +694,17 @@ static void init_server()
   char interface[64];
   char err[ANET_ERR_LEN]; 
 
-  initLog(verbose, logfile);
+  init_log(verbose, logfile);
+  lastsave = time(NULL);
 
   manage_interface_promisc_mode(ifname, 1); 
-  t01Log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ifname);
+  t01_log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ifname);
 
   bzero(&base, sizeof(base));
   sprintf(interface, "netmap:%s", ifname);      
   nmr = nm_open(interface, &base, 0, NULL); 
   if (nmr == NULL){
-    t01Log(T01_WARNING, "Unable to open %s: %s", ifname, strerror(errno));
+    t01_log(T01_WARNING, "Unable to open %s: %s", ifname, strerror(errno));
     exit(1);
   }
   
@@ -656,19 +712,19 @@ static void init_server()
     out_nmr = nmr;
   } else {
     manage_interface_promisc_mode(ofname, 1); 
-    t01Log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ofname);
+    t01_log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ofname);
     sprintf(interface, "netmap:%s", ofname);      
     out_nmr = nm_open(interface, &base, 0, NULL); 
     if (out_nmr == NULL){
-      t01Log(T01_WARNING, "Unable to open %s: %s, use %s instead", ofname, strerror(errno), ifname);
+      t01_log(T01_WARNING, "Unable to open %s: %s, use %s instead", ofname, strerror(errno), ifname);
       out_nmr = nmr;
     }
   }
   
   if(rulefile[0]){
-    int rule_num = load_rules_from_file(rulefile, &rule_list, &ndpi_mask);
+    int rule_num = load_rules(rulefile, &ndpi_mask);
     if(rule_num > 0){
-      t01Log(T01_NOTICE, "Load %d rules from file %s", rule_num, rulefile);
+      t01_log(T01_NOTICE, "Load %d rules from file %s", rule_num, rulefile);
     } else {
       rule_num = 0;
     }
@@ -676,7 +732,7 @@ static void init_server()
 
   if(engine[0]){
     if(load_ioengine(&engine_data, engine) < 0){
-      t01Log(T01_WARNING, "Unable to load engine %s", engine);
+      t01_log(T01_WARNING, "Unable to load engine %s", engine);
     }
   }
 
@@ -689,7 +745,7 @@ static void init_server()
      }
 
     if (tcp_sofd == ANET_ERR) {
-      t01Log(T01_WARNING, "Could not create server tcp listening socket %s:%d: %s",
+      t01_log(T01_WARNING, "Could not create server tcp listening socket %s:%d: %s",
                 bind_ip[0] ? bind_ip : "*" , port, err);
       exit(1);
     }
@@ -701,7 +757,7 @@ static void init_server()
     unlink(unix_socket); 
     unix_sofd = anetUnixServer(err, unix_socket, 0, 64);
     if (unix_sofd == ANET_ERR) {
-      t01Log(T01_WARNING, "Opening socket: %s", err);
+      t01_log(T01_WARNING, "Opening socket: %s", err);
       exit(1);
     }
     anetNonBlock(NULL, unix_sofd);
@@ -709,7 +765,7 @@ static void init_server()
 
   /* Abort if there are no listening sockets at all. */
   if (tcp_sofd < 0 && unix_sofd < 0) {
-    t01Log(T01_WARNING, "Configured to not listen anywhere, exiting.");
+    t01_log(T01_WARNING, "Configured to not listen anywhere, exiting.");
     exit(1);
   }
 
@@ -719,12 +775,22 @@ static void init_server()
      * domain sockets. */
   if(tcp_sofd > 0 && aeCreateFileEvent(el, tcp_sofd, AE_READABLE,
             acceptTcpHandler, NULL) == AE_ERR) {
-    t01Panic("Unrecoverable error creating server.ipfd file event.");
+    t01_panic("Unrecoverable error creating server.ipfd file event.");
     }
   if(unix_sofd > 0 && aeCreateFileEvent(el, unix_sofd, AE_READABLE,
         acceptUnixHandler,NULL) == AE_ERR) {
-    t01Panic("Unrecoverable error creating server.sofd file event.");
+    t01_panic("Unrecoverable error creating server.sofd file event.");
   }
+}
+
+void close_listening_sockets()
+{
+  if(tcp_sofd!= -1) close(tcp_sofd);
+  if(unix_sofd != -1) close(unix_sofd);
+  if(unix_socket[0]) {
+    t01_log(T01_DEBUG, "Removing the unix socket file.");
+    unlink(unix_socket); /* don't care if this fails */
+   }
 }
 
 static void exit_server()
@@ -732,14 +798,8 @@ static void exit_server()
   if(out_nmr != nmr)
     nm_close(out_nmr);
   nm_close(nmr);
-  destroy_rules(&rule_list);
-
-  if(tcp_sofd!= -1) close(tcp_sofd);
-  if(unix_sofd != -1) close(unix_sofd);
-  if(unix_socket[0]) {
-    t01Log(T01_DEBUG, "Removing the unix socket file.");
-    unlink(unix_socket); /* don't care if this fails */
-   }
+  destroy_rules();
+  close_listening_sockets();
 }
 
 int main(int argc, char **argv)

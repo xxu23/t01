@@ -27,28 +27,16 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-/* inclusion guard */
-#ifndef __LOGGER_H__
-#define __LOGGER_H__
+#ifndef _T01_H_
+#define _T01_H_
 
-/* Log levels */
-#define T01_DEBUG 0
-#define T01_VERBOSE 1
-#define T01_NOTICE 2
-#define T01_WARNING 3
-#define T01_LOG_RAW (1<<10) /* Modifier to log without timestamp */
-#define T01_DEFAULT_VERBOSITY T01_NOTICE
+extern struct list_head rule_list;
+extern int dirty;
+extern int dirty_before_bgsave;
+extern lastbgsave_status;
+extern time_t lastsave;
+extern pid_t tdb_child_pid;
 
-void t01_log(int level, const char *fmt, ...);
-void t01_lograw(int level, const char *msg);
-void t01_log_from_handler(int level, const char *msg);
-void init_log(int verbosity, const char *logfile);
+void close_listening_sockets();
 
-/* Debugging stuff */
-void _t01_assert(char *estr, char *file, int line);
-void _t01_panic(char *msg, char *file, int line);
-
-#define t01_assert(_e) ((_e)?(void)0 : (_t01_assert(#_e,__FILE__,__LINE__),_exit(1)))
-#define t01_panic(_e) _t01_panic(#_e,__FILE__,__LINE__),_exit(1)
-
-#endif /* __LOGGER_H__ */
+#endif

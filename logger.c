@@ -131,7 +131,7 @@ static int ll2string(char* dst, size_t dstlen, long long svalue) {
 
 /* Low level logging. To use only for very big messages, otherwise
  * t01Log() is to prefer. */
-void t01LogRaw(int level, const char *msg) {
+void t01_lograw(int level, const char *msg) {
     const char *c = ".-*#";
     FILE *fp;
     char buf[64];
@@ -163,7 +163,7 @@ void t01LogRaw(int level, const char *msg) {
 /* Like t01LogRaw() but with printf-alike support. This is the function that
  * is used across the code. The raw version is only used in order to dump
  * the INFO output on crash. */
-void t01Log(int level, const char *fmt, ...) {
+void t01_log(int level, const char *fmt, ...) {
     va_list ap;
     char msg[1024];
 
@@ -173,7 +173,7 @@ void t01Log(int level, const char *fmt, ...) {
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
 
-    t01LogRaw(level,msg);
+    t01_lograw(level,msg);
 }
 
 /* Log a fixed message without printf-alike capabilities, in a way that is
@@ -182,7 +182,7 @@ void t01Log(int level, const char *fmt, ...) {
  * We actually use this only for signals that are not fatal from the point
  * of view of Redis. Signals that are going to kill the server anyway and
  * where we need printf-alike features are served by t01Log(). */
-void t01LogFromHandler(int level, const char *msg) {
+void t01_log_from_handler(int level, const char *msg) {
     int fd;
     int log_to_stdout = logfile[0] == '\0';
     char buf[64];
@@ -205,7 +205,7 @@ err:
     if (!log_to_stdout) close(fd);
 }
 
-void initLog(int _verbosity, const char *_logfile) {
+void init_log(int _verbosity, const char *_logfile) {
     verbosity = _verbosity;
     if(_logfile && _logfile[0])
         strncpy(logfile, _logfile, sizeof(logfile));
@@ -213,17 +213,17 @@ void initLog(int _verbosity, const char *_logfile) {
 
 /* =========================== Crash handling  ============================== */
 
-void _t01Assert(char *estr, char *file, int line) {
-    t01Log(T01_WARNING,"=== ASSERTION FAILED ===");
-    t01Log(T01_WARNING,"==> %s:%d '%s' is not true",file,line,estr);
+void _t01_assert(char *estr, char *file, int line) {
+    t01_log(T01_WARNING,"=== ASSERTION FAILED ===");
+    t01_log(T01_WARNING,"==> %s:%d '%s' is not true",file,line,estr);
     *((char*)-1) = 'x';
 }
 
-void _t01Panic(char *msg, char *file, int line) {
-    t01Log(T01_WARNING,"------------------------------------------------");
-    t01Log(T01_WARNING,"!!! Software Failure. Press left mouse button to continue");
-    t01Log(T01_WARNING,"Guru Meditation: %s #%s:%d",msg,file,line);
-    t01Log(T01_WARNING,"------------------------------------------------");
+void _t01_panic(char *msg, char *file, int line) {
+    t01_log(T01_WARNING,"------------------------------------------------");
+    t01_log(T01_WARNING,"!!! Software Failure. Press left mouse button to continue");
+    t01_log(T01_WARNING,"Guru Meditation: %s #%s:%d",msg,file,line);
+    t01_log(T01_WARNING,"------------------------------------------------");
     *((char*)-1) = 'x';
 }
 
