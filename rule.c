@@ -436,7 +436,7 @@ int add_one_hit_record(struct rule *r, uint64_t time,
 		return -1;
 	bzero(h, sizeof(*h));
 
-	h->id = r->id;
+	h->rule_id = r->id;
 	h->time = time;
 	h->saddr = saddr;
 	h->daddr = daddr;
@@ -457,6 +457,7 @@ int add_one_hit_record(struct rule *r, uint64_t time,
 	list_add(&h->list, &r->hit_head);
 	r->hits++;
 	r->saved_hits++;
+	h->id = r->hits;
 	dirty++;
 
 	return 0;
@@ -773,6 +774,7 @@ static cJSON *hit2cjson(struct hit_record *hit)
 	char ip[48];
 
 	cJSON_AddNumberToObject(root, "id", hit->id);
+	cJSON_AddNumberToObject(root, "rule_id", hit->rule_id);
 	cJSON_AddNumberToObject(root, "time", hit->time);
 	if (hit->sport)
 		cJSON_AddNumberToObject(root, "sport", hit->sport);

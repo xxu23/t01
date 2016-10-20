@@ -39,6 +39,7 @@ union match_payload {
 
 struct hit_record {
 	uint32_t id;
+	uint32_t rule_id;
 	uint32_t saddr;
 	uint32_t daddr;
 	uint16_t sport;
