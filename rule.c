@@ -446,15 +446,15 @@ int add_one_hit_record(struct rule *r, uint64_t time,
 	memcpy(h->dmac, dmac, 6);
 
 	if (r->saved_hits == MAX_HITS_PER_RULE) {
-		struct list_head *head = r->hit_head.next;
+		struct list_head *tail = r->hit_head.prev;
 		struct hit_record *hh =
-		    list_entry(head, struct hit_record, list);
+		    list_entry(tail, struct hit_record, list);
 		r->saved_hits--;
-		list_del(head);
+		list_del(tail);
 		free(hh);
 	}
 
-	list_add_tail(&h->list, &r->hit_head);
+	list_add(&h->list, &r->hit_head);
 	r->hits++;
 	r->saved_hits++;
 	dirty++;
@@ -826,7 +826,6 @@ int get_hits(uint32_t rule_id, int offset, int limit, char **out,
 		if (i++ < offset)
 			continue;
 		hit = list_entry(pos, struct hit_record, list);
-		printf("rule %p hit %p\n", rule, hit);
 		cJSON_AddItemToArray(root, hit2cjson(hit));
 		if (--limit == 0)
 			break;
