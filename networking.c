@@ -39,263 +39,364 @@
 #include "anet.h"
 #include "networking.h"
 #include "rule.h"
+#include "http.h"
+#include "client.h"
 #include "zmalloc.h"
 #include "logger.h"
 
-/* With multiplexing we need to take per-client state.
- * Clients are taken in a linked list. */
-typedef struct t01Client {
-    uint64_t id;            /* Client incremental unique ID. */
-    int fd;
-    time_t ctime;           /* Client creation time */
-    char request[1024*16];
-    char reply[1024*16];
-    uint8_t command; 
-    int req_len;
-    uint8_t response;
-    int resp_len;
-    aeEventLoop *el;
-} t01Client;
-
-t01Client *createClient(aeEventLoop *el, int fd) {
-    static int client_id = 0;
-    t01Client *c = malloc(sizeof(t01Client));
-
-    if (fd != -1) {
-        //anetNonBlock(NULL,fd);
-        anetEnableTcpNoDelay(NULL,fd);
-        if (aeCreateFileEvent(el,fd,AE_READABLE, readQueryFromClient, c) == AE_ERR)
-        {
-            close(fd);
-            free(c);
-            return NULL;
-        }
-    }
-
-    c->id = client_id++;
-    c->fd = fd;
-    c->ctime = time(NULL);
-    c->el = el;
-    return c;
-}
-
 #define MAX_ACCEPTS_PER_CALL 1000
-static void acceptCommonHandler(aeEventLoop *el, int fd) {
-    t01Client *c;
-    if ((c = createClient(el, fd)) == NULL) {
-        t01_log(T01_WARNING,
-            "Error registering fd event for the new client: %s (fd=%d)",
-            strerror(errno),fd);
-        close(fd); /* May be already closed, just ignore errors */
-        return;
-    }
+
+void tcp_server_can_accept(aeEventLoop * el, int fd, void *privdata, int mask)
+{
+	int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
+	char cip[16];
+	char err[ANET_ERR_LEN];
+
+	while (max--) {
+		cfd = anetTcpAccept(err, fd, cip, sizeof(cip), &cport);
+		if (cfd == ANET_ERR) {
+			if (errno != EWOULDBLOCK)
+				t01_log(T01_WARNING,
+					"Accepting client connection: %s", err);
+			return;
+		}
+		t01_log(T01_NOTICE, "Accepted %s:%d [fd=%d]", cip, cport, cfd);
+		http_client_new(el, cfd, cip, cport);
+	}
 }
 
-void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
-    int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
-    char cip[16];
-    char err[ANET_ERR_LEN]; 
-
-    while(max--) {
-        cfd = anetTcpAccept(err, fd, cip, sizeof(cip), &cport);
-        if (cfd == ANET_ERR) {
-            if (errno != EWOULDBLOCK)
-                t01_log(T01_WARNING, "Accepting client connection: %s", err);
-            return;
-        }
-        t01_log(T01_NOTICE, "Accepted %s:%d", cip, cport);
-        acceptCommonHandler(el, cfd);
-    }
-}
-
-void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
-    int cfd, max = MAX_ACCEPTS_PER_CALL;
-    char err[ANET_ERR_LEN]; 
-
-    while(max--) {
-        cfd = anetUnixAccept(err, fd);
-        if (cfd == ANET_ERR) {
-            if (errno != EWOULDBLOCK)
-                t01_log(T01_WARNING, "Accepting client connection: %s", err);
-            return;
-        }
-        t01_log(T01_DEBUG, "Accepted unix socket connection");
-        acceptCommonHandler(el, cfd);
-    }
-}
-
-void freeClient(t01Client *c) {
-    if (c->fd != -1 && c->el) {
-        aeDeleteFileEvent(c->el, c->fd, AE_READABLE);
-        aeDeleteFileEvent(c->el, c->fd, AE_WRITABLE);
-        close(c->fd);
-     }
-    c->el = NULL;
-    c->fd = -1;
-    free(c);
-}
-
-void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
-    t01Client *c = (t01Client *)privdata;
-    int nwritten = 0, totwritten = 0, objlen;
-    struct t01_header header = INIT_T01_HEADER(c->command, c->response);
-    header.body_len = c->resp_len;
-    
-    nwritten = anetWrite(fd, (char *)&header, sizeof(header));
-    if (nwritten == -1) {
-        if (errno == EAGAIN) {
-            nwritten = 0;
-        } else {
-            t01_log(T01_WARNING, "Error writing header to client: %s", strerror(errno));
-            freeClient(c);
-            return;
-        }
-    }
-
-    if(c->resp_len > 0) {
-        nwritten = anetWrite(fd, c->reply, c->resp_len);
-        if (nwritten == -1) {
-            if (errno == EAGAIN) {
-                nwritten = 0;
-            } else {
-                t01_log(T01_WARNING, "Error writing body to client: %s", strerror(errno));
-                freeClient(c);
-                return;
-            }
-        }
-    }
-}
-
-typedef int (*commandAction)(void* in, int len, void* out, int out_len);
-
-static int getRule(void* in, int len, void* out, int out_len) {
-    uint32_t id = *(uint32_t*)in;
-    int ret = get_rule_by_id(id, out, out_len);
-    if(ret < 0){
-        snprintf(out, out_len, "rule_id=%u is not found", id);
-        return T01_ERR_NOTFOUND;
-    }
-    return ret;
-}
-
-static int getRulesByIds(void* in, int len, void* out, int out_len) {
-    uint32_t* ids = (uint32_t*)in;
-    len /= sizeof(uint32_t);
-    int ret = get_rules_by_ids(ids, len, out, out_len);
-    return ret;
-}
-
-
-static int getRuleIds(void* in, int len, void* out, int out_len) {
-    int ret = get_rule_ids(out, out_len);
-    return ret;
-}
-
-static int putRule(void* in, int len, void* out, int out_len) {
-    int ret = update_rule(in, len, out, out_len);
-    if(ret < 0){
-        snprintf(out, out_len, "the rule is not found");
-        return T01_ERR_NOTFOUND;
-    }
-    return ret;
-}
-
-static int delRule(void* in, int len, void* out, int out_len) {
-    uint32_t id = *(uint32_t*)in;
-    int ret = delete_rule_by_id(id, out, out_len);
-    if(ret < 0){
-        snprintf(out, out_len, "rule_id=%u is not found", id);
-        return T01_ERR_NOTFOUND;
-    }
-    return ret;
-}
-
-static int addRule(void* in, int len, void* out, int out_len) {
-    int ret = add_rule(in, len, out, out_len);
-    if(ret < 0){
-        return T01_ERR_INTERNAL;
-    }
-    
-    *((uint32_t*)out) = ret;
-    return sizeof(uint32_t);
-}
-
-static struct t01Command {
-    uint8_t command;
-    commandAction action;
-}commands[] = {
-    { T01_COMMAND_GET_RULE, getRule },
-    { T01_COMMAND_PUT_RULE, putRule },
-    { T01_COMMAND_DEL_RULE, delRule },
-    { T01_COMMAND_ADD_RULE, addRule },
-    { T01_COMMAND_GET_RULEIDS, getRuleIds },
-    { T01_COMMAND_GET_RULES,  getRulesByIds },
+struct cmd {
+	struct http_client *client;
+	int count;
+	char **argv;
+	size_t *argv_len;
+	const char *body;
+	size_t body_len;
 };
 
-static void dispatchCommand(aeEventLoop *el, t01Client *c, int fd) {
-    int i;
-    struct t01Command* cmd = NULL;
+static struct cmd *cmd_new(struct http_client *client, int count, 
+					const char *body, size_t body_len)
+{
+	struct cmd *c = calloc(1, sizeof(struct cmd));
 
-    for(i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
-        if(commands[i].command == c->command) {
-            cmd = &commands[i];
-            break;
-        }
-    }
+	c->client = client;
+	c->count = count;
+	c->argv = calloc(count, sizeof(char *));
+	c->argv_len = calloc(count, sizeof(size_t));
+	c->body = body;
+	c->body_len = body_len;
 
-    if(cmd == NULL) {
-        c->response = T01_ERR_NOTSUPPORT;
-        strcpy(c->reply, "Not support this command!");
-        c->resp_len = strlen(c->reply); 
-    } else {
-        int ret = cmd->action(c->request, c->req_len, c->reply, sizeof(c->reply));
-        if (ret < 0) {
-            c->response = ret;
-            c->resp_len = strlen(c->reply);
-        } else {
-            c->response = 0;
-            c->resp_len = ret;
-        }
-    }
+	return c;
 }
 
-void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
-    t01Client *c = (t01Client*) privdata;
-    int nread;
-    struct t01_header header;
-    
-    nread = read(fd, &header, sizeof(header));
-    if (nread == -1) {
-        if (errno == EAGAIN) {
-            nread = 0;
-        } else {
-            t01_log(T01_WARNING, "Reading header from client: %s",strerror(errno));
-            freeClient(c);
-            return;
-        }
-    } else if (nread == 0) {
-        t01_log(T01_WARNING, "Client closed connection");
-        freeClient(c);
-        return;
-    }
-    if (IS_HEADER_VALID(header)) {
-        int datalen = header.body_len;
-        c->command = header.command; 
-        c->req_len = datalen > 0 ? datalen : 0;
-        c->response = c->resp_len = 0;
-        if(datalen > 0) {
-            nread = anetRead(fd, c->request, datalen);
-            if (nread == -1) {
-                t01_log(T01_WARNING, "Reading body from client: %s",strerror(errno));
-                freeClient(c);
-                return;
-               }
-          }
-        dispatchCommand(el, c, fd);
-        sendReplyToClient(el, fd, privdata, mask);
-    } else {
-        t01_log(T01_WARNING, "Invalid client, drop connection");
-        freeClient(c);
-        return;
-    }
+void cmd_free(struct cmd *c)
+{
+	int i;
+	if (!c)
+		return;
+
+	for (i = 0; i < c->count; ++i) {
+		free((char *)c->argv[i]);
+	}
+}
+
+static char *decode_uri(const char *uri, size_t length, size_t * out_len,
+			int always_decode_plus)
+{
+	char c;
+	size_t i, j;
+	int in_query = always_decode_plus;
+	char *ret = malloc(length + 1);
+
+	for (i = j = 0; i < length; i++) {
+		c = uri[i];
+		if (c == '?') {
+			in_query = 1;
+		} else if (c == '+' && in_query) {
+			c = ' ';
+		} else if (c == '%' && isxdigit((unsigned char)uri[i + 1]) &&
+			   isxdigit((unsigned char)uri[i + 2])) {
+			char tmp[] = { uri[i + 1], uri[i + 2], '\0' };
+			c = (char)strtol(tmp, NULL, 16);
+			i += 2;
+		}
+		ret[j++] = c;
+	}
+	*out_len = (size_t) j;
+
+	return ret;
+}
+
+static struct cmd *cmd_init(struct http_client *c, const char *uri,
+			    size_t uri_len, const char *body, size_t body_len)
+{
+	char *slash;
+	const char *p, *cmd_name = uri;
+	int cmd_len;
+	int param_count = 0, cur_param = 1, i;
+	struct cmd *cmd = NULL;
+
+	for (p = uri; p && p < uri + uri_len; param_count++) {
+		p = memchr(p + 1, '/', uri_len - (p + 1 - uri));
+	}
+
+	if (param_count == 0) {
+		return NULL;
+	}
+
+	cmd = cmd_new(c, param_count, body, body_len);
+
+	/* check if we only have one command or more. */
+	slash = memchr(uri, '/', uri_len);
+	if (slash) {
+		cmd_len = slash - uri;
+	} else {
+		cmd_len = uri_len;
+	}
+
+	/* there is always a first parameter, it's the command name */
+	cmd->argv[0] = malloc(cmd_len + 1);
+	memcpy(cmd->argv[0], cmd_name, cmd_len);
+	cmd->argv[0][cmd_len] = 0;
+	cmd->argv_len[0] = cmd_len + 1;
+
+	p = cmd_name + cmd_len + 1;
+	while (p < uri + uri_len) {
+		const char *arg = p;
+		int arg_len;
+		char *next = memchr(arg, '/', uri_len - (arg - uri));
+		if (!next || next > uri + uri_len) {	/* last argument */
+			p = uri + uri_len;
+			arg_len = p - arg;
+		} else {	/* found a slash */
+			arg_len = next - arg;
+			p = next + 1;
+		}
+
+		/* record argument */
+		if (arg_len > 0) {
+			cmd->argv[cur_param] =
+			    decode_uri(arg, arg_len, &cmd->argv_len[cur_param],
+				       1);
+			cur_param++;
+		}
+	}
+
+	for (i = cur_param; i < cmd->count; i++) {
+		free(cmd->argv[i]);
+		cmd->argv[i] = NULL;
+		cmd->argv_len[i] = 0;
+	}
+	cmd->count = cur_param;
+
+	return cmd;
+}
+
+static void send_client_reply(struct cmd *cmd, const char *p, size_t sz,
+			      const char *content_type)
+{
+	const char *ct = content_type;
+	struct http_response *resp;
+
+	resp = http_response_init(200, "OK");
+	http_response_set_header(resp, "Content-Type", ct);
+	http_response_set_body(resp, p, sz);
+	http_response_set_keep_alive(resp, 1);
+	http_response_write(resp, cmd->client->fd);
+}
+
+static int client_get_rule(struct http_client *c, struct cmd *cmd)
+{
+	uint32_t id = atoi(cmd->argv[1]);
+	char *result = NULL;
+	size_t len = 0;
+	int ret = get_rule(id, &result, &len);
+	if (ret == 0) {
+		send_client_reply(cmd, result, len, "application/json");
+		release_buffer(&result);
+	} else {
+		http_send_error(c, 404, "Not Found");
+	}
+	return ret;
+}
+
+static int client_get_ruleids(struct http_client *c, struct cmd *cmd)
+{
+	char *result = NULL;
+	size_t len = 0;
+	get_ruleids(&result, &len);
+
+	send_client_reply(cmd, result, len, "application/json");
+	release_buffer(&result);
+
+	return 0;
+}
+
+static int client_get_rules(struct http_client *c, struct cmd *cmd)
+{
+	int n = c->query_count, i, j = 0;
+	uint32_t *ids = malloc(n * sizeof(uint32_t));
+	char *result = NULL;
+	size_t len = 0;
+
+	for (i = 0; i < n; i++) {
+		if (strcasecmp(c->queries[i].key, "id") == 0)
+			ids[j++] = atoi(c->queries[i].val);
+	}
+	get_rules(ids, j, &result, &len);
+	send_client_reply(cmd, result, len, "application/json");
+	release_buffer(&result);
+
+	return 0;
+}
+
+static int client_get_hits(struct http_client *c, struct cmd *cmd)
+{
+	const int MAX_LIMIT = 100;
+	int offset = 0, limit = MAX_LIMIT;
+	uint32_t rule_id = 0;
+	int query_count = c->query_count, i, j = 0;
+	char *result = NULL;
+	size_t len = 0;
+	int ret;
+
+	for (i = 0; i < query_count; i++) {
+		if (strcasecmp(c->queries[i].key, "rule_id") == 0)
+			rule_id = atoi(c->queries[i].val);
+		else if (strcasecmp(c->queries[i].key, "offset") == 0)
+			offset = atoi(c->queries[i].val);
+		else if (strcasecmp(c->queries[i].key, "limit") == 0)
+			limit = atoi(c->queries[i].val);
+	}
+	if(offset < 0) offset = 0;
+	if(limit <= 0 || limit > MAX_LIMIT) limit = MAX_LIMIT;
+
+	ret = get_hits(rule_id, offset, limit, &result, &len);
+	if(ret == 0){
+		send_client_reply(cmd, result, len, "application/json");
+		release_buffer(&result);
+	} else {
+		http_send_error(c, 404, "Not Found");	
+	}
+
+	return ret;
+}
+
+static int client_create_rule(struct http_client *c, struct cmd *cmd)
+{
+	char *result = NULL;
+	size_t len = 0;
+	int ret = create_rule(cmd->body, cmd->body_len, &result, &len);
+	if (ret == 0) {
+		send_client_reply(cmd, result, len, "application/json");
+	} else {
+		http_send_error(c, 400, "Bad Request");
+	}
+	return ret;
+}
+
+static int client_update_rule(struct http_client *c, struct cmd *cmd)
+{
+	uint32_t id = atoi(cmd->argv[1]);
+	int ret = update_rule(id, cmd->body, cmd->body_len);
+	if (ret == 0) {
+		send_client_reply(cmd, NULL, 0, "application/json");
+	} else {
+		http_send_error(c, 400, "Bad Request");
+	}
+	return ret;
+}
+
+static int client_delete_rule(struct http_client *c, struct cmd *cmd)
+{
+	uint32_t id = atoi(cmd->argv[1]);
+	int ret = delete_rule(id);
+	if (ret == 0) {
+		send_client_reply(cmd, NULL, 0, "application/json");
+	} else {
+		http_send_error(c, 400, "Bad Request");
+	}
+	return ret;
+}
+
+static struct http_cmd_table {
+	int method;
+	const char *command;
+	size_t params;
+	int (*action) (struct http_client * client, struct cmd * cmd);
+} tables[] = {
+	{ HTTP_GET, "rule", 1, client_get_rule}, 
+	{ HTTP_GET, "ruleids", 0, client_get_ruleids}, 
+	{ HTTP_GET, "rules", 0, client_get_rules}, 
+	{ HTTP_GET, "hits", 0, client_get_hits}, 
+	{ HTTP_POST, "rules", 0, client_create_rule}, 
+	{ HTTP_PUT, "rule", 1, client_update_rule}, 
+	{ HTTP_DELETE, "rule", 1, client_delete_rule},
+};
+
+static void cmd_dispatch(struct http_client *c, struct cmd *cmd, int method)
+{
+	int i;
+	struct http_cmd_table *which = NULL;
+	if (!cmd) {
+		http_send_error(c, 404, "Not Found");
+		return;
+	}
+	
+	for (i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
+		if (tables[i].method == method &&
+		    tables[i].params == cmd->count - 1 &&
+		    strcasecmp(tables[i].command, cmd->argv[0]) == 0) {
+			which = &tables[i];
+			break;
+		}
+	}
+
+	if (which == NULL) {
+		http_send_error(c, 404, "Not Found");
+	} else {
+		int ret = which->action(c, cmd);
+	}
+}
+
+int cmd_run_get(struct http_client *c, const char *uri, size_t uri_len)
+{
+	struct cmd *cmd = cmd_init(c, uri, uri_len, NULL, 0);
+
+	cmd_dispatch(c, cmd, HTTP_GET);
+	cmd_free(cmd);
+
+	return 0;
+}
+
+int cmd_run_post(struct http_client *c, const char *uri, size_t uri_len,
+		 const char *body, size_t body_len)
+{
+	struct cmd *cmd = cmd_init(c, uri, uri_len, body, body_len);
+
+	cmd_dispatch(c, cmd, HTTP_POST);
+	cmd_free(cmd);
+
+	return 0;
+}
+
+int cmd_run_put(struct http_client *c, const char *uri, size_t uri_len,
+		const char *body, size_t body_len)
+{
+	struct cmd *cmd = cmd_init(c, uri, uri_len, body, body_len);
+
+	cmd_dispatch(c, cmd, HTTP_PUT);
+	cmd_free(cmd);
+
+	return 0;
+}
+
+int cmd_run_delete(struct http_client *c, const char *uri, size_t uri_len)
+{
+	struct cmd *cmd = cmd_init(c, uri, uri_len, NULL, 0);
+
+	cmd_dispatch(c, cmd, HTTP_DELETE);
+	cmd_free(cmd);
+
+	return 0;
 }

@@ -33,6 +33,8 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <inttypes.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <time.h>

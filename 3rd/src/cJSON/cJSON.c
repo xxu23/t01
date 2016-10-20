@@ -346,6 +346,8 @@ cJSON *cJSON_Parse(const char *value) {return cJSON_ParseWithOpts(value,0,0);}
 char *cJSON_Print(cJSON *item)				{return print_value(item,0,1,0);}
 char *cJSON_PrintUnformatted(cJSON *item)	{return print_value(item,0,0,0);}
 
+void cJSON_FreePrint(char *p) { if(p) cJSON_free(p); }
+
 char *cJSON_PrintBuffered(cJSON *item,int prebuffer,int fmt)
 {
 	printbuffer p;

@@ -33,51 +33,49 @@
 
 #include "list.h"
 
-union match_payload{
-  char host[256];
+union match_payload {
+	char host[256];
 };
 
-struct hit_record
-{
-  uint32_t id;
-  uint32_t saddr;
-  uint32_t daddr;
-  uint16_t sport;
-  uint16_t dport;
-  uint8_t smac[6];
-  uint8_t dmac[6];
-  uint64_t time;
-  struct list_head list;
+struct hit_record {
+	uint32_t id;
+	uint32_t saddr;
+	uint32_t daddr;
+	uint16_t sport;
+	uint16_t dport;
+	uint8_t smac[6];
+	uint8_t dmac[6];
+	uint64_t time;
+	struct list_head list;
 };
 
-struct rule
-{
-  uint32_t id;
-  char human_protocol[16];
-  char human_saddr[16];
-  char human_daddr[16];
-  uint16_t sport;
-  uint16_t dport;
-  char human_action[16];
-  union match_payload condition;
-  char action_params[4][256];
-  uint8_t protocol;
-  uint8_t master_protocol;
-  uint8_t action;
-  uint8_t used;
-  uint32_t saved_hits;
-  uint32_t saddr0, saddr1;
-  uint32_t daddr0, daddr1;
-  uint64_t hits;
-  struct list_head list;
-  struct list_head hit_head;
+struct rule {
+	uint32_t id;
+	char human_protocol[16];
+	char human_saddr[16];
+	char human_daddr[16];
+	uint16_t sport;
+	uint16_t dport;
+	char human_action[16];
+	union match_payload condition;
+	char action_params[4][256];
+	uint8_t protocol;
+	uint8_t master_protocol;
+	uint8_t action;
+	uint8_t used;
+	uint32_t saved_hits;
+	uint32_t saddr0, saddr1;
+	uint32_t daddr0, daddr1;
+	uint64_t hits;
+	struct list_head list;
+	struct list_head hit_head;
 };
 
 #define T01_ACTION_REDIRECT 		1
 #define T01_ACTION_REJECT		2
 #define T01_ACTION_CONFUSE		3
 
-int load_rules(const char* filename, void* ndpi_mask);
+int load_rules(const char *filename, void *ndpi_mask);
 
 int save_rules(const char *filename);
 
@@ -85,20 +83,20 @@ int save_rules_background(const char *filename);
 
 void destroy_rules();
 
-int should_save();
+struct rule *match_rule_from_packet(void *flow, void *packet);
 
-struct rule* match_rule_from_packet(void* flow, void* packet);
+int add_one_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
+		       uint32_t daddr, uint16_t sport, uint16_t dport,
+		       uint8_t smac[], uint8_t dmac[]);
 
-int add_one_hit_record(struct rule *r, uint64_t time,
-             	     uint32_t saddr, uint32_t daddr, 
-			     uint16_t sport, uint16_t dport,
-			     uint8_t smac[], uint8_t dmac[]);
-
-int get_rule_ids(void* out, int out_len);
-int get_rule_by_id(uint32_t id, void* out, int out_len);
-int get_rules_by_ids(uint32_t* ids, int len, void* out, int out_len);
-int update_rule(void* in, int in_len, void* out, int out_len);
-int delete_rule_by_id(uint32_t id, void* out, int out_len);
-int add_rule(void* in, int in_len, void* out, int out_len);
+void release_buffer(char **out);
+int get_ruleids(char **out, size_t *out_len);
+int get_rule(uint32_t id, char **out, size_t *out_len);
+int get_rules(uint32_t *id, size_t len, char **out, size_t *out_len);
+int get_hits(uint32_t rule_id, int offset, int limit, char **out,
+	     size_t *out_len);
+int delete_rule(uint32_t id);
+int update_rule(uint32_t id, const char *body, int body_len);
+int create_rule(const char *body, int body_len, char **out, size_t *out_len);
 
 #endif /* __RULE_H__ */

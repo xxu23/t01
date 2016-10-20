@@ -74,8 +74,6 @@ static u_int64_t cronloops;
 static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
 static char ifname[32], ofname[32];
-static char unix_socket[64];
-static int unix_sofd;
 static int port = 9899;
 static char bind_ip[32];
 static int tcp_sofd;
@@ -386,7 +384,7 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
   static struct saveparam{ 
     time_t seconds;
     int changes;
-  }saveparams[] = {{300, 1}, {60, 10}, {5, 500}, {1, 3000}};
+  }saveparams[] = {{300, 1}, {60, 30}, {5, 500}, {1, 3000}};
 
   run_with_period(5000) {
     struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
@@ -594,7 +592,6 @@ static void usage()
 	  "\t-c rulefile               json rule file for traffic action\n"
 	  "\t-b ip                     ip address binded\n"
 	  "\t-p port                   port listening for incoming client (default 9899)\n"
-	  "\t-u path                   unix socket file path listening for incoming client\n"
 	  "\t-m mask                   enable all ndpi protocol or not (default 1)\n"
 	  "\t-e engine                 backend engine to store network flow data\n"
 	  "\t-E eigine_opt             arguments attached to specified engine\n"
@@ -629,10 +626,6 @@ static void parse_options(int argc, char **argv) {
 
     case 'b':
       strncpy(bind_ip, optarg, sizeof(bind_ip));
-      break;
-
-    case 'u':
-      strncpy(unix_socket, optarg, sizeof(unix_socket));
       break;
 
     case 'c':
@@ -674,7 +667,7 @@ static void parse_options(int argc, char **argv) {
 static void signal_hander(int sig)
 {
   static int called = 0;
-  int save = should_save();
+  int save = dirty != 0;
   t01_log(T01_WARNING, "received control-C, shutdowning");
   if(called) return; else called = 1;
   if(save) {
@@ -752,19 +745,8 @@ static void init_server()
     anetNonBlock(NULL, tcp_sofd);
   }
 
-  /* Open the listening Unix domain socket. */
-  if (unix_socket[0]) {
-    unlink(unix_socket); 
-    unix_sofd = anetUnixServer(err, unix_socket, 0, 64);
-    if (unix_sofd == ANET_ERR) {
-      t01_log(T01_WARNING, "Opening socket: %s", err);
-      exit(1);
-    }
-    anetNonBlock(NULL, unix_sofd);
-  }
-
   /* Abort if there are no listening sockets at all. */
-  if (tcp_sofd < 0 && unix_sofd < 0) {
+  if (tcp_sofd < 0 ) {
     t01_log(T01_WARNING, "Configured to not listen anywhere, exiting.");
     exit(1);
   }
@@ -774,23 +756,15 @@ static void init_server()
   /* Create an event handler for accepting new connections in TCP and Unix
      * domain sockets. */
   if(tcp_sofd > 0 && aeCreateFileEvent(el, tcp_sofd, AE_READABLE,
-            acceptTcpHandler, NULL) == AE_ERR) {
+            tcp_server_can_accept, NULL) == AE_ERR) {
     t01_panic("Unrecoverable error creating server.ipfd file event.");
     }
-  if(unix_sofd > 0 && aeCreateFileEvent(el, unix_sofd, AE_READABLE,
-        acceptUnixHandler,NULL) == AE_ERR) {
-    t01_panic("Unrecoverable error creating server.sofd file event.");
-  }
+ 
 }
 
 void close_listening_sockets()
 {
   if(tcp_sofd!= -1) close(tcp_sofd);
-  if(unix_sofd != -1) close(unix_sofd);
-  if(unix_socket[0]) {
-    t01_log(T01_DEBUG, "Removing the unix socket file.");
-    unlink(unix_socket); /* don't care if this fails */
-   }
 }
 
 static void exit_server()
