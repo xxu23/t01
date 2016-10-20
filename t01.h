@@ -37,6 +37,22 @@ extern lastbgsave_status;
 extern time_t lastsave;
 extern pid_t tdb_child_pid;
 
+extern time_t upstart;
+extern char ifname[32], ofname[32];
+
+extern uint64_t total_flow_bytes;
+extern uint64_t raw_packet_count;
+extern uint64_t ip_packet_count;
+extern uint64_t ip_packet_count_out;
+extern uint64_t total_wire_bytes, total_ip_bytes;
+extern uint64_t total_ip_bytes_out;
+extern uint64_t tcp_count, udp_count;
+extern uint64_t hits; 
+extern uint64_t bytes_per_second_in;
+extern uint64_t bytes_per_second_out;
+extern uint64_t pkts_per_second_in;
+extern uint64_t pkts_per_second_out;
+
 void close_listening_sockets();
 
 #endif

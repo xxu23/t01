@@ -35,6 +35,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <inttypes.h>
+#include "t01.h"
 #include "ae.h"
 #include "anet.h"
 #include "networking.h"
@@ -42,6 +43,7 @@
 #include "http.h"
 #include "client.h"
 #include "zmalloc.h"
+#include "cJSON.h"
 #include "logger.h"
 
 #define MAX_ACCEPTS_PER_CALL 1000
@@ -319,6 +321,33 @@ static int client_delete_rule(struct http_client *c, struct cmd *cmd)
 	return ret;
 }
 
+static int client_get_server_info(struct http_client *c, struct cmd *cmd)
+{
+	cJSON *root = cJSON_CreateObject();
+	char *result;
+	
+	cJSON_AddStringToObject(root, "iface", ifname);
+	cJSON_AddStringToObject(root, "oface", ofname[0]?ofname:ifname);
+	cJSON_AddNumberToObject(root, "upstart", upstart);
+	cJSON_AddNumberToObject(root, "now", time(NULL));
+	cJSON_AddNumberToObject(root, "total_pkts_in", ip_packet_count);
+	cJSON_AddNumberToObject(root, "total_pkts_out", ip_packet_count_out);
+	cJSON_AddNumberToObject(root, "total_bytes_in", total_ip_bytes);
+	cJSON_AddNumberToObject(root, "total_bytes_out", total_ip_bytes_out);
+	cJSON_AddNumberToObject(root, "avg_pkts_in", pkts_per_second_in);
+	cJSON_AddNumberToObject(root, "avg_pkts_out", pkts_per_second_out);
+	cJSON_AddNumberToObject(root, "avg_bytes_in", bytes_per_second_in);
+	cJSON_AddNumberToObject(root, "avg_bytes_out", bytes_per_second_out);
+	cJSON_AddNumberToObject(root, "hits", hits);
+	
+	result = cJSON_Print(root);
+	send_client_reply(cmd, result, strlen(result), "application/json");
+
+	cJSON_Delete(root);
+	cJSON_FreePrint(result);
+	return 0;
+}
+
 static struct http_cmd_table {
 	int method;
 	const char *command;
@@ -332,6 +361,7 @@ static struct http_cmd_table {
 	{ HTTP_POST, "rules", 0, client_create_rule}, 
 	{ HTTP_PUT, "rule", 1, client_update_rule}, 
 	{ HTTP_DELETE, "rule", 1, client_delete_rule},
+	{ HTTP_GET, "info", 0, client_get_server_info},
 };
 
 static void cmd_dispatch(struct http_client *c, struct cmd *cmd, int method)

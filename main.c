@@ -68,12 +68,26 @@ int dirty_before_bgsave;
 int lastbgsave_status;
 time_t lastsave;
 pid_t tdb_child_pid = -1;
+char ifname[32], ofname[32];
+time_t upstart;
+uint64_t total_flow_bytes = 0;
+uint64_t raw_packet_count = 0;
+uint64_t ip_packet_count = 0;
+uint64_t ip_packet_count_out = 0;
+uint64_t total_wire_bytes = 0, total_ip_bytes = 0;
+uint64_t total_ip_bytes_out = 0;
+uint64_t tcp_count = 0, udp_count = 0;
+uint64_t hits = 0; 
+uint64_t bytes_per_second_in = 0;
+uint64_t bytes_per_second_out = 0;
+uint64_t pkts_per_second_in = 0;
+uint64_t pkts_per_second_out = 0;
 
+static struct timeval upstart_tv;
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
-static u_int64_t cronloops;
+static uint64_t cronloops;
 static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
-static char ifname[32], ofname[32];
 static int port = 9899;
 static char bind_ip[32];
 static int tcp_sofd;
@@ -81,7 +95,7 @@ static aeEventLoop *el;
 static char rulefile[256];
 static char logfile[256];
 static struct nm_desc *nmr, *out_nmr;
-static u_int8_t shutdown_app = 0;
+static uint8_t shutdown_app = 0;
 static char engine[64];
 static char engine_opt[256];
 static struct ioengine_data engine_data;
@@ -267,6 +281,8 @@ next:
   int len = make_packet(rule, packet, result, sizeof(result));
   if(len) {
     nm_inject(out_nmr, result, len);
+    total_ip_bytes_out += len;
+    ip_packet_count_out++;
   
     if(verbose){
       char l[48], u[48];
@@ -390,25 +406,22 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
     struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
     struct ndpi_stats* stat = &workflow->stats;
     struct timeval curr_ts;
-    u_int64_t tot_usec;
-    static u_int64_t total_flow_bytes = 0;
-    static u_int64_t raw_packet_count = 0;
-    static u_int64_t ip_packet_count = 0;
-    static u_int64_t total_wire_bytes = 0, total_ip_bytes = 0;
-    static u_int64_t tcp_count = 0, udp_count = 0;
-    static u_int64_t hits = 0; 
+    uint64_t tot_usec, since_usec;
+    struct list_head* pos;
+    uint64_t total_hits = 0;
+    unsigned int avg_pkt_size = 0;
+    uint64_t curr_raw_packet_count = stat->raw_packet_count - raw_packet_count;
+    uint64_t curr_ip_packet_count = stat->ip_packet_count - ip_packet_count;
+    uint64_t curr_total_wire_bytes = stat->total_wire_bytes - total_wire_bytes; 
+    uint64_t curr_total_ip_bytes = stat->total_ip_bytes - total_ip_bytes;
+    uint64_t curr_tcp_count = stat->tcp_count - tcp_count;
+    uint64_t curr_udp_count = stat->udp_count - udp_count;
+    uint64_t curr_hits;
 
     gettimeofday(&curr_ts, NULL);
     tot_usec = curr_ts.tv_sec*1000000 + curr_ts.tv_usec - (last_report_ts.tv_sec*1000000 + last_report_ts.tv_usec);
+    since_usec = curr_ts.tv_sec*1000000 + curr_ts.tv_usec - (upstart_tv.tv_sec*1000000 + upstart_tv.tv_usec);
     last_report_ts = curr_ts;
-
-    u_int avg_pkt_size = 0;
-    u_int64_t curr_raw_packet_count = stat->raw_packet_count - raw_packet_count;
-    u_int64_t curr_ip_packet_count = stat->ip_packet_count - ip_packet_count;
-    u_int64_t curr_total_wire_bytes = stat->total_wire_bytes - total_wire_bytes; 
-    u_int64_t curr_total_ip_bytes = stat->total_ip_bytes - total_ip_bytes;
-    u_int64_t curr_tcp_count = stat->tcp_count - tcp_count;
-    u_int64_t curr_udp_count = stat->udp_count - udp_count;
     
     raw_packet_count = stat->raw_packet_count;
     ip_packet_count = stat->ip_packet_count;
@@ -416,13 +429,23 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
     total_ip_bytes = stat->total_ip_bytes;
     tcp_count = stat->tcp_count;
     udp_count = stat->udp_count;
-    /* In order to prevent Floating point exception in case of no traffic*/
-    if(curr_total_ip_bytes && curr_raw_packet_count)
-      avg_pkt_size = (unsigned int)(curr_total_ip_bytes/curr_raw_packet_count);
+    list_for_each(pos, &rule_list) {
+      struct rule* rule = list_entry(pos, struct rule, list);
+      if(rule->used == 0) 
+          continue;
+      total_hits += rule->hits;
+    }
+
+    if(since_usec > 0) {
+      pkts_per_second_in = (float)(ip_packet_count*1000000) / (float)since_usec;
+      pkts_per_second_out = (float)(ip_packet_count_out*1000000) / (float)since_usec;
+      bytes_per_second_in = (float)(total_ip_bytes * 8 *1000000) / (float)since_usec;
+      bytes_per_second_out = (float)(total_ip_bytes_out * 8 *1000000) / (float)since_usec;
+    }
     
     printf("\nTraffic statistics:\n");
     printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
-    printf("\tIP bytes:              %-13llu (avg pkt size %u bytes)\n", curr_total_ip_bytes, avg_pkt_size);
+    printf("\tIP bytes:              %-13llu\n", curr_total_ip_bytes);
     printf("\tIP packets:            %-13llu of %llu packets total\n", curr_ip_packet_count, curr_raw_packet_count);
     printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
     printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
@@ -432,22 +455,14 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
       float t = (float)(curr_ip_packet_count*1000000)/(float)tot_usec;
       float b = (float)(curr_total_wire_bytes * 8 *1000000)/(float)tot_usec;
       float traffic_duration = tot_usec;
-      printf("\tnDPI throughput:       %s pps / %s/sec\n", format_packets(t, buf), format_traffic(b, 1, buf1));
-      t = (float)(curr_ip_packet_count*1000000)/(float)traffic_duration;
-      b = (float)(curr_total_wire_bytes * 8 *1000000)/(float)traffic_duration;
       printf("\tTraffic throughput:    %s pps / %s/sec\n", format_packets(t, buf), format_traffic(b, 1, buf1));
       printf("\tTraffic duration:      %.3f sec\n", traffic_duration/1000000);
+      printf("\tIncoming throughput:   %s pps / %s/sec\n", format_packets(pkts_per_second_in, buf), format_traffic(bytes_per_second_in, 1, buf1));
+      printf("\tOutcoming throughput:  %s pps / %s/sec\n", format_packets(pkts_per_second_out, buf), format_traffic(bytes_per_second_out, 1, buf1));
     }
-
-    struct list_head* pos;
-    u_int64_t total_hits = 0;
-    list_for_each(pos, &rule_list) {
-      struct rule* rule = list_entry(pos, struct rule, list);
-      if(rule->used == 0) 
-          continue;
-      total_hits += rule->hits;
-    }
-    printf("\tRules hits:            %-13lu (total %llu)\n", total_hits - hits, total_hits);
+    
+    curr_hits = total_hits - hits;
+    printf("\tRules hits:            %-13lu (total %llu)\n", curr_hits, total_hits);
     hits = total_hits;
   }
 
@@ -688,7 +703,8 @@ static void init_server()
   char err[ANET_ERR_LEN]; 
 
   init_log(verbose, logfile);
-  lastsave = time(NULL);
+  lastsave = upstart = time(NULL);
+  gettimeofday(&upstart_tv, NULL);
 
   manage_interface_promisc_mode(ifname, 1); 
   t01_log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ifname);
