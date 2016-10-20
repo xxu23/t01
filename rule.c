@@ -856,38 +856,8 @@ int update_rule(uint32_t id, const char *body, int body_len)
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
 		if (rule->id == id && rule->used == 1) {
-			int i;
-			if (new_rule.human_protocol[0])
-				strncpy(rule->human_protocol,
-					new_rule.human_protocol,
-					sizeof(rule->human_protocol));
-			if (new_rule.human_saddr[0])
-				strncpy(rule->human_saddr,
-					new_rule.human_saddr,
-					sizeof(rule->human_saddr));
-			if (new_rule.human_daddr[0])
-				strncpy(rule->human_daddr,
-					new_rule.human_daddr,
-					sizeof(rule->human_daddr));
-			if (new_rule.human_action[0])
-				strncpy(rule->human_action,
-					new_rule.human_action,
-					sizeof(rule->human_action));
-			if (((char *)&new_rule.condition)[0])
-				memcpy(&rule->condition, &new_rule.condition,
-				       sizeof(rule->condition));
-			for (i = 0; i < 4; i++)
-				if (new_rule.action_params[i][0])
-					strncpy(rule->action_params[i],
-						new_rule.action_params[i],
-						sizeof(rule->action_params[i]));
-			if (new_rule.sport)
-				rule->sport = new_rule.sport;
-			if (new_rule.dport)
-				rule->dport = new_rule.dport;
-
+			memcpy(rule, &new_rule, offsetof(struct rule, protocol));
 			transform_one_rule(rule, NULL);
-
 			return 0;
 		}
 	}
