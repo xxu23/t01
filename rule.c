@@ -928,6 +928,7 @@ int update_rule(uint32_t id, const char *body, int body_len)
 		struct rule *rule = list_entry(pos, struct rule, list);
 		if (rule->id == id && rule->used == 1) {
 			memcpy(rule, &new_rule, offsetof(struct rule, list));
+			dirty++;
 			return 0;
 		}
 	}
@@ -952,6 +953,7 @@ int delete_rule(uint32_t id)
 				free(hit);
 			}
 			bzero(rule, offsetof(struct rule, list));
+			dirty++;
 			return 0;
 		}
 	}
@@ -1001,6 +1003,7 @@ int create_rule(const char *body, int body_len, char **out, size_t *out_len)
 	memcpy(new_rule, &src_rule, offsetof(struct rule, list));
 	new_rule->used = 1;
 	new_rule->id = ++max_id;
+	dirty++;
 
 	root = cJSON_CreateObject();
 	cJSON_AddNumberToObject(root, "id", new_rule->id);
