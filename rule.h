@@ -33,10 +33,6 @@
 
 #include "list.h"
 
-union match_payload {
-	char host[256];
-};
-
 struct hit_record {
 	uint32_t id;
 	uint32_t rule_id;
@@ -58,12 +54,16 @@ struct rule {
 	uint16_t sport;
 	uint16_t dport;
 	char human_action[16];
-	union match_payload condition;
+	char payload[224];
+	char human_match[16];
+	char human_which[16];
 	char action_params[4][256];
 	uint8_t protocol;
 	uint8_t master_protocol;
-	uint8_t action;
-	uint8_t used;
+	uint8_t action:4;
+	uint8_t match:4;
+	uint8_t used:4;
+	uint8_t which:4;
 	uint32_t saved_hits;
 	uint32_t saddr0, saddr1;
 	uint32_t daddr0, daddr1;
@@ -75,6 +75,12 @@ struct rule {
 #define T01_ACTION_REDIRECT 		1
 #define T01_ACTION_REJECT		2
 #define T01_ACTION_CONFUSE		3
+
+#define T01_WHICH_HOST 			1
+#define T01_WHICH_URL			2
+
+#define T01_MATCH_MATCH 			1
+#define T01_MATCH_REGEX			2
 
 int load_rules(const char *filename, void *ndpi_mask);
 

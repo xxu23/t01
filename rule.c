@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <time.h>
+#include <regex.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -65,6 +66,42 @@ static inline uint8_t get_action(const char *action)
 		return T01_ACTION_REDIRECT;
 	else if (strcmp(action, "confuse") == 0)
 		return T01_ACTION_CONFUSE;
+	return 0;
+}
+
+static inline uint8_t get_match(const char *match)
+{
+	if (strcmp(match, "match") == 0)
+		return T01_MATCH_MATCH;
+	else if (strcmp(match, "regex") == 0)
+		return T01_MATCH_REGEX;
+	return 0;
+}
+
+static inline uint8_t get_which(const char *which)
+{
+	if (strcmp(which, "url") == 0)
+		return T01_WHICH_URL;
+	else if (strcmp(which, "host") == 0)
+		return T01_WHICH_HOST;
+	return 0;
+}
+
+static inline int match_payload(int match, const char *payload, const char *dst)
+{
+	if(match == T01_MATCH_MATCH)
+		return strcasecmp(payload, dst) == 0;
+	else if(match == T01_MATCH_REGEX) {
+		regmatch_t pm[1];
+  		regex_t reg;
+		int status;
+
+		status = regcomp(&reg, payload, REG_EXTENDED|REG_NOSUB);
+		if(status != 0) return -1;
+  		status = regexec(&reg, dst, 1, pm, 0);
+		regfree(&reg);
+		return status != REG_NOMATCH;
+	}
 	return 0;
 }
 
@@ -209,7 +246,7 @@ static int tdb_load_hit(FILE * fp, struct hit_record *h)
 	return len;
 }
 
-void transform_one_rule(struct rule *rule, NDPI_PROTOCOL_BITMASK * mask)
+int transform_one_rule(struct rule *rule, NDPI_PROTOCOL_BITMASK * mask)
 {
 	if (rule->human_saddr[0])
 		get_ip(rule->human_saddr, &rule->saddr0, &rule->saddr1);
@@ -222,8 +259,22 @@ void transform_one_rule(struct rule *rule, NDPI_PROTOCOL_BITMASK * mask)
 		    get_protocol(rule->human_protocol, &(rule->master_protocol),
 				 mask);
 
-	if (rule->human_action[0])
-		rule->action = get_action(rule->human_action);
+	if (rule->human_action[0] && (rule->action=get_action(rule->human_action)) == 0) {
+		t01_log(T01_WARNING, "Not support action %s", rule->human_action);
+		return -1;
+	}
+
+	if (rule->human_match[0] && (rule->match=get_match(rule->human_match)) == 0) {
+		t01_log(T01_WARNING, "Not support match %s", rule->human_match);
+		return -1;
+	}
+	
+	if (rule->human_which[0] && (rule->which=get_which(rule->human_which)) == 0) {
+		t01_log(T01_WARNING, "Not support which %s", rule->human_which);
+		return -1;
+	}
+	
+	return 0;
 }
 
 #define get_string_from_json(item, json, key, value) 	\
@@ -257,8 +308,12 @@ static void parse_one_rule(cJSON *json, struct rule *rule)
 
 	parent = cJSON_GetObjectItem(json, "condition");
 	if (parent) {
-		get_string_from_json(item, parent, "host",
-				     rule->condition.host);
+		get_string_from_json(item, parent, "match",
+				     rule->human_match);
+		get_string_from_json(item, parent, "which",
+				     rule->human_which);
+		get_string_from_json(item, parent, "payload",
+				     rule->payload);
 	}
 
 	get_string_from_json(item, json, "action", rule->human_action);
@@ -312,7 +367,10 @@ static int load_rules_from_json(const char *data, struct list_head *head,
 		INIT_LIST_HEAD(&rule->hit_head);
 
 		parse_one_rule(item, rule);
-		transform_one_rule(rule, mask);
+		if(transform_one_rule(rule, mask) < 0) {
+			free(rule);
+			continue;
+		}
 		rule->used = 1;
 		list_add_tail(&rule->list, head);
 		if (rule->id == 0)
@@ -633,6 +691,7 @@ void release_buffer(char **out)
 static cJSON *rule2cjson(struct rule *rule)
 {
 	cJSON *root = cJSON_CreateObject(), *array;
+	cJSON *condition = cJSON_CreateObject();
 	int n = 0, i;
 	const char *strings[4] = { rule->action_params[0],
 		rule->action_params[1],
@@ -649,9 +708,18 @@ static cJSON *rule2cjson(struct rule *rule)
 		cJSON_AddStringToObject(root, "daddr", rule->human_daddr);
 	if (rule->human_action[0])
 		cJSON_AddStringToObject(root, "action", rule->human_action);
-	if (rule->condition.host[0])
-		cJSON_AddStringToObject(root, "condition",
-					rule->condition.host);
+
+	if (rule->payload[0])
+		cJSON_AddStringToObject(condition, "payload",
+					rule->payload);
+	if (rule->human_match[0])
+		cJSON_AddStringToObject(condition, "match",
+					rule->human_match);
+	if (rule->human_which[0])
+		cJSON_AddStringToObject(condition, "which",
+					rule->human_which);
+	cJSON_AddItemToObject(root, "condition", condition);
+	
 	if (rule->sport)
 		cJSON_AddNumberToObject(root, "sport", rule->sport);
 	if (rule->dport)
@@ -853,12 +921,13 @@ int update_rule(uint32_t id, const char *body, int body_len)
 	parse_one_rule(root, &new_rule);
 	new_rule.id = id;
 	cJSON_Delete(root);
+	if(transform_one_rule(&new_rule, NULL) < 0)
+		return -1;
 
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
 		if (rule->id == id && rule->used == 1) {
-			memcpy(rule, &new_rule, offsetof(struct rule, protocol));
-			transform_one_rule(rule, NULL);
+			memcpy(rule, &new_rule, offsetof(struct rule, list));
 			return 0;
 		}
 	}
@@ -906,7 +975,9 @@ int create_rule(const char *body, int body_len, char **out, size_t *out_len)
 	bzero(&src_rule, sizeof(src_rule));
 	parse_one_rule(root, &src_rule);
 	cJSON_Delete(root);
-
+	if(transform_one_rule(&src_rule, NULL) < 0)
+		return -1;
+	
 	/* Find a recycled rule */
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
@@ -927,8 +998,7 @@ int create_rule(const char *body, int body_len, char **out, size_t *out_len)
 		list_add_tail(&new_rule->list, &rule_list);
 	}
 
-	memcpy(new_rule, &src_rule, offsetof(struct rule, protocol));
-	transform_one_rule(new_rule, NULL);
+	memcpy(new_rule, &src_rule, offsetof(struct rule, list));
 	new_rule->used = 1;
 	new_rule->id = ++max_id;
 
@@ -979,17 +1049,16 @@ struct rule *match_rule_from_packet(void *flow_, void *packet)
 				|| flow->src_ip > rule->saddr1))
 				continue;
 		}
-
-		char *host = flow->host_server_name;
-		if (host[0] == 0 || flow->ssl.client_certificate[0] != 0
-		    || flow->ssl.server_certificate[0] != 0)
-			host =
-			    flow->ssl.client_certificate[0] ==
-			    0 ? flow->ssl.server_certificate : flow->ssl.
-			    client_certificate;
-		if (rule->condition.host[0]
-		    && strcasecmp(rule->condition.host, host) != 0)
-			continue;
+		
+		if(rule->payload[0] && rule->which == T01_WHICH_HOST) {
+			char *host = flow->host_server_name;
+			char *host1 = flow->ssl.client_certificate;
+			char *host2 = flow->ssl.server_certificate;
+			if (host[0] == 0 && (host[0] != 0 || host2[0] != 0))
+				host = host1[0] ? host1 : host2;
+			if (match_payload(rule->match, rule->payload, host) != 1)
+				continue;
+		}
 
 		return rule;
 	}

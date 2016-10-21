@@ -1,5 +1,5 @@
 [
-{"smac":"01-02-34-ad-7e-87-86", "dmac":"12-34-56-78-90-ac", "saddr":"192.168.1.100", "daddr":"92.147.28.12", "sport":32765, "dport": 80, "protocol":"http", "condition":{"ua":"Windows", "host":"islab.cn"}, "action":"redirect", "params":["www.github.com"]},
-{"smac":"01-02-34-ad-7e-87-86", "dmac":"12-34-56-78-90-ac", "saddr":"10.0.1.11", "daddr":"202.227.128.204", "sport":52765, "dport": 53, "protocol":"dns", "condition":{"host":"islab.cn"}, "action":"confuse", "params":["8.8.8.8"]},
-{"dport": 80, "protocol":"http", "condition":{"host":"www.sohu.com"}, "action":"redirect", "params":["www.sina.com.cn"]}
+{"dport": 80, "protocol":"http", "condition":{"match":"match", "which":"host", "payload":"www.sohu.com"}, "action":"redirect", "params":["www.sina.com.cn"]},
+{"protocol":"dns", "condition":{"match":"regex", "which":"host", "payload":".*qq.com"}, "action":"confuse", "params":["8.8.8.8"]},
+{"dport": 8080, "protocol":"http", "saddr":"192.168.*.*", "action":"redirect", "params":["www.163.com.cn"]}
 ]
