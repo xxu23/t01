@@ -109,6 +109,7 @@ static char *decode_uri(const char *uri, size_t length, size_t * out_len,
 	size_t i, j;
 	int in_query = always_decode_plus;
 	char *ret = malloc(length + 1);
+	bzero(ret, length+1);
 
 	for (i = j = 0; i < length; i++) {
 		c = uri[i];
