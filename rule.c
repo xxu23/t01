@@ -1049,15 +1049,22 @@ struct rule *match_rule_from_packet(void *flow_, void *packet)
 				|| flow->src_ip > rule->saddr1))
 				continue;
 		}
-		
-		if(rule->payload[0] && rule->which == T01_WHICH_HOST) {
-			char *host = flow->host_server_name;
-			char *host1 = flow->ssl.client_certificate;
-			char *host2 = flow->ssl.server_certificate;
-			if (host[0] == 0 && (host[0] != 0 || host2[0] != 0))
-				host = host1[0] ? host1 : host2;
-			if (match_payload(rule->match, rule->payload, host) != 1)
-				continue;
+
+		if(rule->payload[0]) {
+			if(rule->which == T01_WHICH_HOST) {
+				char *host = flow->host_server_name;
+				char *host1 = flow->ssl.client_certificate;
+				char *host2 = flow->ssl.server_certificate;
+				if (host[0] == 0 && (host[0] != 0 || host2[0] != 0))
+					host = host1[0] ? host1 : host2;
+				if (match_payload(rule->match, rule->payload, host) != 1)
+					continue;
+			} else if(rule->which == T01_WHICH_URL) {
+				char *url = flow->ndpi_flow->http.url;
+				if(url && url[0] && 
+					match_payload(rule->match, rule->payload, url) != 1)
+					continue;
+			}
 		}
 
 		return rule;
