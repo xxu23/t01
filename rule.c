@@ -96,7 +96,7 @@ static inline int match_payload(int match, const char *payload, const char *dst)
   		regex_t reg;
 		int status;
 
-		status = regcomp(&reg, payload, REG_EXTENDED|REG_NOSUB);
+		status = regcomp(&reg, payload, REG_EXTENDED|REG_NOSUB|REG_ICASE);
 		if(status != 0) return -1;
   		status = regexec(&reg, dst, 1, pm, 0);
 		regfree(&reg);
@@ -920,6 +920,7 @@ int update_rule(uint32_t id, const char *body, int body_len)
 	bzero(&new_rule, sizeof(new_rule));
 	parse_one_rule(root, &new_rule);
 	new_rule.id = id;
+	new_rule.used = 1;
 	cJSON_Delete(root);
 	if(transform_one_rule(&new_rule, NULL) < 0)
 		return -1;
