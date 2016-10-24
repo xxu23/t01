@@ -737,6 +737,8 @@ static cJSON *rule2cjson(struct rule *rule)
 		cJSON_AddItemToObject(root, "params", array);
 	}
 
+	cJSON_AddNumberToObject(root, "hits", rule->hits);
+
 	return root;
 }
 
