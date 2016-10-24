@@ -32,6 +32,7 @@
 
 struct rule;
 
-int make_packet(const struct rule* rule, const char* hdr, char* packet, int len);
+int make_packet(const struct rule *rule, const char *hdr,
+		char *packet, int len, void *flow);
 
 #endif /* __PKTGEN_H__ */

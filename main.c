@@ -278,7 +278,7 @@ next:
                      (uint8_t*)packet+6, (uint8_t*)packet);
   
   char result[1500] = {0};
-  int len = make_packet(rule, packet, result, sizeof(result));
+  int len = make_packet(rule, packet, result, sizeof(result), flow);
   if(len) {
     nm_inject(out_nmr, result, len);
     total_ip_bytes_out += len;

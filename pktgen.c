@@ -43,7 +43,9 @@
 
 #include "pktgen.h"
 #include "rule.h"
+#include "ndpi_api.h"
 #include "ndpi_protocol_ids.h"
+#include "ndpi_util.h"
 
 struct dns_pkt			//固定长度的12个字节
 {
@@ -190,7 +192,8 @@ out:
 }
 
 int make_http_redirect_packet(const char *target_url, const char *hdr,
-			      char *result, int len)
+			      char *result, int len,
+			      struct ndpi_flow_info *flow)
 {
 	struct ether_header *src_eth = (struct ether_header *)hdr;
 	struct iphdr *src_iph = (struct iphdr *)(src_eth + 1);
@@ -206,15 +209,17 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 	    "Connection: keep-alive\r\n"
 	    "Location: %s://%s\r\n"
 	    "Content-Type: text/html\r\n"
-	    "Content-length: 0\r\n" "Cache-control: no-cache\r\n" "\r\n";
-	
-	if(pp) 
+	    "Content-length: 0\r\n" 
+	    "Cache-control: no-cache\r\n" 
+	    "\r\n";
+
+	if (pp)
 		target_url += 8;
-	else if(qq) 
+	else if (qq)
 		target_url += 7;
 	data_len =
 	    snprintf(payload, len - sizeof(*eth) - sizeof(*iph) - sizeof(*tcph),
-		     http_redirect_header, pp?"https":"http", target_url);
+		     http_redirect_header, pp ? "https" : "http", target_url);
 
 	memcpy(eth->ether_shost, src_eth->ether_dhost, 6);
 	memcpy(eth->ether_dhost, src_eth->ether_shost, 6);
@@ -226,11 +231,11 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 	iph->tos = 0;
 	iph->tot_len =
 	    htons(sizeof(struct iphdr) + sizeof(struct tcphdr) + data_len);
-	iph->id = htons(36742);	//Id of this packet
+	iph->id = htons(flow->dst_ipid + 1);
 	iph->frag_off = htons(16384);
-	iph->ttl = 128;
+	iph->ttl = flow->dst_ttl;
 	iph->protocol = IPPROTO_TCP;
-	iph->check = 0;		//Set to 0 before calculating checksum
+	iph->check = 0;
 	iph->saddr = src_iph->daddr;
 	iph->daddr = src_iph->saddr;
 	//Ip checksum
@@ -267,7 +272,7 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 }
 
 int make_dns_spoof_packet(const char *target, const char *hdr, char *datagram,
-			  int datagram_len)
+			  int datagram_len, struct ndpi_flow_info *flow)
 {
 	struct ether_header *eh = (struct ether_header *)hdr;
 	struct iphdr *ippkt = (struct iphdr *)(eh + 1);
@@ -300,9 +305,9 @@ int make_dns_spoof_packet(const char *target, const char *hdr, char *datagram,
 	    htons((sizeof(struct iphdr) + sizeof(struct udphdr)) + data_len);
 	iph->id = htons(36742);	//Id of this packet
 	iph->frag_off = htons(16384);
-	iph->ttl = 128;
+	iph->ttl = flow->src_ttl;
 	iph->protocol = 17;	//IPPROTO_UDP;
-	iph->check = 0;		//Set to 0 before calculating checksum
+	iph->check = 0;
 	iph->saddr = ippkt->daddr;
 	iph->daddr = ippkt->saddr;
 	iph->check = csum_fold(do_csum((unsigned char *)iph, 20));
@@ -351,41 +356,39 @@ int make_dns_spoof_packet(const char *target, const char *hdr, char *datagram,
 	    sizeof(struct udphdr) + data_len;
 }
 
-int make_pptp_rst_packet(const char *hdr, char *datagram, int datagram_len)
+int make_pptp_rst_packet(const char *hdr, char *datagram, int datagram_len,
+			 struct ndpi_flow_info *flow)
 {
 	struct ether_header *eh = (struct ether_header *)hdr;
 	struct iphdr *ippkt = (struct iphdr *)(eh + 1);
 	struct tcphdr *tcppkt = (struct tcphdr *)(ippkt + 1);
 	struct pptp_setlink *pptppkt = (struct pptp_setlink *)(tcppkt + 1);
-	//ETHER header
 	struct ether_header *eth = (struct ether_header *)datagram;
-	//IP header
 	struct iphdr *iph = (struct iphdr *)(eth + 1);
-	//TCP header
 	struct tcphdr *tcph = (struct tcphdr *)(iph + 1);
 
 	memcpy(eth->ether_shost, eh->ether_dhost, 6);
 	memcpy(eth->ether_dhost, eh->ether_shost, 6);
 	eth->ether_type = htons(0x0800);
 
-	//////ip_header_init
+	//ip_header_init
 	iph->ihl = 5;
 	iph->version = 4;
 	iph->tos = 0;
 	iph->tot_len =
 	    htons((int)(sizeof(struct iphdr) + sizeof(struct tcphdr)));
-	iph->id = htons(36742);	//Id of this packet
+	iph->id = htons(flow->dst_ipid+1);
 	iph->frag_off = htons(16384);
-	iph->ttl = 128;
+	iph->ttl = flow->dst_ttl;
 	iph->protocol = 6;	//IPPROTO_TCP;
-	iph->check = 0;		//Set to 0 before calculating checksum
+	iph->check = 0;
 	iph->saddr = ippkt->daddr;
 	iph->daddr = ippkt->saddr;
 
 	//Ip checksum
 	iph->check = csum_fold(do_csum((unsigned char *)iph, 20));
 
-	//////_tcp_header_init
+	//_tcp_header_init
 	tcph->source = tcppkt->dest;
 	tcph->dest = tcppkt->source;
 	tcph->doff = 5;
@@ -413,18 +416,19 @@ int make_pptp_rst_packet(const char *hdr, char *datagram, int datagram_len)
 	    sizeof(struct tcphdr);
 }
 
-int make_packet(const struct rule *rule, const char *hdr, char *packet, int len)
+int make_packet(const struct rule *rule, const char *hdr,
+		char *packet, int len, void *flow)
 {
 	if (rule->action == T01_ACTION_REDIRECT
 	    && rule->master_protocol == NDPI_PROTOCOL_HTTP)
 		return make_http_redirect_packet(rule->action_params[0], hdr,
-						 packet, len);
+						 packet, len, flow);
 	else if (rule->action == T01_ACTION_CONFUSE
 		 && rule->master_protocol == NDPI_PROTOCOL_DNS)
 		return make_dns_spoof_packet(rule->action_params[0], hdr,
-					     packet, len);
+					     packet, len, flow);
 	else if (rule->action == T01_ACTION_REJECT
 		 && rule->master_protocol == NDPI_PROTOCOL_PPTP)
-		return make_pptp_rst_packet(hdr, packet, len);
+		return make_pptp_rst_packet(hdr, packet, len, flow);
 	return 0;
 }

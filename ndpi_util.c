@@ -264,10 +264,12 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
   u_int32_t upper_ip;
   u_int16_t lower_port;
   u_int16_t upper_port;
+  u_int16_t id;
   struct ndpi_flow_info flow;
   void *ret;
   u_int8_t *l3, *l4;
   u_int8_t flag;
+  u_int8_t ttl;
 
   /*
     Note: to keep things simple (ndpiReader is just a demo app)
@@ -297,6 +299,8 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
     upper_ip = iph->saddr;
     flag = 1;
   }
+  id = ntohs(iph->id);
+  ttl = iph->ttl;
 
   *proto = iph->protocol;
   l4 = ((u_int8_t *) l3 + l4_offset);
@@ -397,18 +401,11 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       newflow->lower_ip = lower_ip, newflow->upper_ip = upper_ip;
       newflow->lower_port = lower_port, newflow->upper_port = upper_port;
       newflow->ip_version = version;
-
+      newflow->src_ipid = id; 
+      newflow->src_ttl = ttl;
       
-      if(flag == 0){ newflow->src_ip = lower_ip; newflow->dst_ip = upper_ip; newflow->src_port = ntohs(lower_port); newflow->dst_port = ntohs(upper_port);}
-      else{ newflow->src_ip = upper_ip; newflow->dst_ip = lower_ip; newflow->src_port = ntohs(upper_port); newflow->dst_port = ntohs(lower_port);}
-
-     /* if(version == 4) {
-	inet_ntop(AF_INET, &lower_ip, newflow->lower_name, sizeof(newflow->lower_name));
-	inet_ntop(AF_INET, &upper_ip, newflow->upper_name, sizeof(newflow->upper_name));
-      } else {
-	inet_ntop(AF_INET6, &iph6->ip6_src, newflow->lower_name, sizeof(newflow->lower_name));
-	inet_ntop(AF_INET6, &iph6->ip6_dst, newflow->upper_name, sizeof(newflow->upper_name));
-      } */
+      if(flag == 0){ newflow->src_ip = lower_ip; newflow->dst_ip = upper_ip; newflow->src_port = ntohs(lower_port); newflow->dst_port = ntohs(upper_port); }
+      else{ newflow->src_ip = upper_ip; newflow->dst_ip = lower_ip; newflow->src_port = ntohs(upper_port); newflow->dst_port = ntohs(lower_port); }
 
       if((newflow->ndpi_flow = ndpi_malloc(SIZEOF_FLOW_STRUCT)) == NULL) {
 	NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_ERROR, "[NDPI] %s(2): not enough memory\n", __FUNCTION__);
@@ -446,6 +443,9 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       *src = flow->src_id, *dst = flow->dst_id;
     else
       *src = flow->dst_id, *dst = flow->src_id;
+
+    if(flag == 0) flow->src_ipid = id, flow->src_ttl = ttl;
+    else          flow->dst_ipid = id, flow->dst_ttl = ttl;
 
     return flow;
   }
