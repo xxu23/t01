@@ -290,8 +290,8 @@ next:
       int offset = 0;
       inet_ntop(AF_INET, &flow->src_ip, l, sizeof(l));
 	inet_ntop(AF_INET, &flow->dst_ip, u, sizeof(u));
-      offset += snprintf(msg, sizeof(msg)-offset, "Hits: %s %s:%u <-> %s:%u ",
-	    ipproto_name(flow->protocol),
+      offset += snprintf(msg, sizeof(msg)-offset, "Rule %d Hits: %s %s:%u <-> %s:%u ",
+	    rule->id, ipproto_name(flow->protocol),
 	    l, flow->src_port, u, flow->dst_port);
 
       if(flow->detected_protocol.master_protocol) {
