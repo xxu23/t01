@@ -199,15 +199,22 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 	struct iphdr *iph = (struct iphdr *)(eth + 1);
 	struct tcphdr *tcph = (struct tcphdr *)(iph + 1);
 	char *payload = (char *)(tcph + 1);
-
+	char *pp = strstr(target_url, "https://");
+	char *qq = strstr(target_url, "http://");
+	int data_len;
 	const char *http_redirect_header = "HTTP/1.1 301 Moved Permanently\r\n"
 	    "Connection: keep-alive\r\n"
-	    "Location: http://%s\r\n"
+	    "Location: %s://%s\r\n"
 	    "Content-Type: text/html\r\n"
 	    "Content-length: 0\r\n" "Cache-control: no-cache\r\n" "\r\n";
-	int data_len =
+	
+	if(pp) 
+		target_url += 8;
+	else if(qq) 
+		target_url += 7;
+	data_len =
 	    snprintf(payload, len - sizeof(*eth) - sizeof(*iph) - sizeof(*tcph),
-		     http_redirect_header, target_url);
+		     http_redirect_header, pp?"https":"http", target_url);
 
 	memcpy(eth->ether_shost, src_eth->ether_dhost, 6);
 	memcpy(eth->ether_dhost, src_eth->ether_shost, 6);
