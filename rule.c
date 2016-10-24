@@ -87,20 +87,24 @@ static inline uint8_t get_which(const char *which)
 	return 0;
 }
 
-static inline int match_payload(int match, const char *payload, const char *dst)
+static inline int match_payload(int match, const char *payload,
+				const char *dst, const char *self)
 {
-	if(match == T01_MATCH_MATCH)
-		return strcasecmp(payload, dst) == 0;
-	else if(match == T01_MATCH_REGEX) {
+	if (match == T01_MATCH_MATCH)
+		return strcasecmp(payload, dst) == 0
+		    && strcasecmp(self, dst) != 0;
+	else if (match == T01_MATCH_REGEX) {
 		regmatch_t pm[1];
-  		regex_t reg;
-		int status;
+		regex_t reg;
+		int st;
 
-		status = regcomp(&reg, payload, REG_EXTENDED|REG_NOSUB|REG_ICASE);
-		if(status != 0) return -1;
-  		status = regexec(&reg, dst, 1, pm, 0);
+		st = regcomp(&reg, payload,
+			     REG_EXTENDED | REG_NOSUB | REG_ICASE);
+		if (st != 0)
+			return -1;
+		st = regexec(&reg, dst, 1, pm, 0);
 		regfree(&reg);
-		return status != REG_NOMATCH;
+		return st != REG_NOMATCH && strcasecmp(self, dst) != 0;
 	}
 	return 0;
 }
@@ -259,21 +263,25 @@ int transform_one_rule(struct rule *rule, NDPI_PROTOCOL_BITMASK * mask)
 		    get_protocol(rule->human_protocol, &(rule->master_protocol),
 				 mask);
 
-	if (rule->human_action[0] && (rule->action=get_action(rule->human_action)) == 0) {
-		t01_log(T01_WARNING, "Not support action %s", rule->human_action);
+	if (rule->human_action[0]
+	    && (rule->action = get_action(rule->human_action)) == 0) {
+		t01_log(T01_WARNING, "Not support action %s",
+			rule->human_action);
 		return -1;
 	}
 
-	if (rule->human_match[0] && (rule->match=get_match(rule->human_match)) == 0) {
+	if (rule->human_match[0]
+	    && (rule->match = get_match(rule->human_match)) == 0) {
 		t01_log(T01_WARNING, "Not support match %s", rule->human_match);
 		return -1;
 	}
-	
-	if (rule->human_which[0] && (rule->which=get_which(rule->human_which)) == 0) {
+
+	if (rule->human_which[0]
+	    && (rule->which = get_which(rule->human_which)) == 0) {
 		t01_log(T01_WARNING, "Not support which %s", rule->human_which);
 		return -1;
 	}
-	
+
 	return 0;
 }
 
@@ -284,7 +292,7 @@ int transform_one_rule(struct rule *rule, NDPI_PROTOCOL_BITMASK * mask)
   }									\
 
 #define get_int_from_json(item, json, key, value) 	\
-  item = cJSON_GetObjectItem(json, key); 		\
+  item = cJSON_GetObjectItem(json, key); 			\
   if(item){ 							\
     value = item->valueint;                             \
   }									\
@@ -295,7 +303,7 @@ int transform_one_rule(struct rule *rule, NDPI_PROTOCOL_BITMASK * mask)
     strncpy(value[j], item->valuestring, sizeof(value[j]));	\
   }										\
 
-static void parse_one_rule(cJSON *json, struct rule *rule)
+static void parse_one_rule(cJSON * json, struct rule *rule)
 {
 	cJSON *item, *parent;
 
@@ -308,12 +316,9 @@ static void parse_one_rule(cJSON *json, struct rule *rule)
 
 	parent = cJSON_GetObjectItem(json, "condition");
 	if (parent) {
-		get_string_from_json(item, parent, "match",
-				     rule->human_match);
-		get_string_from_json(item, parent, "which",
-				     rule->human_which);
-		get_string_from_json(item, parent, "payload",
-				     rule->payload);
+		get_string_from_json(item, parent, "match", rule->human_match);
+		get_string_from_json(item, parent, "which", rule->human_which);
+		get_string_from_json(item, parent, "payload", rule->payload);
 	}
 
 	get_string_from_json(item, json, "action", rule->human_action);
@@ -367,7 +372,7 @@ static int load_rules_from_json(const char *data, struct list_head *head,
 		INIT_LIST_HEAD(&rule->hit_head);
 
 		parse_one_rule(item, rule);
-		if(transform_one_rule(rule, mask) < 0) {
+		if (transform_one_rule(rule, mask) < 0) {
 			free(rule);
 			continue;
 		}
@@ -455,7 +460,8 @@ int load_rules(const char *filename, void *ndpi_mask)
 			curr_rule = r;
 			r->saved_hits = 0;
 			i++;
-			if (r->id > max_id) max_id = r->id;
+			if (r->id > max_id)
+				max_id = r->id;
 		} else if (type == T01_TDB_TYPE_HIT) {
 			struct hit_record *h = malloc(sizeof(*h));
 			if (!h)
@@ -535,11 +541,11 @@ void destroy_rules()
 		rule = list_entry(pos, struct rule, list);
 		hhead = &rule->hit_head;
 		if (list_empty(hhead) == 0)
-		list_for_each_safe(pos2, n2, hhead) {
+			list_for_each_safe(pos2, n2, hhead) {
 			list_del(pos2);
 			hit = list_entry(pos2, struct hit_record, list);
 			free(hit);
-		}
+			}
 		free(rule);
 	}
 }
@@ -693,7 +699,8 @@ static cJSON *rule2cjson(struct rule *rule)
 	cJSON *root = cJSON_CreateObject(), *array;
 	cJSON *condition = cJSON_CreateObject();
 	int n = 0, i;
-	const char *strings[4] = { rule->action_params[0],
+	const char *strings[4] = { 
+		rule->action_params[0],
 		rule->action_params[1],
 		rule->action_params[1],
 		rule->action_params[3]
@@ -710,16 +717,13 @@ static cJSON *rule2cjson(struct rule *rule)
 		cJSON_AddStringToObject(root, "action", rule->human_action);
 
 	if (rule->payload[0])
-		cJSON_AddStringToObject(condition, "payload",
-					rule->payload);
+		cJSON_AddStringToObject(condition, "payload", rule->payload);
 	if (rule->human_match[0])
-		cJSON_AddStringToObject(condition, "match",
-					rule->human_match);
+		cJSON_AddStringToObject(condition, "match", rule->human_match);
 	if (rule->human_which[0])
-		cJSON_AddStringToObject(condition, "which",
-					rule->human_which);
+		cJSON_AddStringToObject(condition, "which", rule->human_which);
 	cJSON_AddItemToObject(root, "condition", condition);
-	
+
 	if (rule->sport)
 		cJSON_AddNumberToObject(root, "sport", rule->sport);
 	if (rule->dport)
@@ -891,7 +895,7 @@ int get_hits(uint32_t rule_id, int offset, int limit, char **out,
 		}
 	}
 
-	if (!rule )
+	if (!rule)
 		return -1;
 
 	list_for_each(pos, &rule->hit_head) {
@@ -912,7 +916,7 @@ int get_hits(uint32_t rule_id, int offset, int limit, char **out,
 int update_rule(uint32_t id, const char *body, int body_len)
 {
 	struct list_head *pos;
-	struct rule new_rule;	
+	struct rule new_rule;
 	cJSON *root = cJSON_Parse(body);
 	if (!root) {
 		t01_log(T01_WARNING, "Cannot parse json: %s",
@@ -924,7 +928,7 @@ int update_rule(uint32_t id, const char *body, int body_len)
 	new_rule.id = id;
 	new_rule.used = 1;
 	cJSON_Delete(root);
-	if(transform_one_rule(&new_rule, NULL) < 0)
+	if (transform_one_rule(&new_rule, NULL) < 0)
 		return -1;
 
 	list_for_each(pos, &rule_list) {
@@ -950,11 +954,11 @@ int delete_rule(uint32_t id)
 			hhead = &rule->hit_head;
 			rule->used = 0;
 			if (list_empty(hhead) == 0)
-			list_for_each_safe(pos2, n2, hhead) {
+				list_for_each_safe(pos2, n2, hhead) {
 				list_del(pos2);
 				hit = list_entry(pos2, struct hit_record, list);
 				free(hit);
-			}
+				}
 			bzero(rule, offsetof(struct rule, list));
 			dirty++;
 			return 0;
@@ -964,7 +968,7 @@ int delete_rule(uint32_t id)
 	return -1;
 }
 
-int create_rule(const char *body, int body_len, char **out, size_t *out_len)
+int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 {
 	int offset;
 	struct rule src_rule, *new_rule = NULL;
@@ -980,9 +984,9 @@ int create_rule(const char *body, int body_len, char **out, size_t *out_len)
 	bzero(&src_rule, sizeof(src_rule));
 	parse_one_rule(root, &src_rule);
 	cJSON_Delete(root);
-	if(transform_one_rule(&src_rule, NULL) < 0)
+	if (transform_one_rule(&src_rule, NULL) < 0)
 		return -1;
-	
+
 	/* Find a recycled rule */
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
@@ -992,7 +996,7 @@ int create_rule(const char *body, int body_len, char **out, size_t *out_len)
 		}
 	}
 
-	/* Not found, malloc a rule*/
+	/* Not found, malloc a rule */
 	if (!new_rule) {
 		new_rule = malloc(sizeof(*new_rule));
 		if (!new_rule) {
@@ -1056,19 +1060,24 @@ struct rule *match_rule_from_packet(void *flow_, void *packet)
 				continue;
 		}
 
-		if(rule->payload[0]) {
-			if(rule->which == T01_WHICH_HOST) {
+		if (rule->payload[0]) {
+			if (rule->which == T01_WHICH_HOST) {
 				char *host = flow->host_server_name;
 				char *host1 = flow->ssl.client_certificate;
 				char *host2 = flow->ssl.server_certificate;
-				if (host[0] == 0 && (host[0] != 0 || host2[0] != 0))
+				if (host[0] == 0
+				    && (host[0] != 0 || host2[0] != 0))
 					host = host1[0] ? host1 : host2;
-				if (match_payload(rule->match, rule->payload, host) != 1)
+				if (match_payload
+				    (rule->match, rule->payload, host,
+				     rule->action_params[0]) != 1)
 					continue;
-			} else if(rule->which == T01_WHICH_URL) {
+			} else if (rule->which == T01_WHICH_URL) {
 				char *url = flow->ndpi_flow->http.url;
-				if(url && url[0] && 
-					match_payload(rule->match, rule->payload, url) != 1)
+				if (url && url[0] &&
+				    match_payload(rule->match, rule->payload,
+						  url,
+						  rule->action_params[0]) != 1)
 					continue;
 			}
 		}
