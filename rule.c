@@ -935,6 +935,8 @@ int update_rule(uint32_t id, const char *body, int body_len)
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
 		if (rule->id == id && rule->used == 1) {
+			new_rule.hits = rule->hits;
+			new_rule.saved_hits = rule->saved_hits;
 			memcpy(rule, &new_rule, offsetof(struct rule, list));
 			dirty++;
 			return 0;
