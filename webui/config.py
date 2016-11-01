@@ -15,7 +15,7 @@ USERNAME, PASSWORD = os.environ['T01AUTH'].split(':', 1) if os.environ.get('T01A
 
 
 class T01API:
-    _base = 'http://192.168.1.115:9899/'
+    _base = 'http://127.0.0.1:9899/'
     get_rule_ids = _base + 'ruleids'
     get_rule = _base + 'rule/%s'
     get_rules = _base + 'rules?id=%s'
