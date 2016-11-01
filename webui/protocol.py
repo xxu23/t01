@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python2
 # coding: utf-8
 
 """
@@ -94,7 +94,7 @@ class T01Rule:
             'daddr': daddr if daddr != '0.0.0.0' else '',
             'action': action,
             'condition': {'match': match, 'which': which, 'payload': payload},
-            'params': params.split('\n') if isinstance(params, str) else params
+            'params': params.split('\n') if isinstance(params, basestring) else params
         }
 
 
