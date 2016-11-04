@@ -97,18 +97,10 @@ static const u_int8_t nDPI_traceLevel = 0;
 
 /* ***************************************************** */
 
-//extern 
-u_int32_t current_ndpi_memory, max_ndpi_memory;
-
 /**
  * @brief malloc wrapper function
  */
 static void *malloc_wrapper(size_t size) {
-  current_ndpi_memory += size;
-
-  if(current_ndpi_memory > max_ndpi_memory)
-    max_ndpi_memory = current_ndpi_memory;
-
   return zmalloc(size);
 }
 
@@ -214,6 +206,9 @@ void ndpi_workflow_clean_idle_flows(struct ndpi_workflow * workflow, int mandato
 
     int ntries = 0;
     uint64_t total_flows = 0;
+    int factor = mandatory ? 1 : 20;
+    int scan_num = workflow->prefs.num_roots / factor;
+
     if(mandatory || workflow->last_idle_scan_time + IDLE_SCAN_PERIOD < workflow->last_time) {
  check:
       /* scan for idle flows */
@@ -236,7 +231,7 @@ void ndpi_workflow_clean_idle_flows(struct ndpi_workflow * workflow, int mandato
       if(++workflow->idle_scan_idx == workflow->prefs.num_roots) workflow->idle_scan_idx = 0;
       workflow->last_idle_scan_time = workflow->last_time;
 
-      if(mandatory && ++ntries < workflow->prefs.num_roots && total_flows < IDLE_SCAN_BUDGET) goto check;
+      if(mandatory && ++ntries < scan_num && total_flows < IDLE_SCAN_BUDGET) goto check;
     }
   }
 
