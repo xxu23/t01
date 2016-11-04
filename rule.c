@@ -362,7 +362,7 @@ static int load_rules_from_json(const char *data, struct list_head *head,
 			continue;
 		}
 
-		struct rule *rule = malloc(sizeof(*rule));
+		struct rule *rule = zmalloc(sizeof(*rule));
 		if (!rule) {
 			msg = "Out of memory";
 			ret = -2;
@@ -373,7 +373,7 @@ static int load_rules_from_json(const char *data, struct list_head *head,
 
 		parse_one_rule(item, rule);
 		if (transform_one_rule(rule, mask) < 0) {
-			free(rule);
+			zfree(rule);
 			continue;
 		}
 		rule->used = 1;
@@ -422,7 +422,7 @@ int load_rules(const char *filename, void *ndpi_mask)
 		fseek(fp, 0, SEEK_END);
 		size = ftell(fp) + 8;
 		fseek(fp, 0, SEEK_SET);
-		data = (char *)malloc(size + 1);
+		data = (char *)zmalloc(size + 1);
 		if (!data) {
 			t01_log(T01_WARNING, "Out of memory!");
 			goto eoferr;
@@ -432,7 +432,7 @@ int load_rules(const char *filename, void *ndpi_mask)
 		fclose(fp);
 
 		ret = load_rules_from_json(data, &rule_list, ndpi_mask);
-		free(data);
+		zfree(data);
 		return ret;
 	}
 
@@ -449,7 +449,7 @@ int load_rules(const char *filename, void *ndpi_mask)
 			break;
 
 		if (type == T01_TDB_TYPE_RULE) {
-			struct rule *r = malloc(sizeof(*r));
+			struct rule *r = zmalloc(sizeof(*r));
 			if (!r)
 				goto eoferr;
 			bzero(r, sizeof(*r));
@@ -463,14 +463,14 @@ int load_rules(const char *filename, void *ndpi_mask)
 			if (r->id > max_id)
 				max_id = r->id;
 		} else if (type == T01_TDB_TYPE_HIT) {
-			struct hit_record *h = malloc(sizeof(*h));
+			struct hit_record *h = zmalloc(sizeof(*h));
 			if (!h)
 				goto eoferr;
 			bzero(h, sizeof(*h));
 			if (tdb_load_hit(fp, h) == -1)
 				goto eoferr;
 			if (curr_rule->saved_hits == MAX_HITS_PER_RULE) {
-				free(h);
+				zfree(h);
 				continue;
 			}
 			list_add_tail(&h->list, &curr_rule->hit_head);
@@ -495,7 +495,7 @@ int add_one_hit_record(struct rule *r, uint64_t time,
 		       uint16_t sport, uint16_t dport,
 		       uint8_t smac[], uint8_t dmac[])
 {
-	struct hit_record *h = malloc(sizeof(*h));
+	struct hit_record *h = zmalloc(sizeof(*h));
 	if (!h)
 		return -1;
 	bzero(h, sizeof(*h));
@@ -515,7 +515,7 @@ int add_one_hit_record(struct rule *r, uint64_t time,
 		    list_entry(tail, struct hit_record, list);
 		r->saved_hits--;
 		list_del(tail);
-		free(hh);
+		zfree(hh);
 	}
 
 	list_add(&h->list, &r->hit_head);
@@ -544,9 +544,9 @@ void destroy_rules()
 			list_for_each_safe(pos2, n2, hhead) {
 			list_del(pos2);
 			hit = list_entry(pos2, struct hit_record, list);
-			free(hit);
+			zfree(hit);
 			}
-		free(rule);
+		zfree(rule);
 	}
 }
 
@@ -691,7 +691,7 @@ void background_save_done_handler(int exitcode, int bysignal)
 void release_buffer(char **out)
 {
 	if (*out)
-		free(*out);
+		zfree(*out);
 }
 
 static cJSON *rule2cjson(struct rule *rule)
@@ -752,7 +752,7 @@ static char *cjson2string(cJSON * root)
 	char *render, *result;
 
 	render = cJSON_Print(root);
-	result = malloc(strlen(render) + 1);
+	result = zmalloc(strlen(render) + 1);
 	strcpy(result, render);
 	cJSON_Delete(root);
 	cJSON_FreePrint(render);
@@ -779,7 +779,7 @@ int get_ruleids(char **out, size_t * out_len)
 		n++;
 	}
 
-	ids = (uint32_t *) malloc(sizeof(uint32_t) * n);
+	ids = (uint32_t *) zmalloc(sizeof(uint32_t) * n);
 	bzero(ids, sizeof(uint32_t) * n);
 	if (!ids)
 		return -1;
@@ -960,7 +960,7 @@ int delete_rule(uint32_t id)
 				list_for_each_safe(pos2, n2, hhead) {
 				list_del(pos2);
 				hit = list_entry(pos2, struct hit_record, list);
-				free(hit);
+				zfree(hit);
 				}
 			bzero(rule, offsetof(struct rule, list));
 			dirty++;
@@ -1001,7 +1001,7 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 
 	/* Not found, malloc a rule */
 	if (!new_rule) {
-		new_rule = malloc(sizeof(*new_rule));
+		new_rule = zmalloc(sizeof(*new_rule));
 		if (!new_rule) {
 			return -1;
 		}

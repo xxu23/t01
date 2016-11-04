@@ -162,8 +162,8 @@ void ndpi_workflow_free(struct ndpi_workflow * workflow) {
     ndpi_tdestroy(workflow->ndpi_flows_root[i], ndpi_flow_info_freer);
 
   ndpi_exit_detection_module(workflow->ndpi_struct);
-  free(workflow->ndpi_flows_root);
-  free(workflow);
+  zfree(workflow->ndpi_flows_root);
+  zfree(workflow);
 }
 
 /* ***************************************************** */

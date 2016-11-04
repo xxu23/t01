@@ -12,7 +12,7 @@
 struct http_response *http_response_init(int code, const char *msg) {
 
 	/* create object */
-	struct http_response *r = calloc(1, sizeof(struct http_response));
+	struct http_response *r = zcalloc(1, sizeof(struct http_response));
 
 	r->code = code;
 	r->msg = msg;
@@ -51,26 +51,26 @@ http_response_set_header(struct http_response *r, const char *k, const char *v) 
 		if(strncmp(r->headers[i].key, k, key_sz) == 0) {
 			pos = i;
 			/* free old value before replacing it. */
-			free(r->headers[i].key);
-			free(r->headers[i].val);
+			zfree(r->headers[i].key);
+			zfree(r->headers[i].val);
 			break;
 		}
 	}
 
 	/* extend array */
 	if(pos == r->header_count) {
-		r->headers = realloc(r->headers,
+		r->headers = zrealloc(r->headers,
 				sizeof(struct http_header)*(r->header_count + 1));
 		r->header_count++;
 	}
 
 	/* copy key */
-	r->headers[pos].key = calloc(key_sz + 1, 1);
+	r->headers[pos].key = zcalloc(key_sz + 1, 1);
 	memcpy(r->headers[pos].key, k, key_sz);
 	r->headers[pos].key_sz = key_sz;
 
 	/* copy val */
-	r->headers[pos].val = calloc(val_sz + 1, 1);
+	r->headers[pos].val = zcalloc(val_sz + 1, 1);
 	memcpy(r->headers[pos].val, v, val_sz);
 	r->headers[pos].val_sz = val_sz;
 
@@ -92,7 +92,7 @@ http_response_cleanup(struct http_response *r, int fd, int success) {
 	int i;
 
 	/* cleanup buffer */
-	free(r->out);
+	zfree(r->out);
 	if(!r->keep_alive || !success) {
 		/* Close fd is client doesn't support Keep-Alive. */
 		close(fd);
@@ -100,12 +100,12 @@ http_response_cleanup(struct http_response *r, int fd, int success) {
 
 	/* cleanup response object */
 	for(i = 0; i < r->header_count; ++i) {
-		free(r->headers[i].key);
-		free(r->headers[i].val);
+		zfree(r->headers[i].key);
+		zfree(r->headers[i].val);
 	}
-	free(r->headers);
+	zfree(r->headers);
 
-	free(r);
+	zfree(r);
 }
 
 static void
@@ -155,7 +155,7 @@ format_chunk(const char *p, size_t sz, size_t *out_sz) {
 	chunk_size = sprintf(tmp, "%x\r\n", (int)sz);
 	
 	*out_sz = chunk_size + sz + 2;
-	out = malloc(*out_sz);
+	out = zmalloc(*out_sz);
 	memcpy(out, tmp, chunk_size);
 	memcpy(out + chunk_size, p, sz);
 	memcpy(out + chunk_size + sz, "\r\n", 2);
@@ -171,7 +171,7 @@ http_response_write(struct http_response *r, int fd) {
 
 	/*r->keep_alive = 0;*/
 	r->out_sz = sizeof("HTTP/1.x xxx ")-1 + strlen(r->msg) + 2;
-	r->out = calloc(r->out_sz + 1, 1);
+	r->out = zcalloc(r->out_sz + 1, 1);
 
 	ret = sprintf(r->out, "HTTP/1.%d %d %s\r\n", (r->http_version?1:0), r->code, r->msg);
 	(void)ret;
@@ -190,7 +190,7 @@ http_response_write(struct http_response *r, int fd) {
 	for(i = 0; i < r->header_count; ++i) {
 		/* "Key: Value\r\n" */
 		size_t header_sz = r->headers[i].key_sz + 2 + r->headers[i].val_sz + 2;
-		r->out = realloc(r->out, r->out_sz + header_sz);
+		r->out = zrealloc(r->out, r->out_sz + header_sz);
 		p = r->out + r->out_sz;
 
 		/* add key */
@@ -218,7 +218,7 @@ http_response_write(struct http_response *r, int fd) {
 	}
 
 	/* end of headers */
-	r->out = realloc(r->out, r->out_sz + 2);
+	r->out = zrealloc(r->out, r->out_sz + 2);
 	memcpy(r->out + r->out_sz, "\r\n", 2);
 	r->out_sz += 2;
 
@@ -231,12 +231,12 @@ http_response_write(struct http_response *r, int fd) {
 			tmp = format_chunk(r->body, r->body_len, &tmp_len);
 		}
 
-		r->out = realloc(r->out, r->out_sz + tmp_len);
+		r->out = zrealloc(r->out, r->out_sz + tmp_len);
 		memcpy(r->out + r->out_sz, tmp, tmp_len);
 		r->out_sz += tmp_len;
 
 		if(r->chunked) { /* need to free the chunk */
-			free(tmp);
+			zfree(tmp);
 		}
 	}
 

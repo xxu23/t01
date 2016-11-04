@@ -48,9 +48,9 @@ aeEventLoop *aeCreateEventLoop(int setsize) {
     aeEventLoop *eventLoop;
     int i;
 
-    if ((eventLoop = malloc(sizeof(*eventLoop))) == NULL) goto err;
-    eventLoop->events = malloc(sizeof(aeFileEvent)*setsize);
-    eventLoop->fired = malloc(sizeof(aeFiredEvent)*setsize);
+    if ((eventLoop = zmalloc(sizeof(*eventLoop))) == NULL) goto err;
+    eventLoop->events = zmalloc(sizeof(aeFileEvent)*setsize);
+    eventLoop->fired = zmalloc(sizeof(aeFiredEvent)*setsize);
     if (eventLoop->events == NULL || eventLoop->fired == NULL) goto err;
     eventLoop->setsize = setsize;
     eventLoop->lastTime = time(NULL);
@@ -68,9 +68,9 @@ aeEventLoop *aeCreateEventLoop(int setsize) {
 
 err:
     if (eventLoop) {
-        free(eventLoop->events);
-        free(eventLoop->fired);
-        free(eventLoop);
+        zfree(eventLoop->events);
+        zfree(eventLoop->fired);
+        zfree(eventLoop);
     }
     return NULL;
 }
@@ -94,8 +94,8 @@ int aeResizeSetSize(aeEventLoop *eventLoop, int setsize) {
     if (eventLoop->maxfd >= setsize) return AE_ERR;
     if (aeApiResize(eventLoop,setsize) == -1) return AE_ERR;
 
-    eventLoop->events = realloc(eventLoop->events,sizeof(aeFileEvent)*setsize);
-    eventLoop->fired = realloc(eventLoop->fired,sizeof(aeFiredEvent)*setsize);
+    eventLoop->events = zrealloc(eventLoop->events,sizeof(aeFileEvent)*setsize);
+    eventLoop->fired = zrealloc(eventLoop->fired,sizeof(aeFiredEvent)*setsize);
     eventLoop->setsize = setsize;
 
     /* Make sure that if we created new slots, they are initialized with
@@ -107,9 +107,9 @@ int aeResizeSetSize(aeEventLoop *eventLoop, int setsize) {
 
 void aeDeleteEventLoop(aeEventLoop *eventLoop) {
     aeApiFree(eventLoop);
-    free(eventLoop->events);
-    free(eventLoop->fired);
-    free(eventLoop);
+    zfree(eventLoop->events);
+    zfree(eventLoop->fired);
+    zfree(eventLoop);
 }
 
 void aeStop(aeEventLoop *eventLoop) {
@@ -191,7 +191,7 @@ long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
     long long id = eventLoop->timeEventNextId++;
     aeTimeEvent *te;
 
-    te = malloc(sizeof(*te));
+    te = zmalloc(sizeof(*te));
     if (te == NULL) return AE_ERR;
     te->id = id;
     aeAddMillisecondsToNow(milliseconds,&te->when_sec,&te->when_ms);
@@ -216,7 +216,7 @@ int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id)
                 prev->next = te->next;
             if (te->finalizerProc)
                 te->finalizerProc(eventLoop, te->clientData);
-            free(te);
+            zfree(te);
             return AE_OK;
         }
         prev = te;

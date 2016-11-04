@@ -21,7 +21,7 @@ static int kafka_connect(struct ioengine_data *td, const char * args)
 {
 	struct kafka_data *kd = zmalloc(sizeof(*kd));
 	char *args2 = zstrdup(args);
-	char *sep, *host = (char*)args2;
+	char *sep, *host = args2;
 	int port = 9092;
 	char brokers[512];
 	char tmp[16];

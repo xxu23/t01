@@ -79,12 +79,12 @@ struct cmd {
 static struct cmd *cmd_new(struct http_client *client, int count, 
 					const char *body, size_t body_len)
 {
-	struct cmd *c = calloc(1, sizeof(struct cmd));
+	struct cmd *c = zcalloc(1, sizeof(struct cmd));
 
 	c->client = client;
 	c->count = count;
-	c->argv = calloc(count, sizeof(char *));
-	c->argv_len = calloc(count, sizeof(size_t));
+	c->argv = zcalloc(count, sizeof(char *));
+	c->argv_len = zcalloc(count, sizeof(size_t));
 	c->body = body;
 	c->body_len = body_len;
 
@@ -98,7 +98,7 @@ void cmd_free(struct cmd *c)
 		return;
 
 	for (i = 0; i < c->count; ++i) {
-		free((char *)c->argv[i]);
+		zfree((char *)c->argv[i]);
 	}
 }
 
@@ -108,7 +108,7 @@ static char *decode_uri(const char *uri, size_t length, size_t * out_len,
 	char c;
 	size_t i, j;
 	int in_query = always_decode_plus;
-	char *ret = malloc(length + 1);
+	char *ret = zmalloc(length + 1);
 	bzero(ret, length+1);
 
 	for (i = j = 0; i < length; i++) {
@@ -158,7 +158,7 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 	}
 
 	/* there is always a first parameter, it's the command name */
-	cmd->argv[0] = malloc(cmd_len + 1);
+	cmd->argv[0] = zmalloc(cmd_len + 1);
 	memcpy(cmd->argv[0], cmd_name, cmd_len);
 	cmd->argv[0][cmd_len] = 0;
 	cmd->argv_len[0] = cmd_len + 1;
@@ -186,7 +186,7 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 	}
 
 	for (i = cur_param; i < cmd->count; i++) {
-		free(cmd->argv[i]);
+		zfree(cmd->argv[i]);
 		cmd->argv[i] = NULL;
 		cmd->argv_len[i] = 0;
 	}
@@ -238,7 +238,7 @@ static int client_get_ruleids(struct http_client *c, struct cmd *cmd)
 static int client_get_rules(struct http_client *c, struct cmd *cmd)
 {
 	int n = c->query_count, i, j = 0;
-	uint32_t *ids = malloc(n * sizeof(uint32_t));
+	uint32_t *ids = zmalloc(n * sizeof(uint32_t));
 	char *result = NULL;
 	size_t len = 0;
 

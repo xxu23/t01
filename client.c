@@ -16,7 +16,7 @@ http_client_on_url(struct http_parser *p, const char *at, size_t sz) {
 
 	struct http_client *c = p->data;
 
-	CHECK_ALLOC(c, c->path = realloc(c->path, c->path_sz + sz + 1));
+	CHECK_ALLOC(c, c->path = zrealloc(c->path, c->path_sz + sz + 1));
 	memcpy(c->path + c->path_sz, at, sz);
 	c->path_sz += sz;
 	c->path[c->path_sz] = 0;
@@ -37,7 +37,7 @@ http_client_on_body(struct http_parser *p, const char *at, size_t sz) {
 int
 http_client_add_to_body(struct http_client *c, const char *at, size_t sz) {
 
-	CHECK_ALLOC(c, c->body = realloc(c->body, c->body_sz + sz + 1));
+	CHECK_ALLOC(c, c->body = zrealloc(c->body, c->body_sz + sz + 1));
 	memcpy(c->body + c->body_sz, at, sz);
 	c->body_sz += sz;
 	c->body[c->body_sz] = 0;
@@ -54,12 +54,12 @@ http_client_on_header_name(struct http_parser *p, const char *at, size_t sz) {
 	/* if we're not adding to the same header name as last time, realloc to add one field. */
 	if(c->last_cb != LAST_CB_KEY) {
 		n = ++c->header_count;
-		CHECK_ALLOC(c, c->headers = realloc(c->headers, n * sizeof(struct http_header)));
+		CHECK_ALLOC(c, c->headers = zrealloc(c->headers, n * sizeof(struct http_header)));
 		memset(&c->headers[n-1], 0, sizeof(struct http_header));
 	}
 
 	/* Add data to the current header name. */
-	CHECK_ALLOC(c, c->headers[n-1].key = realloc(c->headers[n-1].key,
+	CHECK_ALLOC(c, c->headers[n-1].key = zrealloc(c->headers[n-1].key,
 			c->headers[n-1].key_sz + sz + 1));
 	memcpy(c->headers[n-1].key + c->headers[n-1].key_sz, at, sz);
 	c->headers[n-1].key_sz += sz;
@@ -75,7 +75,7 @@ wrap_filename(const char *val, size_t val_len) {
 
 	char format[] = "attachment; filename=\"";
 	size_t sz = sizeof(format) - 1 + val_len + 1;
-	char *p = calloc(sz + 1, 1);
+	char *p = zcalloc(sz + 1, 1);
 
 	memcpy(p, format, sizeof(format)-1); /* copy format */
 	memcpy(p + sizeof(format)-1, val, val_len); /* copy filename */
@@ -117,29 +117,29 @@ http_client_on_query_string(struct http_parser *parser, const char *at, size_t s
 
 			/* Add data to the current query value. */
 			n = ++c->query_count;
-			CHECK_ALLOC(c, c->queries = realloc(c->queries, n * sizeof(struct http_query)));
+			CHECK_ALLOC(c, c->queries = zrealloc(c->queries, n * sizeof(struct http_query)));
 			memset(&c->queries[n-1], 0, sizeof(struct http_query));
 
-			CHECK_ALLOC(c, c->queries[n-1].key = calloc(key_len + 1, 1));
+			CHECK_ALLOC(c, c->queries[n-1].key = zcalloc(key_len + 1, 1));
 			memcpy(c->queries[n-1].key + c->queries[n-1].key_sz, key, key_len);
 			c->queries[n-1].key_sz = key_len + 1;
 			c->queries[n-1].key[c->queries[n-1].key_sz] = 0;
 
-			CHECK_ALLOC(c, c->queries[n-1].val = calloc(val_len + 1, 1));
+			CHECK_ALLOC(c, c->queries[n-1].val = zcalloc(val_len + 1, 1));
 			memcpy(c->queries[n-1].val + c->queries[n-1].val_sz, val, val_len);
 			c->queries[n-1].val_sz = val_len + 1;
 			c->queries[n-1].val[c->queries[n-1].val_sz] = 0;
 
 
 			if(key_len == 4 && strncmp(key, "type", 4) == 0) {
-				c->type = calloc(1 + val_len, 1);
+				c->type = zcalloc(1 + val_len, 1);
 				memcpy(c->type, val, val_len);
 			} else if((key_len == 5 && strncmp(key, "jsonp", 5) == 0)
 				|| (key_len == 8 && strncmp(key, "callback", 8) == 0)) {
-				c->jsonp = calloc(1 + val_len, 1);
+				c->jsonp = zcalloc(1 + val_len, 1);
 				memcpy(c->jsonp, val, val_len);
 			} else if(key_len == 3 && strncmp(key, "sep", 3) == 0) {
-				c->separator = calloc(1 + val_len, 1);
+				c->separator = zcalloc(1 + val_len, 1);
 				memcpy(c->separator, val, val_len);
 			} else if(key_len == 8 && strncmp(key, "filename", 8) == 0) {
 				c->filename = wrap_filename(val, val_len);
@@ -160,7 +160,7 @@ http_client_on_header_value(struct http_parser *p, const char *at, size_t sz) {
 	size_t n = c->header_count;
 
 	/* Add data to the current header value. */
-	CHECK_ALLOC(c, c->headers[n-1].val = realloc(c->headers[n-1].val,
+	CHECK_ALLOC(c, c->headers[n-1].val = zrealloc(c->headers[n-1].val,
 			c->headers[n-1].val_sz + sz + 1));
 	memcpy(c->headers[n-1].val + c->headers[n-1].val_sz, at, sz);
 	c->headers[n-1].val_sz += sz;
@@ -208,7 +208,7 @@ http_client_on_message_complete(struct http_parser *p) {
 struct http_client *
 http_client_new(aeEventLoop *el, int fd, const char *ip, uint16_t port) {
 
-	struct http_client *c = calloc(1, sizeof(struct http_client));
+	struct http_client *c = zcalloc(1, sizeof(struct http_client));
 
 	c->fd = fd;
 	c->el = el;
@@ -218,7 +218,7 @@ http_client_new(aeEventLoop *el, int fd, const char *ip, uint16_t port) {
 	/* registry read event */
 	if(aeCreateFileEvent(el, fd, AE_READABLE, http_client_can_read, c) == AE_ERR) {
 		close(fd);
-		free(c);
+		zfree(c);
 		return NULL;
 	}
     
@@ -247,30 +247,30 @@ http_client_reset(struct http_client *c) {
 
 	/* headers */
 	for(i = 0; i < c->header_count; ++i) {
-		free(c->headers[i].key);
-		free(c->headers[i].val);
+		zfree(c->headers[i].key);
+		zfree(c->headers[i].val);
 	}
-	free(c->headers);
+	zfree(c->headers);
 	c->headers = NULL;
 	c->header_count = 0;
 
 	/* queries */
 	for(i = 0; i < c->query_count; ++i) {
-		free(c->queries[i].key);
-		free(c->queries[i].val);
+		zfree(c->queries[i].key);
+		zfree(c->queries[i].val);
 	}
-	free(c->queries);
+	zfree(c->queries);
 	c->queries = NULL;
 	c->query_count = 0;
 
 	/* other data */
-	free(c->body); c->body = NULL;
+	zfree(c->body); c->body = NULL;
 	c->body_sz = 0;
-	free(c->path); c->path = NULL;
+	zfree(c->path); c->path = NULL;
 	c->path_sz = 0;
-	free(c->type); c->type = NULL;
-	free(c->jsonp); c->jsonp = NULL;
-	free(c->filename); c->filename = NULL;
+	zfree(c->type); c->type = NULL;
+	zfree(c->jsonp); c->jsonp = NULL;
+	zfree(c->filename); c->filename = NULL;
 	c->request_sz = 0;
 
 	/* no last known header callback */
@@ -291,8 +291,8 @@ http_client_free(struct http_client *c) {
 	}
 	close(c->fd);
 	http_client_reset(c);
-	free(c->buffer);
-	free(c);
+	zfree(c->buffer);
+	zfree(c);
 }
 
 int
@@ -310,7 +310,7 @@ http_client_read(struct http_client *c) {
 	}
 
 	/* save what we've just read */
-	c->buffer = realloc(c->buffer, c->sz + ret);
+	c->buffer = zrealloc(c->buffer, c->sz + ret);
 	if(!c->buffer) {
 		return (int)CLIENT_OOM;
 	}
@@ -331,9 +331,9 @@ http_client_remove_data(struct http_client *c, size_t sz) {
 		return -1;
 
 	/* replace buffer */
-	CHECK_ALLOC(c, buffer = malloc(c->sz - sz));
+	CHECK_ALLOC(c, buffer = zmalloc(c->sz - sz));
 	memcpy(buffer, c->buffer + sz, c->sz - sz);
-	free(c->buffer);
+	zfree(c->buffer);
 	c->buffer = buffer;
 	c->sz -= sz;
 
@@ -346,7 +346,7 @@ http_client_execute(struct http_client *c) {
 	int nparsed = http_parser_execute(&c->parser, &c->settings, c->buffer, c->sz);
 	
 	/* removed consumed data, all has been copied already. */
-	free(c->buffer);
+	zfree(c->buffer);
 	c->buffer = NULL;
 	c->sz = 0;
 	

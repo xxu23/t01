@@ -16,7 +16,7 @@ static int redis_connect(struct ioengine_data *td, const char *args)
 	char *sep, *host = args2;
 	int port = 6379;
 
-	sep = strchr(args, ':');
+	sep = strchr(args2, ':');
 	if (sep) {
 		*sep = 0;
 		sep++;
