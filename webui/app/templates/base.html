@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar navbar-inverse navbar-fixed-top" role="navigation">
+        <div class="container-fluid">
+            <div class="navbar-header">
+                <a class="navbar-brand" href="{{ url_for('info_page') }}">T01Test</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-sm-3 col-md-2 sidebar">
+                <ul class="nav nav-sidebar">
+                    <li id="info_page"><a href="{{ url_for('info_page') }}">运行状态</a></li>
+                    <li id="hits_page"><a href="{{ url_for('hits_page') }}">命中查看</a></li>
+                </ul>
+                <ul class="nav nav-sidebar">
+                    <li id="rules_page"><a href="{{ url_for('rules_page') }}">规则设置</a></li>
+                </ul>
+            </div>
+            <div class="col-sm-9 col-sm-offset-3 col-md-10 col-md-offset-2 main">
+                {% block body %}{% endblock %}
+            </div>
+        </div>
+    </div>
+</body>
+<script src="{{ url_for('static', filename='js/jquery-3.1.0.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/bootstrap.min.js') }}"></script>
+{% block script %}{% endblock %}
+</html>

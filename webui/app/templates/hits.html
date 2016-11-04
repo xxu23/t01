@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/jsgrid.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/jsgrid-theme.min.css') }}">
+<style type="text/css">
+    .jsgrid-grid-header, .jsgrid-grid-body {
+        overflow: hidden;
+    }
+</style>
+<title>Hits</title>
+{% endblock %}
+
+{% block body %}
+<h1 class="page-header">命中查看</h1>
+<div id="rules"></div>
+{% endblock %}
+
+{% block script %}
+<script src="{{ url_for('static', filename='js/jsgrid.min.js') }}"></script>
+<script>
+    $('#hits_page').addClass('active');
+
+    $('#rules').jsGrid({
+        width: '100%',
+        paging: true,
+        pageLoading: true,
+        fields: [
+            { name: 'id', title: '规则编号', width: 40 },
+            { name: 'protocol', title: '规则协议', type: 'select', items: [{name: '', title: '未指定'}, {name: 'tcp', title: 'TCP'}, {name: 'udp', title: 'UDP'}, {name: 'http', title: 'HTTP'}, {name: 'dns', title: 'DNS'}, {name: 'pptp', title: 'PPTP'}, {name: 'ipsec', title: 'IPSec'}], valueField: 'name', textField: 'title', width: 40 },
+            { name: 'saddr', title: '源IP', type: 'text', width: 80 },
+            { name: 'sport', title: '源端口', type: 'number', min: '0', max: '65535', step: '1', width: 40 },
+            { name: 'daddr', title: '目的IP', type: 'text', width: 80 },
+            { name: 'dport', title: '目的端口', type: 'number', min: '0', max: '65535', step: '1', width: 40 },
+            { name: 'action', title: '中间行为', type: 'select', items: [{name: '', title: '未指定'}, {name: 'confuse', title: 'DNS劫持'}, {name: 'reject', title: '丢弃'}, {name: 'redirect', title: '跳转'}], valueField: 'name', textField: 'title', width: 40 },
+            { name: 'which', title: '匹配类型', type: 'select', items: [{name: '', title: '未指定'}, {name: 'url', title: 'URL'}, {name: 'host', title: 'HOST'}], valueField: 'name', textField: 'title', width: 40 },
+            { name: 'match', title: '匹配方式', type: 'select', items: [{name: '', title: '未指定'}, {name: 'match', title: '完全匹配'}, {name: 'regex', title: '正则匹配'}], valueField: 'name', textField: 'title', width: 40 },
+            { name: 'payload', title: '匹配规则', type: 'text' },
+            { name: 'params', title: '行为规则', type: 'textarea' },
+            { name: 'total_hits', title: '命中总数', type: 'text', width: 40 },
+            { name: 'saved_hits', title: '存储命中数', type: 'text', width: 40 }
+        ],
+        autoload: true,
+        controller: {
+            loadData: function(filter) {
+                return $.ajax({
+                    type: 'GET',
+                    url: '{{ url_for('rules_get') }}',
+                    data: filter
+                });
+            }
+        },
+        pageSize: 50,
+        pageButtonCount: 5,
+        pagerFormat: '页码: {first} {pages} {last}    第 {pageIndex} 页/共 {pageCount} 页',
+        pageFirstText: '首页',
+        pageLastText: '尾页',
+        noDataContent: '未查询到结果',
+        deleteConfirm: '确认删除此条规则?',
+        loadMessage: '正在载入,请稍候……',
+        rowClick: function(args) {
+            var tr = $(args.event.target).parents('tr');
+            var rule_id = 'rule_' + args.item.id;
+            if (tr.next('tr')[0] != undefined && tr.next('tr')[0].className == 'hit') {
+                tr.next('tr').remove();
+            } else {
+                tr.after('<tr class="hit"><td colspan="13" style="padding: 10px"><div id="' + rule_id + '"></div></td></tr>');
+                toggle(tr.next('tr').children('td').children('div'));
+            }
+        }
+    });
+
+    function toggle(rule_id) {
+        var id_ = rule_id[0].id.split('_', 2)[1];
+        rule_id.jsGrid({
+            width: '100%',
+            paging: true,
+            pageLoading: true,
+            fields: [
+                { name: 'id', title: '命中编号', type: 'text', width: 40 },
+                { name: 'time', title: '命中时间', type: 'text' },
+                { name: 'saddr', title: '源IP地址', type: 'text' },
+                { name: 'sport', title: '源端口', type: 'text', width: 40 },
+                { name: 'daddr', title: '目的IP地址', type: 'text' },
+                { name: 'dport', title: '目的端口', type: 'text', width: 40 },
+                { name: 'smac', title: '源MAC地址', type: 'text' },
+                { name: 'dmac', title: '目的MAC地址', type: 'text' }
+            ],
+            autoload: true,
+            controller: {
+                loadData: function(filter) {
+                    return $.ajax({
+                        type: 'GET',
+                        url: '{{ url_for('hits_get', id_='') }}' + id_,
+                        data: filter
+                    });
+                }
+            },
+            pageButtonCount: 5,
+            pagerFormat: '页码: {first} {pages} {last}    第 {pageIndex} 页/共 {pageCount} 页',
+            pageFirstText: '首页',
+            pageLastText: '尾页',
+            noDataContent: '未查询到结果',
+            loadMessage: '正在载入,请稍候……'
+        });
+    }
+</script>
+{% endblock %}
