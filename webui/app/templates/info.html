@@ -21,7 +21,7 @@
                 console.log(data);
                 var info = $("#info");
                 info.children().remove();
-                info.append("<p>" + ["接收网口: " + data.iface, "发送网口: " + data.oface, "启动时间: " + data.upstart, "当前时间: " + data.now, "接收总包数(Pkt): " + data.total_pkts_in, "发送总包数(Pkt): " + data.total_pkts_out, "接收总字节数(Byte): " + data.total_bytes_in, "发送总字节数(Byte): " + data.total_bytes_out, "数据包接收速率(pps): " + data.avg_pkts_in, "数据包发送速率(pps): " + data.avg_pkts_out, "字节数接收速率(Bps): " + data.avg_bytes_in, "字节数发送速率(Bps): " + data.avg_bytes_out, "命中数: " + data.hits].join("</p><p>") + "</p>");
+                info.append("<p>" + ["接收网口: " + data.iface, "发送网口: " + data.oface, "启动时间: " + data.upstart, "当前时间: " + data.now, "接收总包数(Pkt): " + data.total_pkts_in, "发送总包数(Pkt): " + data.total_pkts_out, "接收总字节数(Byte): " + data.total_bytes_in, "发送总字节数(Byte): " + data.total_bytes_out, "数据包接收速率(pps): " + data.avg_pkts_in, "数据包发送速率(pps): " + data.avg_pkts_out, "字节数接收速率(Bps): " + data.avg_bytes_in, "字节数发送速率(Bps): " + data.avg_bytes_out, "命中数: " + data.hits, "内存使用: " + data.used_memory].join("</p><p>") + "</p>");
             }
         })
     }

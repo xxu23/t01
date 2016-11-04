@@ -340,6 +340,7 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 	cJSON_AddNumberToObject(root, "avg_bytes_in", bytes_per_second_in);
 	cJSON_AddNumberToObject(root, "avg_bytes_out", bytes_per_second_out);
 	cJSON_AddNumberToObject(root, "hits", hits);
+	cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
 	
 	result = cJSON_Print(root);
 	send_client_reply(cmd, result, strlen(result), "application/json");

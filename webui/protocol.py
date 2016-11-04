@@ -25,7 +25,7 @@ def size(bytes_, suffix=''):
     ]
     for factor, unit in sizes:
         if bytes_ >= factor:
-            amount = bytes_ / factor
+            amount = 1.0 * bytes_ / factor
             return '{:.1f}{}{}'.format(amount, unit, suffix)
 
 
@@ -114,7 +114,8 @@ class T01Info:
         "avg_pkts_out": 0,
         "avg_bytes_in": 953193,
         "avg_bytes_out": 135,
-        "hits": 10374
+        "hits": 10374,
+        "used_memory": 512000	
     }
 
     Convert to:
@@ -131,7 +132,8 @@ class T01Info:
         "avg_pkts_out": 0 (0),
         "avg_bytes_in": 953193 (930.9K/s),
         "avg_bytes_out": 135 (135.0B/s),
-        "hits": 10374
+        "hits": 10374,
+        "used_memory": 512000 (512KB)
     }
     """
     @staticmethod
@@ -150,6 +152,7 @@ class T01Info:
             'avg_bytes_in': '{} ({})'.format(info.get('avg_bytes_in', 0), size(info.get('avg_bytes_in', 0), '/s')),
             'avg_bytes_out': '{} ({})'.format(info.get('avg_bytes_out', 0), size(info.get('avg_bytes_out', 0), '/s')),
             'hits': info.get('hits', 0),
+            'used_memory': '{} ({})'.format(info.get('used_memory', 0), size(info.get('used_memory', 0), 'B'))
         }
 
 
