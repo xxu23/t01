@@ -913,6 +913,7 @@ static void init_server()
 	char interface[64];
 	char err[ANET_ERR_LEN];
 
+	zmalloc_enable_thread_safeness();
 	init_log(verbose, logfile);
 	lastsave = upstart = time(NULL);
 	gettimeofday(&upstart_tv, NULL);
