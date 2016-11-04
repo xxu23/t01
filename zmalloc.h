@@ -38,10 +38,8 @@
 #define ZMALLOC_LIB ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX))
 #include <jemalloc/jemalloc.h>
 #if (JEMALLOC_VERSION_MAJOR == 2 && JEMALLOC_VERSION_MINOR >= 1) || (JEMALLOC_VERSION_MAJOR > 2)
-#define malloc(size) je_malloc(size)
-#define calloc(count,size) je_calloc(count,size)
-#define realloc(ptr,size) je_realloc(ptr,size)
-#define free(ptr) je_free(ptr)
+#define HAVE_MALLOC_SIZE 1
+#define zmalloc_size(p) je_malloc_usable_size(p)
 #else
 #error "Newer version of jemalloc required"
 #endif
@@ -49,6 +47,20 @@
 
 #ifndef ZMALLOC_LIB
 #define ZMALLOC_LIB "libc"
+#endif
+
+void *zmalloc(size_t size);
+void *zcalloc(size_t size);
+void *zrealloc(void *ptr, size_t size);
+void zfree(void *ptr);
+char *zstrdup(const char *s);
+void zlibc_free(void *ptr);
+size_t zmalloc_used_memory(void);
+void zmalloc_enable_thread_safeness(void);
+void zmalloc_set_oom_handler(void (*oom_handler)(size_t));
+
+#ifndef HAVE_MALLOC_SIZE
+size_t zmalloc_size(void *ptr);
 #endif
 
 #endif /* __ZMALLOC_H */

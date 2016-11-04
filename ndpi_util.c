@@ -109,7 +109,7 @@ static void *malloc_wrapper(size_t size) {
   if(current_ndpi_memory > max_ndpi_memory)
     max_ndpi_memory = current_ndpi_memory;
 
-  return malloc(size);
+  return zmalloc(size);
 }
 
 /* ***************************************************** */
@@ -118,7 +118,7 @@ static void *malloc_wrapper(size_t size) {
  * @brief free wrapper function
  */
 static void free_wrapper(void *freeable) {
-  free(freeable);
+  zfree(freeable);
 }
 
 /* ***************************************************** */
@@ -373,6 +373,12 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
   flow.lower_ip = lower_ip, flow.upper_ip = upper_ip;
   flow.lower_port = lower_port, flow.upper_port = upper_port;
 
+  /*
+  if(workflow->__filter_callback && workflow->__data_clone_callback) {
+    if(workflow->__filter_callback(&flow))
+      workflow->__data_clone_callback(workflow->__flow_packet_data, workflow->__flow_packet_len);
+  }*/
+
   if(0)
     NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_DEBUG, "[NDPI] [%u][%u:%u <-> %u:%u]\n",
 	     iph->protocol, lower_ip, ntohs(lower_port), upper_ip, ntohs(upper_port));
@@ -388,7 +394,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_ERROR, "maximum flow count (%u) has been exceeded\n", workflow->prefs.max_ndpi_flows);
       return NULL;
     } else {
-      struct ndpi_flow_info *newflow = (struct ndpi_flow_info*)malloc(sizeof(struct ndpi_flow_info));
+      struct ndpi_flow_info *newflow = (struct ndpi_flow_info*)zmalloc(sizeof(struct ndpi_flow_info));
 
       if(newflow == NULL) {
 	NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_ERROR, "[NDPI] %s(1): not enough memory\n", __FUNCTION__);
@@ -409,21 +415,21 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
 
       if((newflow->ndpi_flow = ndpi_malloc(SIZEOF_FLOW_STRUCT)) == NULL) {
 	NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_ERROR, "[NDPI] %s(2): not enough memory\n", __FUNCTION__);
-	free(newflow);
+	zfree(newflow);
 	return(NULL);
       } else
 	memset(newflow->ndpi_flow, 0, SIZEOF_FLOW_STRUCT);
 
       if((newflow->src_id = ndpi_malloc(SIZEOF_ID_STRUCT)) == NULL) {
 	NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_ERROR, "[NDPI] %s(3): not enough memory\n", __FUNCTION__);
-	free(newflow);
+	zfree(newflow);
 	return(NULL);
       } else
 	memset(newflow->src_id, 0, SIZEOF_ID_STRUCT);
 
       if((newflow->dst_id = ndpi_malloc(SIZEOF_ID_STRUCT)) == NULL) {
 	NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_ERROR, "[NDPI] %s(4): not enough memory\n", __FUNCTION__);
-	free(newflow);
+	zfree(newflow);
 	return(NULL);
       } else
 	memset(newflow->dst_id, 0, SIZEOF_ID_STRUCT);
@@ -432,6 +438,14 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       workflow->stats.ndpi_flow_count++;
 
       *src = newflow->src_id, *dst = newflow->dst_id;
+
+      if(workflow->__filter_callback && workflow->__data_clone_callback) {
+        if(workflow->__filter_callback(newflow))
+          workflow->__data_clone_callback(workflow->__packet_data, workflow->__packet_header->len, 
+                                          newflow->protocol, workflow->last_time,
+                                          newflow->src_ip, newflow->src_port,
+                                          newflow->dst_ip, newflow->dst_port);
+      }
 
       return newflow;
     }
@@ -443,6 +457,14 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       *src = flow->src_id, *dst = flow->dst_id;
     else
       *src = flow->dst_id, *dst = flow->src_id;
+
+    if(workflow->__filter_callback && workflow->__data_clone_callback) {
+      if(workflow->__filter_callback(flow))
+        workflow->__data_clone_callback(workflow->__packet_data, workflow->__packet_header->len, 
+                                          flow->protocol, workflow->last_time,
+                                          flow->src_ip, flow->src_port,
+                                          flow->dst_ip, flow->dst_port);
+    }
 
     if(flag == 0) flow->src_ipid = id, flow->src_ttl = ttl;
     else          flow->dst_ipid = id, flow->dst_ttl = ttl;
@@ -526,7 +548,7 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
     ndpi_flow = flow->ndpi_flow;
     flow->packets++, flow->bytes += rawsize;
     flow->last_seen = time;
-    flow->payload_offset = payload-(u_int8_t *)workflow->__flow_packet_data;
+    flow->payload_offset = payload-(u_int8_t *)workflow->__packet_data;
   } else {
     return(0);
   }
@@ -549,17 +571,6 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
       ndpi_set_detected_protocol(workflow->ndpi_struct, ndpi_flow, NDPI_PROTOCOL_STUN, NDPI_PROTOCOL_UNKNOWN);
 
     snprintf(flow->host_server_name, sizeof(flow->host_server_name), "%s", flow->ndpi_flow->host_server_name);
-  
-    /*if(flow->detected_protocol.protocol == NDPI_PROTOCOL_BITTORRENT) {
-      int i, j, n = 0;
-
-      for(i=0, j = 0; i<20; i++) {
-	sprintf(&flow->bittorent_hash[j], "%02x", flow->ndpi_flow->bittorent_hash[i]);
-	j += 2,	n += flow->ndpi_flow->bittorent_hash[i];
-      }
-
-      if(n == 0) flow->bittorent_hash[0] = '\0';
-    }*/
 
     if((proto == IPPROTO_TCP) && (flow->detected_protocol.protocol != NDPI_PROTOCOL_DNS)) {
       snprintf(flow->ssl.client_certificate, sizeof(flow->ssl.client_certificate), "%s", flow->ndpi_flow->protos.ssl.client_certificate);
@@ -573,11 +584,11 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
 	 return 0;
       } else {
 	if (workflow->__flow_detected_callback != NULL)
-	  workflow->__flow_detected_callback(workflow, flow, workflow->__flow_packet_header,  workflow->__flow_packet_data);
+	  workflow->__flow_detected_callback(workflow, flow, workflow->__packet_header,  workflow->__packet_data);
       }
     } else {
       if (workflow->__flow_detected_callback != NULL)
-        workflow->__flow_detected_callback(workflow, flow, workflow->__flow_packet_header,  workflow->__flow_packet_data);
+        workflow->__flow_detected_callback(workflow, flow, workflow->__packet_header,  workflow->__packet_data);
     }
 
     ndpi_free_flow_info_half(flow);
@@ -639,8 +650,8 @@ void ndpi_workflow_process_packet (struct ndpi_workflow * workflow, struct nm_pk
 
   /* Increment raw packet counter */
   workflow->stats.raw_packet_count++;
-  workflow->__flow_packet_header = header;
-  workflow->__flow_packet_data = packet;
+  workflow->__packet_header = header;
+  workflow->__packet_data = packet;
 
   /* setting time */
   time = ((uint64_t) header->ts.tv_sec) * TICK_RESOLUTION + header->ts.tv_usec / (1000000 / TICK_RESOLUTION);

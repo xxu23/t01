@@ -104,6 +104,10 @@ struct ndpi_workflow;
 /** workflow, flow, user data */
 typedef void (*ndpi_workflow_callback_ptr) (struct ndpi_workflow *, struct ndpi_flow_info *, void *, void *);
 
+typedef void (*data_clone_callback_ptr) (void *, uint32_t, uint8_t, uint64_t, uint32_t, uint16_t, uint32_t, uint16_t);
+
+typedef int (*data_filter_callback_ptr) (struct ndpi_flow_info *);
+
 typedef struct ndpi_workflow {
   u_int64_t last_time;
 
@@ -115,10 +119,12 @@ typedef struct ndpi_workflow {
   u_int32_t num_idle_flows;
   struct ndpi_flow_info *idle_flows[IDLE_SCAN_BUDGET];
 
+  data_clone_callback_ptr __data_clone_callback; 
+  data_filter_callback_ptr __filter_callback;
   ndpi_workflow_callback_ptr __flow_detected_callback;
   void * __flow_detected_udata;
-  void * __flow_packet_data;
-  void * __flow_packet_header;
+  void * __packet_data;
+  struct nm_pkthdr * __packet_header;
   
   /* allocated by prefs */
   void **ndpi_flows_root;
@@ -148,6 +154,14 @@ static inline void ndpi_workflow_set_flow_detected_callback(struct ndpi_workflow
 							    void * udata) {
   workflow->__flow_detected_callback = callback;
   workflow->__flow_detected_udata = udata;
+}
+
+/* flow callbacks: ndpi_flow_info will be freed right after */
+static inline void ndpi_set_mirror_data_callback(struct ndpi_workflow * workflow,
+							    data_clone_callback_ptr callback1,
+							    data_filter_callback_ptr callback2) {
+  workflow->__data_clone_callback = callback1;
+  workflow->__filter_callback = callback2;
 }
 
 

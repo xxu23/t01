@@ -49,18 +49,20 @@
 #include "networking.h"
 #include "ioengine.h"
 #include "t01.h"
-
+#include "zmalloc.h"
 
 struct backup_data {
-  char *buffer;
-  int len;
-  struct ndpi_flow_info *flow;
+	char *buffer;
+	int len;
+	struct ndpi_flow_info *flow;
 };
+
+#define MAX_FILTERS 5000
 
 #define MAX_BACKUP_DATA 65536
 #define DEFAULT_HZ      10
 
-#define run_with_period(_ms_) if ((_ms_ <= 1000/DEFAULT_HZ) || !(cronloops%((_ms_)/(1000/DEFAULT_HZ))))  	
+#define run_with_period(_ms_) if ((_ms_ <= 1000/DEFAULT_HZ) || !(cronloops%((_ms_)/(1000/DEFAULT_HZ))))
 
 LIST_HEAD(rule_list);
 int dirty = 0;
@@ -77,12 +79,13 @@ uint64_t ip_packet_count_out = 0;
 uint64_t total_wire_bytes = 0, total_ip_bytes = 0;
 uint64_t total_ip_bytes_out = 0;
 uint64_t tcp_count = 0, udp_count = 0;
-uint64_t hits = 0; 
+uint64_t hits = 0;
 uint64_t bytes_per_second_in = 0;
 uint64_t bytes_per_second_out = 0;
 uint64_t pkts_per_second_in = 0;
 uint64_t pkts_per_second_out = 0;
 
+static LIST_HEAD(filter_buffer_list);
 static struct timeval upstart_tv;
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
 static uint64_t cronloops;
@@ -96,711 +99,983 @@ static char rulefile[256];
 static char logfile[256];
 static struct nm_desc *nmr, *out_nmr;
 static uint8_t shutdown_app = 0;
+static char filter[MAX_FILTERS * 16];
 static char engine[64];
 static char engine_opt[256];
-static struct ioengine_data engine_data;
+static struct ioengine_data backup_engine;
+static struct ioengine_data mirror_engine;
 static int backup = 0;
+static int mirror = 0;
 static int verbose = T01_VERBOSE;
 static int enable_all_protocol = 1;
 static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
-    
+static pthread_spinlock_t mirror_lock;
 
-static char* ipproto_name(u_short proto_id) {
+static struct filter_strategy {
+	uint8_t protocol;
+	uint16_t port;
+} filters[MAX_FILTERS];
+static int n_filters;
 
-  static char proto[8];
+struct filter_buffer {
+	struct list_head list;
+	uint64_t ts;
+	int len;
+	int protocol;
+	uint32_t saddr;
+	uint32_t daddr;
+	uint16_t sport;
+	uint16_t dport;
+	char buffer[0];
+};
 
-  switch(proto_id) {
-  case IPPROTO_TCP:
-    return("TCP");
-    break;
-  case IPPROTO_UDP:
-    return("UDP");
-    break;
-  case IPPROTO_ICMP:
-    return("ICMP");
-    break;
-  case IPPROTO_ICMPV6:
-    return("ICMPV6");
-    break;
-  case 112:
-    return("VRRP");
-    break;
-  case IPPROTO_IGMP:
-    return("IGMP");
-    break;
-  }
+static int netflow_data_filter(struct ndpi_flow_info *flow)
+{
+	int i;
 
-  snprintf(proto, sizeof(proto), "%u", proto_id);
-  return(proto);
+	for (i = 0; i < n_filters; i++) {
+		if (filters[i].protocol == 0) {
+			if (filters[i].port == flow->dst_port)
+				return 1;
+		} else if (filters[i].protocol == flow->protocol &&
+			   filters[i].port == flow->dst_port)
+			return 1;
+	}
+	return 0;
 }
 
-static char* format_traffic(float numBits, int bits, char *buf) {
-  char unit;
+static void netflow_data_clone(void *data, uint32_t n,
+			       uint8_t protocol, uint64_t ts,
+			       uint32_t saddr, uint16_t sport,
+			       uint32_t daddr, uint16_t dport)
+{
+	struct filter_buffer *fb = zmalloc(sizeof(struct filter_buffer) + n);
+	if (!fb)
+		return;
+	memcpy(fb->buffer, data, n);
+	fb->len = n;
+	fb->protocol = protocol;
+	fb->ts = ts;
+	fb->saddr = saddr;
+	fb->sport = sport;
+	fb->daddr = daddr;
+	fb->dport = dport;
 
-  if(bits)
-    unit = 'b';
-  else
-    unit = 'B';
-
-  if(numBits < 1024) {
-    snprintf(buf, 32, "%lu %c", (unsigned long)numBits, unit);
-  } else if(numBits < 1048576) {
-    snprintf(buf, 32, "%.2f K%c", (float)(numBits)/1024, unit);
-  } else {
-    float tmpMBits = ((float)numBits)/1048576;
-
-    if(tmpMBits < 1024) {
-      snprintf(buf, 32, "%.2f M%c", tmpMBits, unit);
-    } else {
-      tmpMBits /= 1024;
-
-      if(tmpMBits < 1024) {
-	snprintf(buf, 32, "%.2f G%c", tmpMBits, unit);
-      } else {
-	snprintf(buf, 32, "%.2f T%c", (float)(tmpMBits)/1024, unit);
-      }
-    }
-  }
-
-  return(buf);
+	pthread_spin_lock(&mirror_lock);
+	list_add_tail(&fb->list, &filter_buffer_list);
+	pthread_spin_unlock(&mirror_lock);
 }
 
-static char* format_packets(float numPkts, char *buf) {
+static char *ipproto_name(u_short proto_id)
+{
+	static char proto[8];
 
-  if(numPkts < 1000) {
-    snprintf(buf, 32, "%.2f", numPkts);
-  } else if(numPkts < 1000000) {
-    snprintf(buf, 32, "%.2f K", numPkts/1000);
-  } else {
-    numPkts /= 1000000;
-    snprintf(buf, 32, "%.2f M", numPkts);
-  }
+	switch (proto_id) {
+	case IPPROTO_TCP:
+		return ("TCP");
+		break;
+	case IPPROTO_UDP:
+		return ("UDP");
+		break;
+	case IPPROTO_ICMP:
+		return ("ICMP");
+		break;
+	case IPPROTO_ICMPV6:
+		return ("ICMPV6");
+		break;
+	case 112:
+		return ("VRRP");
+		break;
+	case IPPROTO_IGMP:
+		return ("IGMP");
+		break;
+	}
 
-  return(buf);
+	snprintf(proto, sizeof(proto), "%u", proto_id);
+	return (proto);
 }
 
+static char *format_traffic(float numBits, int bits, char *buf)
+{
+	char unit;
 
-static int manage_interface_promisc_mode(const char* interface, int switch_on) {
-    // We need really any socket for ioctl
-    int fd;
-    struct ifreq ethreq;    
-    int ioctl_res;
-    int promisc_enabled_on_device;
-    int ioctl_res_set;
+	if (bits)
+		unit = 'b';
+	else
+		unit = 'B';
 
-    fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (!fd) {
-        t01_log(T01_WARNING, "Can't create socket for promisc mode manager");
-        return -1;
-    }
+	if (numBits < 1024) {
+		snprintf(buf, 32, "%lu %c", (unsigned long)numBits, unit);
+	} else if (numBits < 1048576) {
+		snprintf(buf, 32, "%.2f K%c", (float)(numBits) / 1024, unit);
+	} else {
+		float tmpMBits = ((float)numBits) / 1048576;
 
-    bzero(&ethreq, sizeof(ethreq));
-    strncpy(ethreq.ifr_name, interface, IFNAMSIZ);
+		if (tmpMBits < 1024) {
+			snprintf(buf, 32, "%.2f M%c", tmpMBits, unit);
+		} else {
+			tmpMBits /= 1024;
 
-    ioctl_res = ioctl(fd, SIOCGIFFLAGS, &ethreq);
-    if (ioctl_res == -1) {
-        t01_log(T01_WARNING, "Can't get interface flags");
-        return -1;
-    }
- 
-    promisc_enabled_on_device = ethreq.ifr_flags & IFF_PROMISC;
-    if (switch_on) {
-        if (promisc_enabled_on_device) {
-             t01_log(T01_DEBUG, "Interface %s in promisc mode already", interface);
-            return 0;
-        } else {
-             t01_log(T01_DEBUG, "Interface %s in non promisc mode now, switch it on", interface);
-             ethreq.ifr_flags |= IFF_PROMISC;
-             ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
-             if (ioctl_res_set == -1) {
-                 t01_log(T01_WARNING, "Can't set interface flags");
-                 return -1;
-             }
+			if (tmpMBits < 1024) {
+				snprintf(buf, 32, "%.2f G%c", tmpMBits, unit);
+			} else {
+				snprintf(buf, 32, "%.2f T%c",
+					 (float)(tmpMBits) / 1024, unit);
+			}
+		}
+	}
 
-             return 1;
-        }
-    } else { 
-        if (!promisc_enabled_on_device) {
-            t01_log(T01_DEBUG, "Interface %s in normal mode already", interface);
-            return 0;
-        } else {
-            t01_log(T01_DEBUG, "Interface in promisc mode now, switch it off");
-            ethreq.ifr_flags &= ~IFF_PROMISC;
-            ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
-            if (ioctl_res_set == -1) {
-                t01_log(T01_WARNING, "Can't set interface flags");
-                return -1;
-            }
-
-            return 1;
-        }
-    }
+	return (buf);
 }
 
-static void on_protocol_discovered(struct ndpi_workflow * workflow,
-        struct ndpi_flow_info * flow,  void* header, void* packet) {
+static char *format_packets(float numPkts, char *buf)
+{
 
-  if(flow->detected_protocol.protocol == NDPI_PROTOCOL_UNKNOWN) {
-        flow->detected_protocol = ndpi_guess_undetected_protocol(workflow->ndpi_struct,
-							   flow->protocol,
-							   ntohl(flow->lower_ip),
-							   ntohs(flow->lower_port),
-							   ntohl(flow->upper_ip),
-							   ntohs(flow->upper_port));
-        flow->detected_protocol.master_protocol = NDPI_PROTOCOL_UNKNOWN;
-  } 
+	if (numPkts < 1000) {
+		snprintf(buf, 32, "%.2f", numPkts);
+	} else if (numPkts < 1000000) {
+		snprintf(buf, 32, "%.2f K", numPkts / 1000);
+	} else {
+		numPkts /= 1000000;
+		snprintf(buf, 32, "%.2f M", numPkts);
+	}
 
-  if(backup){
-    int next_idx = bak_produce_idx + 1;
-    if (next_idx >= MAX_BACKUP_DATA) next_idx -= MAX_BACKUP_DATA;
-    if(likely(next_idx != bak_consume_idx)) {
-      struct backup_data* d = &backup_copy[bak_produce_idx];
-      struct nm_pkthdr* h = (struct nm_pkthdr*)header;
-      //printf("P %d %d\n", bak_produce_idx, flow->protocol);
+	return (buf);
+}
 
-      d->len = h->len;
-      d->buffer = malloc(h->len);
-      memcpy(d->buffer, packet, h->len);
-      d->flow = flow;
+static int manage_interface_promisc_mode(const char *interface, int switch_on)
+{
+	// We need really any socket for ioctl
+	int fd;
+	struct ifreq ethreq;
+	int ioctl_res;
+	int promisc_enabled_on_device;
+	int ioctl_res_set;
+
+	fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (!fd) {
+		t01_log(T01_WARNING,
+			"Can't create socket for promisc mode manager");
+		return -1;
+	}
+
+	bzero(&ethreq, sizeof(ethreq));
+	strncpy(ethreq.ifr_name, interface, IFNAMSIZ);
+
+	ioctl_res = ioctl(fd, SIOCGIFFLAGS, &ethreq);
+	if (ioctl_res == -1) {
+		t01_log(T01_WARNING, "Can't get interface flags");
+		return -1;
+	}
+
+	promisc_enabled_on_device = ethreq.ifr_flags & IFF_PROMISC;
+	if (switch_on) {
+		if (promisc_enabled_on_device) {
+			t01_log(T01_DEBUG,
+				"Interface %s in promisc mode already",
+				interface);
+			return 0;
+		} else {
+			t01_log(T01_DEBUG,
+				"Interface %s in non promisc mode now, switch it on",
+				interface);
+			ethreq.ifr_flags |= IFF_PROMISC;
+			ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
+			if (ioctl_res_set == -1) {
+				t01_log(T01_WARNING,
+					"Can't set interface flags");
+				return -1;
+			}
+
+			return 1;
+		}
+	} else {
+		if (!promisc_enabled_on_device) {
+			t01_log(T01_DEBUG,
+				"Interface %s in normal mode already",
+				interface);
+			return 0;
+		} else {
+			t01_log(T01_DEBUG,
+				"Interface in promisc mode now, switch it off");
+			ethreq.ifr_flags &= ~IFF_PROMISC;
+			ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
+			if (ioctl_res_set == -1) {
+				t01_log(T01_WARNING,
+					"Can't set interface flags");
+				return -1;
+			}
+
+			return 1;
+		}
+	}
+}
+
+static void on_protocol_discovered(struct ndpi_workflow *workflow,
+				   struct ndpi_flow_info *flow, void *header,
+				   void *packet)
+{
+
+	if (flow->detected_protocol.protocol == NDPI_PROTOCOL_UNKNOWN) {
+		flow->detected_protocol =
+		    ndpi_guess_undetected_protocol(workflow->ndpi_struct,
+						   flow->protocol,
+						   ntohl(flow->lower_ip),
+						   ntohs(flow->lower_port),
+						   ntohl(flow->upper_ip),
+						   ntohs(flow->upper_port));
+		flow->detected_protocol.master_protocol = NDPI_PROTOCOL_UNKNOWN;
+	}
+
+	if (backup) {
+		int next_idx = bak_produce_idx + 1;
+		if (next_idx >= MAX_BACKUP_DATA)
+			next_idx -= MAX_BACKUP_DATA;
+		if (likely(next_idx != bak_consume_idx)) {
+			struct backup_data *d = &backup_copy[bak_produce_idx];
+			struct nm_pkthdr *h = (struct nm_pkthdr *)header;
+			//printf("P %d %d\n", bak_produce_idx, flow->protocol);
+
+			d->len = h->len;
+			d->buffer = zmalloc(h->len);
+			memcpy(d->buffer, packet, h->len);
+			d->flow = flow;
 next:
-      bak_produce_idx ++;
-      if(bak_produce_idx == MAX_BACKUP_DATA) 
-        bak_produce_idx = 0;
-    }
-  }
-  
-  struct rule* rule = match_rule_from_packet(flow, packet);
-  if(!rule) return;
-  add_one_hit_record(rule, flow->last_seen/1000,
-                     flow->src_ip, flow->dst_ip, 
-                     flow->src_port, flow->dst_port,
-                     (uint8_t*)packet+6, (uint8_t*)packet);
-  
-  char result[1500] = {0};
-  int len = make_packet(rule, packet, result, sizeof(result), flow);
-  if(len) {
-    nm_inject(out_nmr, result, len);
-    total_ip_bytes_out += len;
-    ip_packet_count_out++;
-  
-    if(verbose){
-      char l[48], u[48];
-      char msg[4096];
-      int offset = 0;
-      inet_ntop(AF_INET, &flow->src_ip, l, sizeof(l));
-	inet_ntop(AF_INET, &flow->dst_ip, u, sizeof(u));
-      offset += snprintf(msg, sizeof(msg)-offset, "Rule %d Hits: %s %s:%u <-> %s:%u ",
-	    rule->id, ipproto_name(flow->protocol),
-	    l, flow->src_port, u, flow->dst_port);
+			bak_produce_idx++;
+			if (bak_produce_idx == MAX_BACKUP_DATA)
+				bak_produce_idx = 0;
+		}
+	}
 
-      if(flow->detected_protocol.master_protocol) {
-        char buf[64];
-        offset += snprintf(msg+offset, sizeof(msg)-offset, "[proto: %u.%u/%s]",
-	      flow->detected_protocol.master_protocol, flow->detected_protocol.protocol,
-	      ndpi_protocol2name(workflow->ndpi_struct,
-				 flow->detected_protocol, buf, sizeof(buf)));
-      } else
-        offset += snprintf(msg+offset, sizeof(msg)-offset, "[proto: %u/%s]",
-	      flow->detected_protocol.protocol,
-	      ndpi_get_proto_name(workflow->ndpi_struct, flow->detected_protocol.protocol));
+	struct rule *rule = match_rule_from_packet(flow, packet);
+	if (!rule)
+		return;
+	add_one_hit_record(rule, flow->last_seen / 1000,
+			   flow->src_ip, flow->dst_ip,
+			   flow->src_port, flow->dst_port,
+			   (uint8_t *) packet + 6, (uint8_t *) packet);
 
-      offset += snprintf(msg+offset, sizeof(msg)-offset, "[%u pkts/%llu bytes]", flow->packets, flow->bytes);
+	char result[1500] = { 0 };
+	int len = make_packet(rule, packet, result, sizeof(result), flow);
+	if (len) {
+		nm_inject(out_nmr, result, len);
+		total_ip_bytes_out += len;
+		ip_packet_count_out++;
 
-      if(flow->host_server_name[0] != '\0') offset += snprintf(msg+offset, sizeof(msg)-offset, "[Host: %s]", flow->host_server_name);
-      if(flow->ssl.client_certificate[0] != '\0') offset += snprintf(msg+offset, sizeof(msg)-offset, "[SSL client: %s]", flow->ssl.client_certificate);
-      if(flow->ssl.server_certificate[0] != '\0') offset += snprintf(msg+offset, sizeof(msg)-offset, "[SSL server: %s]", flow->ssl.server_certificate);
+		if (verbose) {
+			char l[48], u[48];
+			char msg[4096];
+			int offset = 0;
+			inet_ntop(AF_INET, &flow->src_ip, l, sizeof(l));
+			inet_ntop(AF_INET, &flow->dst_ip, u, sizeof(u));
+			offset +=
+			    snprintf(msg, sizeof(msg) - offset,
+				     "Rule %d Hits: %s %s:%u <-> %s:%u ",
+				     rule->id, ipproto_name(flow->protocol), l,
+				     flow->src_port, u, flow->dst_port);
 
-      t01_log(T01_NOTICE, msg);
-    }
-  }
+			if (flow->detected_protocol.master_protocol) {
+				char buf[64];
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[proto: %u.%u/%s]",
+					     flow->detected_protocol.
+					     master_protocol,
+					     flow->detected_protocol.protocol,
+					     ndpi_protocol2name(workflow->
+								ndpi_struct,
+								flow->
+								detected_protocol,
+								buf,
+								sizeof(buf)));
+			} else
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[proto: %u/%s]",
+					     flow->detected_protocol.protocol,
+					     ndpi_get_proto_name(workflow->
+								 ndpi_struct,
+								 flow->
+								 detected_protocol.
+								 protocol));
+
+			offset +=
+			    snprintf(msg + offset, sizeof(msg) - offset,
+				     "[%u pkts/%llu bytes]", flow->packets,
+				     flow->bytes);
+
+			if (flow->host_server_name[0] != '\0')
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[Host: %s]",
+					     flow->host_server_name);
+			if (flow->ssl.client_certificate[0] != '\0')
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[SSL client: %s]",
+					     flow->ssl.client_certificate);
+			if (flow->ssl.server_certificate[0] != '\0')
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[SSL server: %s]",
+					     flow->ssl.server_certificate);
+
+			t01_log(T01_NOTICE, msg);
+		}
+	}
 }
 
-struct ndpi_workflow* setup_detection()
+struct ndpi_workflow *setup_detection()
 {
-  struct ndpi_workflow * workflow;
-  struct ndpi_workflow_prefs prefs;
-  struct sysinfo si;
-  u_int32_t max_ndpi_flows;
+	struct ndpi_workflow *workflow;
+	struct ndpi_workflow_prefs prefs;
+	struct sysinfo si;
+	u_int32_t max_ndpi_flows;
 
-  sysinfo(&si);
-  max_ndpi_flows = si.totalram/ 2/ sizeof(struct ndpi_flow_info);
-  if(max_ndpi_flows > MAX_NDPI_FLOWS) 
-    max_ndpi_flows = MAX_NDPI_FLOWS;
+	sysinfo(&si);
+	max_ndpi_flows = si.totalram / 2 / sizeof(struct ndpi_flow_info);
+	if (max_ndpi_flows > MAX_NDPI_FLOWS)
+		max_ndpi_flows = MAX_NDPI_FLOWS;
 
-  memset(&prefs, 0, sizeof(prefs));
-  prefs.decode_tunnels = 0;
-  prefs.num_roots = NUM_ROOTS;
-  prefs.max_ndpi_flows = max_ndpi_flows;
-  prefs.quiet_mode = 0;
+	memset(&prefs, 0, sizeof(prefs));
+	prefs.decode_tunnels = 0;
+	prefs.num_roots = NUM_ROOTS;
+	prefs.max_ndpi_flows = max_ndpi_flows;
+	prefs.quiet_mode = 0;
 
-  workflow = ndpi_workflow_init(&prefs);
+	workflow = ndpi_workflow_init(&prefs);
 
-  ndpi_workflow_set_flow_detected_callback(workflow, on_protocol_discovered, (void *)(uintptr_t)workflow);
+	ndpi_workflow_set_flow_detected_callback(workflow,
+						 on_protocol_discovered,
+						 (void *)(uintptr_t) workflow);
+	ndpi_set_mirror_data_callback(workflow, netflow_data_clone,
+				      netflow_data_filter);
 
-  // enable all protocols
-  if(enable_all_protocol) 
-    NDPI_BITMASK_SET_ALL(ndpi_mask);
-  ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
+	// enable all protocols
+	if (enable_all_protocol)
+		NDPI_BITMASK_SET_ALL(ndpi_mask);
+	ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
 
-  // clear memory for results
-  memset(workflow->stats.protocol_counter, 0, sizeof(workflow->stats.protocol_counter));
-  memset(workflow->stats.protocol_counter_bytes, 0, sizeof(workflow->stats.protocol_counter_bytes));
-  memset(workflow->stats.protocol_flows, 0, sizeof(workflow->stats.protocol_flows));
-  
-  return workflow;
+	// clear memory for results
+	memset(workflow->stats.protocol_counter, 0,
+	       sizeof(workflow->stats.protocol_counter));
+	memset(workflow->stats.protocol_counter_bytes, 0,
+	       sizeof(workflow->stats.protocol_counter_bytes));
+	memset(workflow->stats.protocol_flows, 0,
+	       sizeof(workflow->stats.protocol_flows));
+
+	return workflow;
 }
 
-static void* backup_thread(void* args)
+static void *mirror_thread(void *args)
 {
-  struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
-  struct timespec ts = {.tv_sec = 0, .tv_nsec = 1};
-  char protocol[64];
+	while (!shutdown_app) {
+		struct list_head *pos, *n;
+		struct filter_buffer *fb;
 
-  while(!shutdown_app){
-    if(bak_consume_idx == bak_produce_idx){
-      nanosleep(&ts, NULL);
-      continue;
-    }
-    struct backup_data* d = &backup_copy[bak_consume_idx];
-    struct ndpi_flow_info *flow = (struct ndpi_flow_info *)d->flow;
-    
-    /*Whether the flow info is deleted? */
-    if(flow->magic != NDPI_FLOW_MAGIC || flow->last_seen + MAX_IDLE_TIME < workflow->last_time)
-      goto next;
+		list_for_each_safe(pos, n, &filter_buffer_list) {
+			pthread_spin_lock(&mirror_lock);
+			list_del(pos);
+			pthread_spin_unlock(&mirror_lock);
+			fb = list_entry(pos, struct filter_buffer, list);
+			store_raw_via_ioengine(&mirror_engine, fb->buffer, fb->len,
+					   fb->protocol, fb->ts,
+					   fb->saddr, fb->sport,
+					   fb->daddr, fb->dport);
+			zfree(fb);
+		}
+	}
 
-    if(flow->detected_protocol.master_protocol) 
-      ndpi_protocol2name(workflow->ndpi_struct, flow->detected_protocol, protocol, sizeof(protocol));
-    else
-      strcpy(protocol, ndpi_get_proto_name(workflow->ndpi_struct, flow->detected_protocol.protocol));
+	return NULL;
+}
 
-    //printf("C %d %d %s\n", bak_consume_idx, flow->protocol, protocol);
-    store_via_ioengine(&engine_data, flow, protocol, d->buffer, d->len);
+static void *backup_thread(void *args)
+{
+	struct ndpi_workflow *workflow = (struct ndpi_workflow *)args;
+	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
+	char protocol[64];
+
+	while (!shutdown_app) {
+		if (bak_consume_idx == bak_produce_idx) {
+			nanosleep(&ts, NULL);
+			continue;
+		}
+		struct backup_data *d = &backup_copy[bak_consume_idx];
+		struct ndpi_flow_info *flow = (struct ndpi_flow_info *)d->flow;
+
+		/*Whether the flow info is deleted? */
+		if (flow->magic != NDPI_FLOW_MAGIC
+		    || flow->last_seen + MAX_IDLE_TIME < workflow->last_time)
+			goto next;
+
+		if (flow->detected_protocol.master_protocol)
+			ndpi_protocol2name(workflow->ndpi_struct,
+					   flow->detected_protocol, protocol,
+					   sizeof(protocol));
+		else
+			strcpy(protocol,
+			       ndpi_get_proto_name(workflow->ndpi_struct,
+						   flow->detected_protocol.
+						   protocol));
+
+		//printf("C %d %d %s\n", bak_consume_idx, flow->protocol, protocol);
+		store_payload_via_ioengine(&backup_engine, flow, protocol,
+					   d->buffer, d->len);
 
 next:
-    free(d->buffer);
-    bak_consume_idx ++;
-    if(bak_consume_idx == MAX_BACKUP_DATA) 
-      bak_consume_idx = 0;
-  }
-  
-  return NULL;
+		zfree(d->buffer);
+		bak_consume_idx++;
+		if (bak_consume_idx == MAX_BACKUP_DATA)
+			bak_consume_idx = 0;
+	}
+
+	return NULL;
 }
 
-static void* backdoor_thread(void* args)
+static void *backdoor_thread(void *args)
 {
-  aeMain(el);
-  aeDeleteEventLoop(el);
+	aeMain(el);
+	aeDeleteEventLoop(el);
 }
 
-static int server_cron(struct aeEventLoop *eventLoop, long long id, void* args)
+static int server_cron(struct aeEventLoop *eventLoop, long long id, void *args)
 {
-  time_t unix_time = time(NULL);
+	time_t unix_time = time(NULL);
 
-  static struct saveparam{ 
-    time_t seconds;
-    int changes;
-  }saveparams[] = {{300, 1}, {60, 30}, {5, 500}, {1, 3000}};
+	static struct saveparam {
+		time_t seconds;
+		int changes;
+	} saveparams[] = { {
+	300, 1}, {
+	60, 30}, {
+	5, 500}, {
+	1, 3000}};
 
-  run_with_period(5000) {
-    struct ndpi_workflow* workflow = (struct ndpi_workflow*)args;
-    struct ndpi_stats* stat = &workflow->stats;
-    struct timeval curr_ts;
-    uint64_t tot_usec, since_usec;
-    struct list_head* pos;
-    uint64_t total_hits = 0;
-    unsigned int avg_pkt_size = 0;
-    uint64_t curr_raw_packet_count = stat->raw_packet_count - raw_packet_count;
-    uint64_t curr_ip_packet_count = stat->ip_packet_count - ip_packet_count;
-    uint64_t curr_total_wire_bytes = stat->total_wire_bytes - total_wire_bytes; 
-    uint64_t curr_total_ip_bytes = stat->total_ip_bytes - total_ip_bytes;
-    uint64_t curr_tcp_count = stat->tcp_count - tcp_count;
-    uint64_t curr_udp_count = stat->udp_count - udp_count;
-    uint64_t curr_hits;
+	run_with_period(2000) {
+		struct ndpi_workflow *workflow = (struct ndpi_workflow *)args;
+		struct ndpi_stats *stat = &workflow->stats;
+		struct timeval curr_ts;
+		uint64_t tot_usec, since_usec;
+		struct list_head *pos;
+		uint64_t total_hits = 0;
+		unsigned int avg_pkt_size = 0;
+		uint64_t curr_raw_packet_count =
+		    stat->raw_packet_count - raw_packet_count;
+		uint64_t curr_ip_packet_count =
+		    stat->ip_packet_count - ip_packet_count;
+		uint64_t curr_total_wire_bytes =
+		    stat->total_wire_bytes - total_wire_bytes;
+		uint64_t curr_total_ip_bytes =
+		    stat->total_ip_bytes - total_ip_bytes;
+		uint64_t curr_tcp_count = stat->tcp_count - tcp_count;
+		uint64_t curr_udp_count = stat->udp_count - udp_count;
+		uint64_t curr_hits;
 
-    gettimeofday(&curr_ts, NULL);
-    tot_usec = curr_ts.tv_sec*1000000 + curr_ts.tv_usec - (last_report_ts.tv_sec*1000000 + last_report_ts.tv_usec);
-    since_usec = curr_ts.tv_sec*1000000 + curr_ts.tv_usec - (upstart_tv.tv_sec*1000000 + upstart_tv.tv_usec);
-    last_report_ts = curr_ts;
-    
-    raw_packet_count = stat->raw_packet_count;
-    ip_packet_count = stat->ip_packet_count;
-    total_wire_bytes = stat->total_wire_bytes; 
-    total_ip_bytes = stat->total_ip_bytes;
-    tcp_count = stat->tcp_count;
-    udp_count = stat->udp_count;
-    list_for_each(pos, &rule_list) {
-      struct rule* rule = list_entry(pos, struct rule, list);
-      if(rule->used == 0) 
-          continue;
-      total_hits += rule->hits;
-    }
+		gettimeofday(&curr_ts, NULL);
+		tot_usec =
+		    curr_ts.tv_sec * 1000000 + curr_ts.tv_usec -
+		    (last_report_ts.tv_sec * 1000000 + last_report_ts.tv_usec);
+		since_usec =
+		    curr_ts.tv_sec * 1000000 + curr_ts.tv_usec -
+		    (upstart_tv.tv_sec * 1000000 + upstart_tv.tv_usec);
+		last_report_ts = curr_ts;
 
-    if(since_usec > 0) {
-      pkts_per_second_in = (float)(ip_packet_count*1000000) / (float)since_usec;
-      pkts_per_second_out = (float)(ip_packet_count_out*1000000) / (float)since_usec;
-      bytes_per_second_in = (float)(total_ip_bytes * 8 *1000000) / (float)since_usec;
-      bytes_per_second_out = (float)(total_ip_bytes_out * 8 *1000000) / (float)since_usec;
-    }
-    
-    printf("\nTraffic statistics:\n");
-    printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
-    printf("\tIP bytes:              %-13llu\n", curr_total_ip_bytes);
-    printf("\tIP packets:            %-13llu of %llu packets total\n", curr_ip_packet_count, curr_raw_packet_count);
-    printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
-    printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
+		raw_packet_count = stat->raw_packet_count;
+		ip_packet_count = stat->ip_packet_count;
+		total_wire_bytes = stat->total_wire_bytes;
+		total_ip_bytes = stat->total_ip_bytes;
+		tcp_count = stat->tcp_count;
+		udp_count = stat->udp_count;
+		list_for_each(pos, &rule_list) {
+			struct rule *rule = list_entry(pos, struct rule, list);
+			if (rule->used == 0)
+				continue;
+			total_hits += rule->hits;
+		}
 
-    if(tot_usec > 0) {
-      char buf[32], buf1[32];
-      float t = (float)(curr_ip_packet_count*1000000)/(float)tot_usec;
-      float b = (float)(curr_total_wire_bytes * 8 *1000000)/(float)tot_usec;
-      float traffic_duration = tot_usec;
-      printf("\tTraffic throughput:    %s pps / %s/sec\n", format_packets(t, buf), format_traffic(b, 1, buf1));
-      printf("\tTraffic duration:      %.3f sec\n", traffic_duration/1000000);
-      printf("\tIncoming throughput:   %s pps / %s/sec\n", format_packets(pkts_per_second_in, buf), format_traffic(bytes_per_second_in, 1, buf1));
-      printf("\tOutcoming throughput:  %s pps / %s/sec\n", format_packets(pkts_per_second_out, buf), format_traffic(bytes_per_second_out, 1, buf1));
-    }
-    
-    curr_hits = total_hits - hits;
-    printf("\tRules hits:            %-13lu (total %llu)\n", curr_hits, total_hits);
-    hits = total_hits;
-  }
+		if (since_usec > 0) {
+			pkts_per_second_in =
+			    (float)(ip_packet_count * 1000000) /
+			    (float)since_usec;
+			pkts_per_second_out =
+			    (float)(ip_packet_count_out * 1000000) /
+			    (float)since_usec;
+			bytes_per_second_in =
+			    (float)(total_ip_bytes * 8 * 1000000) /
+			    (float)since_usec;
+			bytes_per_second_out =
+			    (float)(total_ip_bytes_out * 8 * 1000000) /
+			    (float)since_usec;
+		}
 
-  /* Check if a background saving or AOF rewrite in progress terminated. */
-  if (tdb_child_pid != -1) {
-    int statloc;
-    pid_t pid;
+		printf("\nTraffic statistics:\n");
+		printf("\tEthernet bytes:        %-13llu\n",
+		       curr_total_wire_bytes);
+		printf("\tIP bytes:              %-13llu\n",
+		       curr_total_ip_bytes);
+		printf
+		    ("\tIP packets:            %-13llu of %llu packets total\n",
+		     curr_ip_packet_count, curr_raw_packet_count);
+		printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
+		printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
 
-    if ((pid = wait3(&statloc,WNOHANG,NULL)) != 0) {
-      int exitcode = WEXITSTATUS(statloc);
-      int bysignal = 0;
+		if (tot_usec > 0) {
+			char buf[32], buf1[32];
+			float t =
+			    (float)(curr_ip_packet_count * 1000000) /
+			    (float)tot_usec;
+			float b =
+			    (float)(curr_total_wire_bytes * 8 * 1000000) /
+			    (float)tot_usec;
+			float traffic_duration = tot_usec;
+			printf("\tTraffic throughput:    %s pps / %s/sec\n",
+			       format_packets(t, buf), format_traffic(b, 1,
+								      buf1));
+			printf("\tTraffic duration:      %.3f sec\n",
+			       traffic_duration / 1000000);
+			printf("\tIncoming throughput:   %s pps / %s/sec\n",
+			       format_packets(pkts_per_second_in, buf),
+			       format_traffic(bytes_per_second_in, 1, buf1));
+			printf("\tOutcoming throughput:  %s pps / %s/sec\n",
+			       format_packets(pkts_per_second_out, buf),
+			       format_traffic(bytes_per_second_out, 1, buf1));
+		}
 
-      if (WIFSIGNALED(statloc)) bysignal = WTERMSIG(statloc);
-      if (pid == tdb_child_pid) {
-        background_save_done_handler(exitcode, bysignal);
-      } else {
-        t01_log(T01_WARNING, "Warning, detected child with unmatched pid: %ld", (long)pid);
-        }
-    }
-  } else{
-    int j;
-    for (j = 0; j < sizeof(saveparams)/sizeof(saveparams[0]); j++) {
-      struct saveparam *sp = saveparams+j;
-      if(dirty >= sp->changes && unix_time-lastsave > sp->seconds && lastbgsave_status == 0){
-        t01_log(T01_NOTICE,"%d changes in %d seconds. Saving...",
-                sp->changes, (int)sp->seconds);
-        save_rules_background(rulefile);
-        break;
-        }
-     }
-  }
+		curr_hits = total_hits - hits;
+		printf("\tRules hits:            %-13lu (total %llu)\n",
+		       curr_hits, total_hits);
+		hits = total_hits;
+	}
 
-  cronloops++;
-  return 1000/DEFAULT_HZ;
+	/* Check if a background saving or AOF rewrite in progress terminated. */
+	if (tdb_child_pid != -1) {
+		int statloc;
+		pid_t pid;
+
+		if ((pid = wait3(&statloc, WNOHANG, NULL)) != 0) {
+			int exitcode = WEXITSTATUS(statloc);
+			int bysignal = 0;
+
+			if (WIFSIGNALED(statloc))
+				bysignal = WTERMSIG(statloc);
+			if (pid == tdb_child_pid) {
+				background_save_done_handler(exitcode,
+							     bysignal);
+			} else {
+				t01_log(T01_WARNING,
+					"Warning, detected child with unmatched pid: %ld",
+					(long)pid);
+			}
+		}
+	} else {
+		int j;
+		for (j = 0; j < sizeof(saveparams) / sizeof(saveparams[0]); j++) {
+			struct saveparam *sp = saveparams + j;
+			if (dirty >= sp->changes
+			    && unix_time - lastsave > sp->seconds
+			    && lastbgsave_status == 0) {
+				t01_log(T01_NOTICE,
+					"%d changes in %d seconds. Saving...",
+					sp->changes, (int)sp->seconds);
+				save_rules_background(rulefile);
+				break;
+			}
+		}
+	}
+
+	cronloops++;
+	return 1000 / DEFAULT_HZ;
 }
 
 static inline int receive_packets(struct netmap_ring *ring,
 				  struct ndpi_workflow *workflow)
 {
-  u_int cur, rx, n;
-  struct nm_pkthdr hdr;
-  cur = ring->cur;
-  n = nm_ring_space(ring);
-  for (rx = 0; rx < n; rx++) {
-    struct netmap_slot *slot = &ring->slot[cur];
-    char *data = NETMAP_BUF(ring, slot->buf_idx);
-    hdr.ts = ring->ts;
-    hdr.len = hdr.caplen = slot->len;
-    cur = nm_ring_next(ring, cur);
-    ndpi_workflow_process_packet(workflow, &hdr, (u_char *) data);
-  }
+	u_int cur, rx, n;
+	struct nm_pkthdr hdr;
+	cur = ring->cur;
+	n = nm_ring_space(ring);
+	for (rx = 0; rx < n; rx++) {
+		struct netmap_slot *slot = &ring->slot[cur];
+		char *data = NETMAP_BUF(ring, slot->buf_idx);
+		hdr.ts = ring->ts;
+		hdr.len = hdr.caplen = slot->len;
+		cur = nm_ring_next(ring, cur);
+		ndpi_workflow_process_packet(workflow, &hdr, (u_char *) data);
+	}
 
-  ring->head = ring->cur = cur;
-  return (rx);
+	ring->head = ring->cur = cur;
+	return (rx);
 }
 
 static void main_thread()
 {
-  int err, i;
-  struct pollfd pfd[2];
-  int nfds = 1;
-  struct ndpi_workflow* workflow = setup_detection();
-  pthread_t backup_thread_id, backdoor_thread_id;
-  struct netmap_ring *rxring = NULL;
-  struct netmap_if *nifp = nmr->nifp;
+	int err, i;
+	struct pollfd pfd[2];
+	int nfds = 1;
+	struct ndpi_workflow *workflow = setup_detection();
+	pthread_t backup_thread_id, backdoor_thread_id, mirror_thread_id;
+	struct netmap_ring *rxring = NULL;
+	struct netmap_if *nifp = nmr->nifp;
 
-  memset(pfd, 0, sizeof(pfd));
-  pfd[0].fd = nmr->fd;
-  pfd[0].events = POLLIN;
-  if(out_nmr != nmr) {
-    pfd[1].fd = out_nmr->fd;
-    pfd[1].events = POLLOUT;
-    nfds ++;
-  }
+	memset(pfd, 0, sizeof(pfd));
+	pfd[0].fd = nmr->fd;
+	pfd[0].events = POLLIN;
+	if (out_nmr != nmr) {
+		pfd[1].fd = out_nmr->fd;
+		pfd[1].events = POLLOUT;
+		nfds++;
+	}
 
-  /* Create the server_cron() time event. */
-  if(aeCreateTimeEvent(el, 1, server_cron, workflow, NULL) == AE_ERR) {
-    t01_panic("Can't create the serverCron time event.");
-   }
-  gettimeofday(&last_report_ts, NULL);
+	/* Create the server_cron() time event. */
+	if (aeCreateTimeEvent(el, 1, server_cron, workflow, NULL) == AE_ERR) {
+		t01_panic("Can't create the serverCron time event.");
+	}
+	gettimeofday(&last_report_ts, NULL);
 
-  err = pthread_create(&backdoor_thread_id, NULL, backdoor_thread, NULL);
-  if (err != 0) {
-    t01_log(T01_WARNING, "create backdoor thread failed(%d)", err);
-    exit(1);
-  }
+	err = pthread_create(&backdoor_thread_id, NULL, backdoor_thread, NULL);
+	if (err != 0) {
+		t01_log(T01_WARNING, "create backdoor thread failed(%d)", err);
+		exit(1);
+	}
 
-  if(engine_data.io_ops && engine_opt[0]){
-    if(init_ioengine(&engine_data, engine_opt) < 0){
-       t01_log(T01_WARNING, "Unable to init engine %s", engine);
-    } else {
-      err = pthread_create(&backup_thread_id, NULL, backup_thread, workflow);
-      if (err != 0) {
-        t01_log(T01_WARNING, "create backup thread failed(%d)", err);
-        return;
-      }
-      backup = 1;
-    }
-  }
-  
-  while(!shutdown_app){
-    /* should use a parameter to decide how often to send */
-    pfd[0].revents = pfd[1].revents = 0;
-    if (poll(pfd, nfds, 1000) < nfds) {
-      continue;
-     }
-    
-    for (i = nmr->first_rx_ring; i <= nmr->last_rx_ring; i++) {
-      rxring = NETMAP_RXRING(nifp, i);
-      if (nm_ring_empty(rxring))
-        continue;
-      receive_packets(rxring, workflow);
-    }
+	if (backup) {
+		err =
+		    pthread_create(&backup_thread_id, NULL, backup_thread,
+				   workflow);
+		if (err != 0) {
+			t01_log(T01_WARNING, "create backup thread failed(%d)",
+				err);
+			backup = 0;
+			return;
+		}
+	}
 
-    ndpi_workflow_clean_idle_flows(workflow, 0);
-  }
+	if (mirror) {
+		err =
+		    pthread_create(&mirror_thread_id, NULL, mirror_thread,
+				   NULL);
+		if (err != 0) {
+			t01_log(T01_WARNING, "create mirror thread failed(%d)",
+				err);
+			mirror = 0;
+			return;
+		}
+	}
 
-  err = pthread_join(backdoor_thread_id, NULL);
-  if (err != 0) {
-    t01_log(T01_WARNING, "join backdoor thread failed(%d)", err);
-    return;
-  }
+	while (!shutdown_app) {
+		/* should use a parameter to decide how often to send */
+		pfd[0].revents = pfd[1].revents = 0;
+		if (poll(pfd, nfds, 1000) < nfds) {
+			continue;
+		}
 
-  if(backup){
-    err = pthread_join(backup_thread_id, NULL);
-    if (err != 0) {
-      t01_log(T01_WARNING, "join backup thread failed(%d)", err);
-      return;
-    }
-  }
+		for (i = nmr->first_rx_ring; i <= nmr->last_rx_ring; i++) {
+			rxring = NETMAP_RXRING(nifp, i);
+			if (nm_ring_empty(rxring))
+				continue;
+			receive_packets(rxring, workflow);
+		}
+
+		ndpi_workflow_clean_idle_flows(workflow, 0);
+	}
+
+	err = pthread_join(backdoor_thread_id, NULL);
+	if (err != 0) {
+		t01_log(T01_WARNING, "join backdoor thread failed(%d)", err);
+		return;
+	}
+
+	if (backup) {
+		err = pthread_join(backup_thread_id, NULL);
+		if (err != 0) {
+			t01_log(T01_WARNING, "join backup thread failed(%d)",
+				err);
+			return;
+		}
+	}
 
 }
 
 static void usage()
 {
-  const char *cmd = "t01";
-  fprintf(stderr,
-	  "Usage:\n"
-	  "%s arguments\n"
-	  "\t-i interface              interface that captures incoming traffic\n"
-	  "\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
-	  "\t-c rulefile               json rule file for traffic action\n"
-	  "\t-b ip                     ip address binded\n"
-	  "\t-p port                   port listening for incoming client (default 9899)\n"
-	  "\t-m mask                   enable all ndpi protocol or not (default 1)\n"
-	  "\t-e engine                 backend engine to store network flow data\n"
-	  "\t-E eigine_opt             arguments attached to specified engine\n"
-	  "\t-v verbosity              logger levels (0:debug, 1:verbose, 2:notice, 3:warning)\n"
-	  "\t-l log_file               logger into file or screen\n"
-	  "",
-	  cmd);
+	const char *cmd = "t01";
+	fprintf(stderr,
+		"Usage:\n"
+		"%s arguments\n"
+		"\t-i interface              interface that captures incoming traffic\n"
+		"\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
+		"\t-c rulefile               json rule file for traffic action\n"
+		"\t-b ip                     ip address binded\n"
+		"\t-p port                   port listening for incoming client (default 9899)\n"
+		"\t-m mask                   enable all ndpi protocol or not (default 1)\n"
+		"\t-F filter                 filter strategy for mirroring netflow (such as 80/tcp,53/udp)\n"
+		"\t-e engine                 backend engine to store network flow data\n"
+		"\t-E eigine_opt             arguments attached to specified engine\n"
+		"\t-v verbosity              logger levels (0:debug, 1:verbose, 2:notice, 3:warning)\n"
+		"\t-l log_file               logger into file or screen\n"
+		"", cmd);
 
-  exit(0);
+	exit(0);
 }
 
-static void parse_options(int argc, char **argv) {
-  int opt;
+static void parse_options(int argc, char **argv)
+{
+	int opt;
 
-  while ((opt = getopt(argc, argv, "hi:o:c:m:e:b:p:E:v:l:")) != EOF) {
-    switch (opt) {
-    case 'i':
-      strncpy(ifname, optarg, sizeof(ifname));
-      break;
-    
-    case 'o':
-      strncpy(ofname, optarg, sizeof(ofname));
-      break;
+	while ((opt = getopt(argc, argv, "hi:o:c:m:e:b:p:E:v:l:F:")) != EOF) {
+		switch (opt) {
+		case 'i':
+			strncpy(ifname, optarg, sizeof(ifname));
+			break;
 
-    case 'm':
-      enable_all_protocol = atoi(optarg);
-      break;
+		case 'o':
+			strncpy(ofname, optarg, sizeof(ofname));
+			break;
 
-    case 'p':
-      port = atoi(optarg);
-      break;
+		case 'm':
+			enable_all_protocol = atoi(optarg);
+			break;
 
-    case 'b':
-      strncpy(bind_ip, optarg, sizeof(bind_ip));
-      break;
+		case 'p':
+			port = atoi(optarg);
+			break;
 
-    case 'c':
-      strncpy(rulefile, optarg, sizeof(rulefile));
-      break;
-      
-    case 'v':
-      verbose = atoi(optarg);
-      break;
+		case 'b':
+			strncpy(bind_ip, optarg, sizeof(bind_ip));
+			break;
 
-    case 'l':
-      strncpy(logfile, optarg, sizeof(logfile));
-      break;
+		case 'c':
+			strncpy(rulefile, optarg, sizeof(rulefile));
+			break;
 
-    case 'e':
-      strcpy(engine, optarg);
-      break; 
+		case 'v':
+			verbose = atoi(optarg);
+			break;
 
-    case 'E':
-      strcpy(engine_opt, optarg);
-      break;
+		case 'l':
+			strncpy(logfile, optarg, sizeof(logfile));
+			break;
 
-    case 'h':
-      usage();
-      break;
+		case 'F':
+			strncpy(filter, optarg, sizeof(filter));
+			break;
 
-    default:
-      usage();
-      break;
-    }
-  }
+		case 'e':
+			strcpy(engine, optarg);
+			break;
 
-   // check parameters
-  if(ifname[0] ==0 && rulefile[0] == 0) {
-    usage();
-  }
+		case 'E':
+			strcpy(engine_opt, optarg);
+			break;
+
+		case 'h':
+			usage();
+			break;
+
+		default:
+			usage();
+			break;
+		}
+	}
+
+	// check parameters
+	if (ifname[0] == 0 && rulefile[0] == 0) {
+		usage();
+	}
 }
 
 static void signal_hander(int sig)
 {
-  static int called = 0;
-  int save = dirty != 0;
-  t01_log(T01_WARNING, "received control-C, shutdowning");
-  if(called) return; else called = 1;
-  if(save) {
-    t01_log(T01_NOTICE,"Saving the final TDB snapshot before exiting.");
-    if (save_rules(rulefile) != 0) {
-        t01_log(T01_WARNING,"Error trying to save the DB, can't exit.");
-        return;
-     }
-  }
-  shutdown_app = 1;
-  aeStop(el);
+	static int called = 0;
+	int save = dirty != 0;
+	t01_log(T01_WARNING, "received control-C, shutdowning");
+	if (called)
+		return;
+	else
+		called = 1;
+	if (save) {
+		t01_log(T01_NOTICE,
+			"Saving the final TDB snapshot before exiting.");
+		if (save_rules(rulefile) != 0) {
+			t01_log(T01_WARNING,
+				"Error trying to save the DB, can't exit.");
+			return;
+		}
+	}
+	shutdown_app = 1;
+	aeStop(el);
 }
 
 static void init_server()
 {
-  struct nmreq base;
-  char interface[64];
-  char err[ANET_ERR_LEN]; 
+	struct nmreq base;
+	char interface[64];
+	char err[ANET_ERR_LEN];
 
-  init_log(verbose, logfile);
-  lastsave = upstart = time(NULL);
-  gettimeofday(&upstart_tv, NULL);
+	init_log(verbose, logfile);
+	lastsave = upstart = time(NULL);
+	gettimeofday(&upstart_tv, NULL);
 
-  manage_interface_promisc_mode(ifname, 1); 
-  t01_log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ifname);
+	manage_interface_promisc_mode(ifname, 1);
+	t01_log(T01_DEBUG,
+		"Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off",
+		ifname);
 
-  bzero(&base, sizeof(base));
-  sprintf(interface, "netmap:%s", ifname);      
-  nmr = nm_open(interface, &base, 0, NULL); 
-  if (nmr == NULL){
-    t01_log(T01_WARNING, "Unable to open %s: %s", ifname, strerror(errno));
-    exit(1);
-  }
-  
-  if(ofname[0] == 0 || strcmp(ifname, ofname) == 0){
-    out_nmr = nmr;
-  } else {
-    manage_interface_promisc_mode(ofname, 1); 
-    t01_log(T01_DEBUG, "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off", ofname);
-    sprintf(interface, "netmap:%s", ofname);      
-    out_nmr = nm_open(interface, &base, 0, NULL); 
-    if (out_nmr == NULL){
-      t01_log(T01_WARNING, "Unable to open %s: %s, use %s instead", ofname, strerror(errno), ifname);
-      out_nmr = nmr;
-    }
-  }
-  
-  if(rulefile[0]){
-    int rule_num = load_rules(rulefile, &ndpi_mask);
-    if(rule_num > 0){
-      t01_log(T01_NOTICE, "Load %d rules from file %s", rule_num, rulefile);
-    } else {
-      rule_num = 0;
-    }
-  }
+	bzero(&base, sizeof(base));
+	sprintf(interface, "netmap:%s", ifname);
+	nmr = nm_open(interface, &base, 0, NULL);
+	if (nmr == NULL) {
+		t01_log(T01_WARNING, "Unable to open %s: %s", ifname,
+			strerror(errno));
+		exit(1);
+	}
 
-  if(engine[0]){
-    if(load_ioengine(&engine_data, engine) < 0){
-      t01_log(T01_WARNING, "Unable to load engine %s", engine);
-    }
-  }
+	if (ofname[0] == 0 || strcmp(ifname, ofname) == 0) {
+		out_nmr = nmr;
+	} else {
+		manage_interface_promisc_mode(ofname, 1);
+		t01_log(T01_DEBUG,
+			"Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off",
+			ofname);
+		sprintf(interface, "netmap:%s", ofname);
+		out_nmr = nm_open(interface, &base, 0, NULL);
+		if (out_nmr == NULL) {
+			t01_log(T01_WARNING,
+				"Unable to open %s: %s, use %s instead", ofname,
+				strerror(errno), ifname);
+			out_nmr = nmr;
+		}
+	}
 
-  /* Open the TCP listening socket for the user commands. */
-  if (port != 0) {
-    if (bind_ip[0] == 0) {
-      tcp_sofd = anetTcpServer(err, port, NULL, 64);
-    } else {
-      tcp_sofd = anetTcpServer(err, port, bind_ip, 64);
-     }
+	if (rulefile[0]) {
+		int rule_num = load_rules(rulefile, &ndpi_mask);
+		if (rule_num > 0) {
+			t01_log(T01_NOTICE, "Load %d rules from file %s",
+				rule_num, rulefile);
+		} else {
+			rule_num = 0;
+		}
+	}
 
-    if (tcp_sofd == ANET_ERR) {
-      t01_log(T01_WARNING, "Could not create server tcp listening socket %s:%d: %s",
-                bind_ip[0] ? bind_ip : "*" , port, err);
-      exit(1);
-    }
-    anetNonBlock(NULL, tcp_sofd);
-  }
+	if (filter[0]) {
+		char *temp = zstrdup(filter), *p, *last = NULL;
+		p = strtok_r(temp, ",", &last);
+		while (p != NULL) {
+			char protocol[64] = { 0 }, port[10] = {
+			0};
+			char *q = strstr(p, "/");
+			if (q) {
+				strncpy(port, p, q - p);
+				strncpy(protocol, q + 1, strlen(q) - 1);
+			} else {
+				strcpy(port, p);
+				strcpy(protocol, "all");
+			}
+			filters[n_filters].port = atoi(port);
+			if (strcasecmp(protocol, "tcp") == 0)
+				filters[n_filters].protocol = IPPROTO_TCP;
+			else if (strcasecmp(protocol, "udp") == 0)
+				filters[n_filters].protocol = IPPROTO_UDP;
+			else if (strcasecmp(protocol, "all") == 0)
+				filters[n_filters].protocol = 0;
+			else
+				filters[n_filters].protocol = 0xff;
+			if (filters[n_filters].protocol != 0xff)
+				n_filters++;
+			if (MAX_FILTERS == n_filters)
+				break;
 
-  /* Abort if there are no listening sockets at all. */
-  if (tcp_sofd < 0 ) {
-    t01_log(T01_WARNING, "Configured to not listen anywhere, exiting.");
-    exit(1);
-  }
+			p = strtok_r(NULL, ",", &last);
+		}
+		zfree(temp);
+	}
 
-  el = aeCreateEventLoop(10240);
- 
-  /* Create an event handler for accepting new connections in TCP and Unix
-     * domain sockets. */
-  if(tcp_sofd > 0 && aeCreateFileEvent(el, tcp_sofd, AE_READABLE,
-            tcp_server_can_accept, NULL) == AE_ERR) {
-    t01_panic("Unrecoverable error creating server.ipfd file event.");
-    }
- 
+	if (engine[0] && engine_opt[0]) {
+		if (load_ioengine(&backup_engine, engine) < 0 ||
+		    load_ioengine(&mirror_engine, engine) < 0) {
+			t01_log(T01_WARNING, "Unable to load engine %s",
+				engine);
+		}
+
+		if (init_ioengine(&mirror_engine, engine_opt) < 0) {
+			t01_log(T01_WARNING, "Unable to init mirror engine %s",
+				engine);
+		} else {
+			mirror = 1;
+		}
+
+		if (init_ioengine(&backup_engine, engine_opt) < 0) {
+			t01_log(T01_WARNING, "Unable to init backup engine %s",
+				engine);
+		} else {
+			backup = 1;
+		}
+
+		pthread_spin_init(&mirror_lock, 0);
+	}
+
+	/* Open the TCP listening socket for the user commands. */
+	if (port != 0) {
+		if (bind_ip[0] == 0) {
+			tcp_sofd = anetTcpServer(err, port, NULL, 64);
+		} else {
+			tcp_sofd = anetTcpServer(err, port, bind_ip, 64);
+		}
+
+		if (tcp_sofd == ANET_ERR) {
+			t01_log(T01_WARNING,
+				"Could not create server tcp listening socket %s:%d: %s",
+				bind_ip[0] ? bind_ip : "*", port, err);
+			exit(1);
+		}
+		anetNonBlock(NULL, tcp_sofd);
+	}
+
+	/* Abort if there are no listening sockets at all. */
+	if (tcp_sofd < 0) {
+		t01_log(T01_WARNING,
+			"Configured to not listen anywhere, exiting.");
+		exit(1);
+	}
+
+	el = aeCreateEventLoop(10240);
+
+	/* Create an event handler for accepting new connections in TCP and Unix
+	 * domain sockets. */
+	if (tcp_sofd > 0 && aeCreateFileEvent(el, tcp_sofd, AE_READABLE,
+					      tcp_server_can_accept,
+					      NULL) == AE_ERR) {
+		t01_panic
+		    ("Unrecoverable error creating server.ipfd file event.");
+	}
+
 }
 
 void close_listening_sockets()
 {
-  if(tcp_sofd!= -1) close(tcp_sofd);
+	if (tcp_sofd != -1)
+		close(tcp_sofd);
 }
 
 static void exit_server()
 {
-  if(out_nmr != nmr)
-    nm_close(out_nmr);
-  nm_close(nmr);
-  destroy_rules();
-  close_listening_sockets();
+	if (out_nmr != nmr)
+		nm_close(out_nmr);
+	nm_close(nmr);
+	destroy_rules();
+	close_listening_sockets();
 }
 
 int main(int argc, char **argv)
-{  
-  parse_options(argc, argv);  
-  init_server();
-  
-  signal(SIGINT, signal_hander);
-  main_thread();
+{
+	parse_options(argc, argv);
+	init_server();
 
-  exit_server();
-  
-  return 0;
+	signal(SIGINT, signal_hander);
+	main_thread();
+
+	exit_server();
+
+	return 0;
 }

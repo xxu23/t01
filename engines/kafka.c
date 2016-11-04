@@ -8,6 +8,7 @@
 #include "../ioengine.h"
 #include "../zmalloc.h"
 #include "rdkafka.h"
+#include "logger.h"
 
 struct kafka_data {
 	rd_kafka_topic_t *rkt;
@@ -18,8 +19,9 @@ struct kafka_data {
 
 static int kafka_connect(struct ioengine_data *td, const char * args)
 {
-	struct kafka_data *kd = malloc(sizeof(*kd));
-	char *sep, *host = (char*)args;
+	struct kafka_data *kd = zmalloc(sizeof(*kd));
+	char *args2 = zstrdup(args);
+	char *sep, *host = (char*)args2;
 	int port = 9092;
 	char brokers[512];
 	char tmp[16];
@@ -27,7 +29,7 @@ static int kafka_connect(struct ioengine_data *td, const char * args)
 
 	bzero(kd, sizeof(*kd));
 
-	sep = strchr(args, ':');
+	sep = strchr(args2, ':');
 	if (sep) {
 		*sep = 0;
 		sep++;
@@ -45,25 +47,24 @@ static int kafka_connect(struct ioengine_data *td, const char * args)
 
 	/* Create Kafka handle */
 	if (!(kd->rk = rd_kafka_new(RD_KAFKA_PRODUCER, kd->conf, errstr, sizeof(errstr)))) {
-		fprintf(stderr, "Failed to create new producer: %s\n", errstr);
+		t01_log(T01_WARNING, "Failed to create new producer: %s\n", errstr);
 		rd_kafka_topic_conf_destroy(kd->topic_conf);
 		free(kd);
+		zfree(args2);
 		return -1;
 	}
 
 	/* Add brokers */
 	if (rd_kafka_brokers_add(kd->rk, brokers) == 0) {
-		fprintf(stderr, "%% No valid brokers specified\n");
+		t01_log(T01_WARNING, "%% No valid brokers specified\n");
 		rd_kafka_topic_conf_destroy(kd->topic_conf);
-		free(kd);
+		zfree(kd);
+		zfree(args2);
 		return -2;
 	}
 
-	/* Create topic */
-	kd->rkt = rd_kafka_topic_new(kd->rk, "inqueue", kd->topic_conf);
-	kd->topic_conf = NULL; /* Now owned by topic */
-
 	td->private = kd;
+	zfree(args2);
 	return 0;
 }
 
@@ -79,10 +80,11 @@ static int kafka_disconnect(struct ioengine_data *td)
 	rd_kafka_conf_destroy(kd->conf);
 	/* Destroy topic */
 	rd_kafka_topic_destroy(kd->rkt);
+
 	/* Destroy the handle */
 	rd_kafka_destroy(kd->rk);
 	
-	free(kd);
+	zfree(kd);
 
 	return 0;
 }
@@ -95,16 +97,24 @@ static int kafka_show_help()
 	return 0;
 }
 
-static int kafka_write(struct ioengine_data *td, const char* buffer, int len)
+static int kafka_write(struct ioengine_data *td, const char *args, int args_len,
+		       const char *buffer, int len)
 {
 	struct kafka_data *kd = (struct kafka_data*)td->private;
 	int partition = 0;
+
+	if(!kd->rkt) {
+		/* Create topic */
+		kd->rkt = rd_kafka_topic_new(kd->rk, args, kd->topic_conf);
+		kd->topic_conf = NULL; /* Now owned by topic */
+	}
+
 
 	/* Send/Produce message. */
 	len = rd_kafka_produce(kd->rkt, partition, RD_KAFKA_MSG_F_COPY,
 					(void*)buffer, len, NULL, 0, NULL);
 	if(len == -1) {
-		fprintf(stderr, "Failed to produce to topic %s partition %i: %s\n",
+		t01_log(T01_WARNING, "Failed to produce to topic %s partition %i: %s\n",
 			rd_kafka_topic_name(kd->rkt), partition,
 			rd_kafka_err2str(rd_kafka_last_error()));
 		return -1;

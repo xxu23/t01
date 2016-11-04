@@ -38,7 +38,6 @@
 #include "ioengine.h"
 #include "ndpi_api.h"
 #include "ndpi_util.h"
-#include "zmalloc.h"
 #include "msgpack.h"
 #include "logger.h"
 
@@ -65,20 +64,37 @@ void close_ioengine(struct ioengine_data *td)
 	}
 }
 
-int init_ioengine(struct ioengine_data* td, const char *args)
+int init_ioengine(struct ioengine_data *td, const char *args)
 {
-	t01_log(T01_NOTICE, "init ioengine %s with opt %s", td->io_ops->name, args);
+	t01_log(T01_NOTICE, "init ioengine %s with opt %s", td->io_ops->name,
+		args);
 	if (td->io_ops->connect) {
 		return td->io_ops->connect(td, args);
 	}
 	return -1;
 }
 
-int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protocol, const char * packet, int pkt_len)
+typedef int (*write_engine)(struct ioengine_data *, const char *, int, const char *, int);
+
+int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
+				  int len, uint8_t protocol, uint64_t ts,
+				  uint32_t saddr, uint16_t sport,
+				  uint32_t daddr, uint16_t dport)
+{
+	write_engine write = td->io_ops->write;
+	if (!write)
+		return 0;
+	return write(td, "raw_queue", 9, data, len);
+}
+
+int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
+			       const char *protocol, const char *packet,
+			       int pkt_len)
 {
 	struct ndpi_flow_info *flow = (struct ndpi_flow_info *)flow_;
-	int (*write)(struct ioengine_data *, const char *, int) = td->io_ops->write;
-	if(!write) return 0;
+	write_engine write = td->io_ops->write;
+	if (!write)
+		return 0;
 
 	u_int32_t src_ip = flow->src_ip;
 	u_int32_t dst_ip = flow->dst_ip;
@@ -93,51 +109,52 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
 	msgpack_packer pk;
 	msgpack_packer_init(&pk, &sbuf, msgpack_sbuffer_write);
 
-	if(flow->detected_protocol.master_protocol) 
+	if (flow->detected_protocol.master_protocol)
 		detected_protocol = flow->detected_protocol.master_protocol;
-	else 
+	else
 		detected_protocol = flow->detected_protocol.protocol;
 
-	if(detected_protocol == NDPI_PROTOCOL_HTTP) {
-		const char* payload = packet + flow->payload_offset;
+	if (detected_protocol == NDPI_PROTOCOL_HTTP) {
+		const char *payload = packet + flow->payload_offset;
 		pkt_len -= flow->payload_offset;
-		if(pkt_len <= 0) goto clean;
+		if (pkt_len <= 0)
+			goto clean;
 
 		map_size += 2;
 		msgpack_pack_map(&pk, map_size);
-		
-		msgpack_pack_str(&pk, 4);
-    		msgpack_pack_str_body(&pk, "host", 4);
-		len = strlen(flow->host_server_name);
-		msgpack_pack_str(&pk, len);
-    		msgpack_pack_str_body(&pk, flow->host_server_name, len);
 
 		msgpack_pack_str(&pk, 4);
-    		msgpack_pack_str_body(&pk, "body", 4);
+		msgpack_pack_str_body(&pk, "host", 4);
+		len = strlen(flow->host_server_name);
+		msgpack_pack_str(&pk, len);
+		msgpack_pack_str_body(&pk, flow->host_server_name, len);
+
+		msgpack_pack_str(&pk, 4);
+		msgpack_pack_str_body(&pk, "body", 4);
 		//len = strlen(payload);
 		msgpack_pack_str(&pk, pkt_len);
-    		msgpack_pack_str_body(&pk, payload, pkt_len);
-	} else if(detected_protocol == NDPI_PROTOCOL_DNS ||
-		detected_protocol == NDPI_PROTOCOL_SSL) {
-		char * host = NULL;
+		msgpack_pack_str_body(&pk, payload, pkt_len);
+	} else if (detected_protocol == NDPI_PROTOCOL_DNS ||
+		   detected_protocol == NDPI_PROTOCOL_SSL) {
+		char *host = NULL;
 		map_size += 1;
 		msgpack_pack_map(&pk, map_size);
-		
-		if(detected_protocol == NDPI_PROTOCOL_DNS){
+
+		if (detected_protocol == NDPI_PROTOCOL_DNS) {
 			host = flow->host_server_name;
 		} else {
-			if(flow->ssl.client_certificate[0]) 
+			if (flow->ssl.client_certificate[0])
 				host = flow->ssl.client_certificate;
-      		else if(flow->ssl.server_certificate[0]) 
+			else if (flow->ssl.server_certificate[0])
 				host = flow->ssl.server_certificate;
 		}
 
 		msgpack_pack_str(&pk, 4);
-    		msgpack_pack_str_body(&pk, "host", 4);
-		if(host) {
+		msgpack_pack_str_body(&pk, "host", 4);
+		if (host) {
 			len = strlen(host);
 			msgpack_pack_str(&pk, len);
-    			msgpack_pack_str_body(&pk, host, len);
+			msgpack_pack_str_body(&pk, host, len);
 		} else {
 			msgpack_pack_nil(&pk);
 		}
@@ -150,41 +167,40 @@ int store_via_ioengine(struct ioengine_data *td, void *flow_, const char* protoc
 	inet_ntop(AF_INET, &dst_ip, u, sizeof(u));
 
 	msgpack_pack_str(&pk, 8);
-    	msgpack_pack_str_body(&pk, "protocol", 8);
+	msgpack_pack_str_body(&pk, "protocol", 8);
 	len = strlen(protocol);
 	msgpack_pack_str(&pk, len);
-    	msgpack_pack_str_body(&pk, protocol, len);
+	msgpack_pack_str_body(&pk, protocol, len);
 
 	msgpack_pack_str(&pk, 8);
-    	msgpack_pack_str_body(&pk, "src_ip", 8);
+	msgpack_pack_str_body(&pk, "src_ip", 8);
 	len = strlen(l);
 	msgpack_pack_str(&pk, len);
-    	msgpack_pack_str_body(&pk, l, len);
+	msgpack_pack_str_body(&pk, l, len);
 
 	msgpack_pack_str(&pk, 8);
-    	msgpack_pack_str_body(&pk, "dst_ip", 8);
+	msgpack_pack_str_body(&pk, "dst_ip", 8);
 	len = strlen(u);
 	msgpack_pack_str(&pk, len);
-    	msgpack_pack_str_body(&pk, u, len);
-	
-	msgpack_pack_str(&pk, 10);
-    	msgpack_pack_str_body(&pk, "src_port", 10);
-	msgpack_pack_int(&pk, src_port);	
+	msgpack_pack_str_body(&pk, u, len);
 
 	msgpack_pack_str(&pk, 10);
-    	msgpack_pack_str_body(&pk, "dst_port", 10);
+	msgpack_pack_str_body(&pk, "src_port", 10);
+	msgpack_pack_int(&pk, src_port);
+
+	msgpack_pack_str(&pk, 10);
+	msgpack_pack_str_body(&pk, "dst_port", 10);
 	msgpack_pack_int(&pk, dst_port);
 
 	msgpack_pack_str(&pk, 4);
-    	msgpack_pack_str_body(&pk, "when", 4);
-    	msgpack_pack_uint32(&pk, ts/1000);
+	msgpack_pack_str_body(&pk, "when", 4);
+	msgpack_pack_uint32(&pk, ts / 1000);
 
-	len = write(td, sbuf.data, sbuf.size);
+	len = write(td, "payload_queue", 13, sbuf.data, sbuf.size);
 clean:
 	msgpack_sbuffer_destroy(&sbuf);
-	return len; 
+	return len;
 }
-
 
 static struct ioengine_ops *find_ioengine(const char *name)
 {
@@ -200,7 +216,7 @@ static struct ioengine_ops *find_ioengine(const char *name)
 	return NULL;
 }
 
-int load_ioengine(struct ioengine_data* data, const char *name)
+int load_ioengine(struct ioengine_data *data, const char *name)
 {
 	struct ioengine_ops *ops;
 	char engine[64];
@@ -223,7 +239,7 @@ int load_ioengine(struct ioengine_data* data, const char *name)
 int fio_show_ioengine_help(const char *engine)
 {
 	struct list_head *entry;
-	struct ioengine_ops* io_ops;
+	struct ioengine_ops *io_ops;
 	struct ioengine_data id;
 	int ret = 1;
 

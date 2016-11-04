@@ -33,34 +33,41 @@
 #define io_init	__attribute__((constructor))
 #define io_exit	__attribute__((destructor))
 
+#include <stdint.h>
 #include "list.h"
 
 struct ioengine_ops;
 
 struct ioengine_data {
 	void *private;
-	struct ioengine_ops* io_ops;
+	struct ioengine_ops *io_ops;
 };
 
 struct ioengine_ops {
 	struct list_head list;
 	const char *name;
-	int (*connect)(struct ioengine_data *, const char *);
-	int (*disconnect)(struct ioengine_data *);
-	int (*show_help)();
-	int (*write)(struct ioengine_data *, const char *, int);
+	int (*connect) (struct ioengine_data *, const char *);
+	int (*disconnect) (struct ioengine_data *);
+	int (*show_help) ();
+	int (*write) (struct ioengine_data *, const char *, int, const char *, int);
 };
 
+extern int load_ioengine(struct ioengine_data *ed, const char *name);
+extern int init_ioengine(struct ioengine_data *ed, const char *args);
+extern void close_ioengine(struct ioengine_data *ed);
 
-extern int load_ioengine(struct ioengine_data *, const char *);
-extern int init_ioengine(struct ioengine_data *, const char *);
-extern void close_ioengine(struct ioengine_data *);
-extern int store_via_ioengine(struct ioengine_data *, void *, const char *, const char *, int);
+extern int store_payload_via_ioengine(struct ioengine_data *ed, void *flow,
+				      const char *protocol, const char *data,
+				      int len);
 
-extern void register_ioengine(struct ioengine_ops *);
-extern void unregister_ioengine(struct ioengine_ops *);
+extern int store_raw_via_ioengine(struct ioengine_data *ed, const char *data,
+				  int len, uint8_t protocol, uint64_t ts,
+				  uint32_t saddr, uint16_t sport,
+				  uint32_t daddr, uint16_t dport);
+
+extern void register_ioengine(struct ioengine_ops *ops);
+extern void unregister_ioengine(struct ioengine_ops *ops);
 
 extern int fio_show_ioengine_help(const char *engine);
-
 
 #endif
