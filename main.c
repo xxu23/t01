@@ -602,10 +602,10 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void *args)
 			    (float)(ip_packet_count_out * 1000000) /
 			    (float)since_usec;
 			bytes_per_second_in =
-			    (float)(total_ip_bytes * 8 * 1000000) /
+			    (float)(total_ip_bytes * 8.0f * 1000000) /
 			    (float)since_usec;
 			bytes_per_second_out =
-			    (float)(total_ip_bytes_out * 8 * 1000000) /
+			    (float)(total_ip_bytes_out * 8.0f * 1000000) /
 			    (float)since_usec;
 		}
 
