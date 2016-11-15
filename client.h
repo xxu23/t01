@@ -2,8 +2,8 @@
 #define CLIENT_H
 
 #include <arpa/inet.h>
-#include "http_parser.h"
-#include "ae.h"
+#include <event.h>
+#include <http_parser.h>
 
 struct http_header;
 struct http_query;
@@ -22,7 +22,9 @@ struct http_client {
 	int fd;
 	char ip[16];
 	uint16_t port;
-	aeEventLoop *el;
+
+	struct event_base *base;
+	struct event ev;
 
 	/* HTTP parsing */
 	struct http_parser parser;
@@ -60,7 +62,7 @@ struct http_client {
 };
 
 struct http_client *
-http_client_new(aeEventLoop *el, int fd, const char *ip, uint16_t port);
+http_client_new(struct event_base *base, int fd, const char *ip, uint16_t port);
 
 void
 http_client_reset(struct http_client *c);
@@ -84,7 +86,7 @@ const char *
 client_get_header(struct http_client *c, const char *key);
 
 void
-http_client_can_read(struct aeEventLoop *el, int fd, void *clientData, int mask);
+http_client_can_read(int fd, short event, void *p);
 
 void
 http_client_process(struct http_client *c);

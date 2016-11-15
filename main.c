@@ -38,12 +38,10 @@
 #include <sys/sysinfo.h>
 #include <sys/socket.h>
 
-#include <net/netmap_user.h>
-#include "ndpi_api.h"
+#include <ndpi_api.h>
 #include "ndpi_util.h"
 #include "pktgen.h"
 #include "rule.h"
-#include "ae.h"
 #include "anet.h"
 #include "logger.h"
 #include "networking.h"
@@ -51,20 +49,20 @@
 #include "t01.h"
 #include "zmalloc.h"
 
+#include <net/netmap_user.h>
+#include <event.h>
+
 struct backup_data {
 	char *buffer;
 	int len;
 	struct ndpi_flow_info *flow;
 };
 
+#define DEFAULT_RULEDB "/var/lib/t01/dump.tdb"
 #define MAX_FILTERS 5000
-
 #define MAX_BACKUP_DATA 65536
-#define DEFAULT_HZ      10
 
-#define run_with_period(_ms_) if ((_ms_ <= 1000/DEFAULT_HZ) || !(cronloops%((_ms_)/(1000/DEFAULT_HZ))))
-
-LIST_HEAD(rule_list);
+ZLIST_HEAD(rule_list);
 int dirty = 0;
 int dirty_before_bgsave;
 int lastbgsave_status;
@@ -84,18 +82,22 @@ uint64_t bytes_per_second_in = 0;
 uint64_t bytes_per_second_out = 0;
 uint64_t pkts_per_second_in = 0;
 uint64_t pkts_per_second_out = 0;
+enum t01_work_mode work_mode = NONE_MODE;
+struct event_base *base;
 
-static LIST_HEAD(filter_buffer_list);
+static struct ndpi_workflow *workflow;
+static char master_address[64];
+static ZLIST_HEAD(filter_buffer_list);
 static struct timeval upstart_tv;
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
-static uint64_t cronloops;
 static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
-static int port = 9899;
-static char bind_ip[32];
+static char rule_ip[32];
+static int rule_port = 9899;
+static char master_ip[32];
+static int master_port;
 static int tcp_sofd;
-static aeEventLoop *el;
-static char rulefile[256];
+static char ruledb[256];
 static char logfile[256];
 static struct nm_desc *nmr, *out_nmr;
 static uint8_t shutdown_app = 0;
@@ -165,6 +167,139 @@ static void netflow_data_clone(void *data, uint32_t n,
 	pthread_spin_lock(&mirror_lock);
 	list_add_tail(&fb->list, &filter_buffer_list);
 	pthread_spin_unlock(&mirror_lock);
+}
+
+static void usage()
+{
+	const char *cmd = "t01";
+	fprintf(stderr,
+		"Usage:\n"
+		"%s arguments\n"
+		"\t-i interface              interface that captures incoming traffic\n"
+		"\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
+		"\t-c ruledb                 rule db file that saving rule and hit record\n"
+		"\t-b ip                     ip address binded for rule management\n"
+		"\t-p port                   port listening for rule management (default 9899)\n"
+		"\t-S | -M                   slave or master mode for rule management\n"
+		"\t-j ip:port                master address for rule management cluster (eg 192.168.1.2:9898)\n"
+		"\t-F filter                 filter strategy for mirroring netflow (eg 80/tcp,53/udp)\n"
+		"\t-e engine                 backend engine to store network flow data\n"
+		"\t-E eigine_opt             arguments attached to specified engine\n"
+		"\t-v verbosity              logger levels (0:debug, 1:verbose, 2:notice, 3:warning)\n"
+		"\t-l log_file               logger into file or screen\n"
+		"", cmd);
+
+	exit(0);
+}
+
+static void parse_options(int argc, char **argv)
+{
+	int opt;
+
+	while ((opt = getopt(argc, argv, "SMhi:o:c:e:b:p:E:v:l:F:j:")) != EOF) {
+		switch (opt) {
+		case 'S':
+			work_mode |= SLAVE_MODE;
+			break;
+
+		case 'M':
+			work_mode |= MASTER_MODE;
+			break;
+
+		case 'i':
+			strncpy(ifname, optarg, sizeof(ifname));
+			break;
+
+		case 'o':
+			strncpy(ofname, optarg, sizeof(ofname));
+			break;
+
+		case 'j':
+			strncpy(master_address, optarg, sizeof(master_address));
+			break;
+
+		case 'p':
+			rule_port = atoi(optarg);
+			break;
+
+		case 'b':
+			strncpy(rule_ip, optarg, sizeof(rule_ip));
+			break;
+
+		case 'c':
+			strncpy(ruledb, optarg, sizeof(ruledb));
+			break;
+
+		case 'v':
+			verbose = atoi(optarg);
+			break;
+
+		case 'l':
+			strncpy(logfile, optarg, sizeof(logfile));
+			break;
+
+		case 'F':
+			strncpy(filter, optarg, sizeof(filter));
+			break;
+
+		case 'e':
+			strcpy(engine, optarg);
+			break;
+
+		case 'E':
+			strcpy(engine_opt, optarg);
+			break;
+
+		case 'h':
+			usage();
+			break;
+
+		default:
+			usage();
+			break;
+		}
+	}
+
+	// check parameters
+	if(work_mode & SLAVE_MODE && work_mode & MASTER_MODE) {
+		fprintf(stderr, "Both master and slave mode is not support\n");
+		usage();
+	}
+	if((work_mode & SLAVE_MODE || work_mode & MASTER_MODE) && master_address[0] == 0) {
+		fprintf(stderr, "Master address should be specified in master/slave mode\n");
+		usage();
+	}
+	if(work_mode & SLAVE_MODE || work_mode == NONE_MODE) 
+		work_mode |= NETMAP_MODE;
+
+	if (work_mode & NETMAP_MODE && ifname[0] == 0 && ruledb[0] == 0) {
+		fprintf(stderr, "Incoming interface should be specified in netmap/slave mode\n");
+		usage();
+	}
+	if(ruledb[0] == 0)
+		strcpy(ruledb, DEFAULT_RULEDB);
+}
+
+static void signal_hander(int sig)
+{
+	static int called = 0;
+	int save = dirty != 0;
+	t01_log(T01_WARNING, "Received control-C, shutdowning");
+	if (called)
+		return;
+	else
+		called = 1;
+	if (save) {
+		t01_log(T01_NOTICE,
+			"Saving the final TDB snapshot before exiting.");
+		if (save_rules(ruledb) != 0) {
+			t01_log(T01_WARNING,
+				"Error trying to save the DB, can't exit.");
+			return;
+		}
+	}
+	shutdown_app = 1;
+	event_base_loopexit(base, NULL);
 }
 
 static char *ipproto_name(u_short proto_id)
@@ -244,7 +379,7 @@ static char *format_packets(float numPkts, char *buf)
 	return (buf);
 }
 
-static int manage_interface_promisc_mode(const char *interface, int switch_on)
+static int manage_interface_promisc_mode(const char *interface, int on)
 {
 	// We need really any socket for ioctl
 	int fd;
@@ -270,7 +405,7 @@ static int manage_interface_promisc_mode(const char *interface, int switch_on)
 	}
 
 	promisc_enabled_on_device = ethreq.ifr_flags & IFF_PROMISC;
-	if (switch_on) {
+	if (on) {
 		if (promisc_enabled_on_device) {
 			t01_log(T01_DEBUG,
 				"Interface %s in promisc mode already",
@@ -453,8 +588,7 @@ struct ndpi_workflow *setup_detection()
 				      netflow_data_filter);
 
 	// enable all protocols
-	if (enable_all_protocol)
-		NDPI_BITMASK_SET_ALL(ndpi_mask);
+	NDPI_BITMASK_SET_ALL(ndpi_mask);
 	ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
 
 	// clear memory for results
@@ -492,7 +626,6 @@ static void *mirror_thread(void *args)
 
 static void *backup_thread(void *args)
 {
-	struct ndpi_workflow *workflow = (struct ndpi_workflow *)args;
 	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
 	char protocol[64];
 
@@ -533,13 +666,99 @@ next:
 	return NULL;
 }
 
-static void *backdoor_thread(void *args)
+static void statistics_cb(evutil_socket_t fd, short event, void *arg)
 {
-	aeMain(el);
-	aeDeleteEventLoop(el);
+	struct ndpi_stats *stat = &workflow->stats;
+	struct timeval curr_ts;
+	uint64_t tot_usec, since_usec;
+	struct list_head *pos;
+	uint64_t total_hits = 0;
+	unsigned int avg_pkt_size = 0;
+	uint64_t curr_raw_packet_count =
+	    stat->raw_packet_count - raw_packet_count;
+	uint64_t curr_ip_packet_count =
+	    stat->ip_packet_count - ip_packet_count;
+	uint64_t curr_total_wire_bytes =
+	    stat->total_wire_bytes - total_wire_bytes;
+	uint64_t curr_total_ip_bytes =
+	    stat->total_ip_bytes - total_ip_bytes;
+	uint64_t curr_tcp_count = stat->tcp_count - tcp_count;
+	uint64_t curr_udp_count = stat->udp_count - udp_count;
+	uint64_t curr_hits;
+
+	gettimeofday(&curr_ts, NULL);
+	tot_usec =
+	    curr_ts.tv_sec * 1000000 + curr_ts.tv_usec -
+	    (last_report_ts.tv_sec * 1000000 + last_report_ts.tv_usec);
+	since_usec =
+	    curr_ts.tv_sec * 1000000 + curr_ts.tv_usec -
+	    (upstart_tv.tv_sec * 1000000 + upstart_tv.tv_usec);
+	last_report_ts = curr_ts;
+
+	raw_packet_count = stat->raw_packet_count;
+	ip_packet_count = stat->ip_packet_count;
+	total_wire_bytes = stat->total_wire_bytes;
+	total_ip_bytes = stat->total_ip_bytes;
+	tcp_count = stat->tcp_count;
+	udp_count = stat->udp_count;
+	list_for_each(pos, &rule_list) {
+		struct rule *rule = list_entry(pos, struct rule, list);
+		if (rule->used == 0)
+			continue;
+		total_hits += rule->hits;
+	}
+
+	if (since_usec > 0) {
+		pkts_per_second_in =
+		    ip_packet_count * 1000000.0f / since_usec;
+		pkts_per_second_out =
+		    ip_packet_count_out * 1000000.0f / since_usec;
+		bytes_per_second_in =
+		    total_ip_bytes * 8.0f * 1000000 / since_usec;
+		bytes_per_second_out =
+		    total_ip_bytes_out * 8.0f * 1000000 / since_usec;
+	}
+
+	printf("\nTraffic statistics:\n");
+	printf("\tEthernet bytes:        %-13llu\n",
+	       curr_total_wire_bytes);
+	printf("\tIP bytes:              %-13llu\n",
+	       curr_total_ip_bytes);
+	printf
+	    ("\tIP packets:            %-13llu of %llu packets total\n",
+	     curr_ip_packet_count, curr_raw_packet_count);
+	printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
+	printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
+
+	if (tot_usec > 0) {
+		char buf[32], buf1[32];
+		float t =
+		    (float)(curr_ip_packet_count * 1000000) /
+		    (float)tot_usec;
+		float b =
+		    (float)(curr_total_wire_bytes * 8 * 1000000) /
+		    (float)tot_usec;
+		float traffic_duration = tot_usec;
+		printf("\tTraffic throughput:    %s pps / %s/sec\n",
+		       format_packets(t, buf), format_traffic(b, 1,
+							      buf1));
+		printf("\tTraffic duration:      %.3f sec\n",
+		       traffic_duration / 1000000);
+		printf("\tIncoming throughput:   %s pps / %s/sec\n",
+		       format_packets(pkts_per_second_in, buf),
+		       format_traffic(bytes_per_second_in, 1, buf1));
+		printf("\tOutcoming throughput:  %s pps / %s/sec\n",
+		       format_packets(pkts_per_second_out, buf),
+		       format_traffic(bytes_per_second_out, 1, buf1));
+	}
+
+	curr_hits = total_hits - hits;
+	printf("\tRules hits:            %-13lu (total %llu)\n",
+	       curr_hits, total_hits);
+	hits = total_hits;
 }
 
-static int server_cron(struct aeEventLoop *eventLoop, long long id, void *args)
+static void rulesaving_cb(evutil_socket_t fd, short event, void *arg)
 {
 	time_t unix_time = time(NULL);
 
@@ -551,102 +770,6 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void *args)
 	60, 30}, {
 	5, 500}, {
 	1, 3000}};
-
-	run_with_period(2000) {
-		struct ndpi_workflow *workflow = (struct ndpi_workflow *)args;
-		struct ndpi_stats *stat = &workflow->stats;
-		struct timeval curr_ts;
-		uint64_t tot_usec, since_usec;
-		struct list_head *pos;
-		uint64_t total_hits = 0;
-		unsigned int avg_pkt_size = 0;
-		uint64_t curr_raw_packet_count =
-		    stat->raw_packet_count - raw_packet_count;
-		uint64_t curr_ip_packet_count =
-		    stat->ip_packet_count - ip_packet_count;
-		uint64_t curr_total_wire_bytes =
-		    stat->total_wire_bytes - total_wire_bytes;
-		uint64_t curr_total_ip_bytes =
-		    stat->total_ip_bytes - total_ip_bytes;
-		uint64_t curr_tcp_count = stat->tcp_count - tcp_count;
-		uint64_t curr_udp_count = stat->udp_count - udp_count;
-		uint64_t curr_hits;
-
-		gettimeofday(&curr_ts, NULL);
-		tot_usec =
-		    curr_ts.tv_sec * 1000000 + curr_ts.tv_usec -
-		    (last_report_ts.tv_sec * 1000000 + last_report_ts.tv_usec);
-		since_usec =
-		    curr_ts.tv_sec * 1000000 + curr_ts.tv_usec -
-		    (upstart_tv.tv_sec * 1000000 + upstart_tv.tv_usec);
-		last_report_ts = curr_ts;
-
-		raw_packet_count = stat->raw_packet_count;
-		ip_packet_count = stat->ip_packet_count;
-		total_wire_bytes = stat->total_wire_bytes;
-		total_ip_bytes = stat->total_ip_bytes;
-		tcp_count = stat->tcp_count;
-		udp_count = stat->udp_count;
-		list_for_each(pos, &rule_list) {
-			struct rule *rule = list_entry(pos, struct rule, list);
-			if (rule->used == 0)
-				continue;
-			total_hits += rule->hits;
-		}
-
-		if (since_usec > 0) {
-			pkts_per_second_in =
-			    (float)(ip_packet_count * 1000000) /
-			    (float)since_usec;
-			pkts_per_second_out =
-			    (float)(ip_packet_count_out * 1000000) /
-			    (float)since_usec;
-			bytes_per_second_in =
-			    (float)(total_ip_bytes * 8.0f * 1000000) /
-			    (float)since_usec;
-			bytes_per_second_out =
-			    (float)(total_ip_bytes_out * 8.0f * 1000000) /
-			    (float)since_usec;
-		}
-
-		printf("\nTraffic statistics:\n");
-		printf("\tEthernet bytes:        %-13llu\n",
-		       curr_total_wire_bytes);
-		printf("\tIP bytes:              %-13llu\n",
-		       curr_total_ip_bytes);
-		printf
-		    ("\tIP packets:            %-13llu of %llu packets total\n",
-		     curr_ip_packet_count, curr_raw_packet_count);
-		printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
-		printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
-
-		if (tot_usec > 0) {
-			char buf[32], buf1[32];
-			float t =
-			    (float)(curr_ip_packet_count * 1000000) /
-			    (float)tot_usec;
-			float b =
-			    (float)(curr_total_wire_bytes * 8 * 1000000) /
-			    (float)tot_usec;
-			float traffic_duration = tot_usec;
-			printf("\tTraffic throughput:    %s pps / %s/sec\n",
-			       format_packets(t, buf), format_traffic(b, 1,
-								      buf1));
-			printf("\tTraffic duration:      %.3f sec\n",
-			       traffic_duration / 1000000);
-			printf("\tIncoming throughput:   %s pps / %s/sec\n",
-			       format_packets(pkts_per_second_in, buf),
-			       format_traffic(bytes_per_second_in, 1, buf1));
-			printf("\tOutcoming throughput:  %s pps / %s/sec\n",
-			       format_packets(pkts_per_second_out, buf),
-			       format_traffic(bytes_per_second_out, 1, buf1));
-		}
-
-		curr_hits = total_hits - hits;
-		printf("\tRules hits:            %-13lu (total %llu)\n",
-		       curr_hits, total_hits);
-		hits = total_hits;
-	}
 
 	/* Check if a background saving or AOF rewrite in progress terminated. */
 	if (tdb_child_pid != -1) {
@@ -678,14 +801,66 @@ static int server_cron(struct aeEventLoop *eventLoop, long long id, void *args)
 				t01_log(T01_NOTICE,
 					"%d changes in %d seconds. Saving...",
 					sp->changes, (int)sp->seconds);
-				save_rules_background(rulefile);
+				save_rules_background(ruledb);
 				break;
 			}
 		}
 	}
+}
 
-	cronloops++;
-	return 1000 / DEFAULT_HZ;
+static void slave_cb(evutil_socket_t fd, short event, void *arg)
+{
+	slave_registry_master(master_ip, master_port, rule_port);
+}
+
+static void master_cb(evutil_socket_t fd, short event, void *arg)
+{
+	master_check_slaves();
+}
+
+static void *libevent_thread(void *args)
+{
+	struct event ev1, ev2, ev3, ev4;
+	struct timeval tv2, tv3, tv4;
+
+	/* initialize libevent */
+	base = event_base_new();
+
+	/* start rule management server */
+	if (tcp_sofd > 0) {
+		event_set(&ev1, tcp_sofd, EV_READ | EV_PERSIST, server_can_accept, NULL);
+		event_base_set(base, &ev1);
+		event_add(&ev1, NULL);
+	}
+
+	/* Initalize timeout event */
+	if(work_mode & NETMAP_MODE) {
+		event_assign(&ev2, base, -1, EV_PERSIST, statistics_cb, (void*) &ev2);
+		evutil_timerclear(&tv2);
+		tv2.tv_sec = 2000;		
+		event_add(&ev2, &tv2);
+	}
+	
+	if(work_mode & NETMAP_MODE || work_mode & MASTER_MODE) {
+		evutil_timerclear(&tv3);
+		tv3.tv_usec = 1000;
+		event_assign(&ev3, base, -1, EV_PERSIST, rulesaving_cb, (void*) &ev3);
+		event_add(&ev3, &tv3);
+	}
+
+	if(work_mode & SLAVE_MODE) {
+		evutil_timerclear(&tv4);
+		tv4.tv_sec = 5;
+		event_assign(&ev4, base, -1, EV_PERSIST, slave_cb, (void*) &ev4);
+		event_add(&ev4, &tv4);
+	} else if(work_mode & MASTER_MODE) {
+		evutil_timerclear(&tv4);
+		tv4.tv_sec = 5;
+		event_assign(&ev4, base, -1, EV_PERSIST, master_cb, (void*) &ev4);
+		event_add(&ev4, &tv4);
+	}
+
+	event_base_dispatch(base);
 }
 
 static inline int receive_packets(struct netmap_ring *ring,
@@ -708,13 +883,11 @@ static inline int receive_packets(struct netmap_ring *ring,
 	return (rx);
 }
 
-static void main_thread()
+static void *netmap_thread(void *args)
 {
-	int err, i;
+	int i;
 	struct pollfd pfd[2];
 	int nfds = 1;
-	struct ndpi_workflow *workflow = setup_detection();
-	pthread_t backup_thread_id, backdoor_thread_id, mirror_thread_id;
 	struct netmap_ring *rxring = NULL;
 	struct netmap_if *nifp = nmr->nifp;
 
@@ -726,43 +899,7 @@ static void main_thread()
 		pfd[1].events = POLLOUT;
 		nfds++;
 	}
-
-	/* Create the server_cron() time event. */
-	if (aeCreateTimeEvent(el, 1, server_cron, workflow, NULL) == AE_ERR) {
-		t01_panic("Can't create the serverCron time event.");
-	}
-	gettimeofday(&last_report_ts, NULL);
-
-	err = pthread_create(&backdoor_thread_id, NULL, backdoor_thread, NULL);
-	if (err != 0) {
-		t01_log(T01_WARNING, "create backdoor thread failed(%d)", err);
-		exit(1);
-	}
-
-	if (backup) {
-		err =
-		    pthread_create(&backup_thread_id, NULL, backup_thread,
-				   workflow);
-		if (err != 0) {
-			t01_log(T01_WARNING, "create backup thread failed(%d)",
-				err);
-			backup = 0;
-			return;
-		}
-	}
-
-	if (mirror) {
-		err =
-		    pthread_create(&mirror_thread_id, NULL, mirror_thread,
-				   NULL);
-		if (err != 0) {
-			t01_log(T01_WARNING, "create mirror thread failed(%d)",
-				err);
-			mirror = 0;
-			return;
-		}
-	}
-
+	
 	while (!shutdown_app) {
 		/* should use a parameter to decide how often to send */
 		pfd[0].revents = pfd[1].revents = 0;
@@ -780,140 +917,56 @@ static void main_thread()
 		ndpi_workflow_clean_idle_flows(workflow, 0);
 	}
 
-	err = pthread_join(backdoor_thread_id, NULL);
-	if (err != 0) {
-		t01_log(T01_WARNING, "join backdoor thread failed(%d)", err);
-		return;
-	}
-
-	if (backup) {
-		err = pthread_join(backup_thread_id, NULL);
-		if (err != 0) {
-			t01_log(T01_WARNING, "join backup thread failed(%d)",
-				err);
-			return;
-		}
-	}
-
+	return NULL;
 }
 
-static void usage()
+static void main_thread()
 {
-	const char *cmd = "t01";
-	fprintf(stderr,
-		"Usage:\n"
-		"%s arguments\n"
-		"\t-i interface              interface that captures incoming traffic\n"
-		"\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
-		"\t-c rulefile               json rule file for traffic action\n"
-		"\t-b ip                     ip address binded\n"
-		"\t-p port                   port listening for incoming client (default 9899)\n"
-		"\t-m mask                   enable all ndpi protocol or not (default 1)\n"
-		"\t-F filter                 filter strategy for mirroring netflow (such as 80/tcp,53/udp)\n"
-		"\t-e engine                 backend engine to store network flow data\n"
-		"\t-E eigine_opt             arguments attached to specified engine\n"
-		"\t-v verbosity              logger levels (0:debug, 1:verbose, 2:notice, 3:warning)\n"
-		"\t-l log_file               logger into file or screen\n"
-		"", cmd);
+	int err, i, nthreads = 0;
+	pthread_t threads[4];
 
-	exit(0);
-}
+	gettimeofday(&last_report_ts, NULL);
 
-static void parse_options(int argc, char **argv)
-{
-	int opt;
-
-	while ((opt = getopt(argc, argv, "hi:o:c:m:e:b:p:E:v:l:F:")) != EOF) {
-		switch (opt) {
-		case 'i':
-			strncpy(ifname, optarg, sizeof(ifname));
-			break;
-
-		case 'o':
-			strncpy(ofname, optarg, sizeof(ofname));
-			break;
-
-		case 'm':
-			enable_all_protocol = atoi(optarg);
-			break;
-
-		case 'p':
-			port = atoi(optarg);
-			break;
-
-		case 'b':
-			strncpy(bind_ip, optarg, sizeof(bind_ip));
-			break;
-
-		case 'c':
-			strncpy(rulefile, optarg, sizeof(rulefile));
-			break;
-
-		case 'v':
-			verbose = atoi(optarg);
-			break;
-
-		case 'l':
-			strncpy(logfile, optarg, sizeof(logfile));
-			break;
-
-		case 'F':
-			strncpy(filter, optarg, sizeof(filter));
-			break;
-
-		case 'e':
-			strcpy(engine, optarg);
-			break;
-
-		case 'E':
-			strcpy(engine_opt, optarg);
-			break;
-
-		case 'h':
-			usage();
-			break;
-
-		default:
-			usage();
-			break;
-		}
+	if(work_mode & NETMAP_MODE && 
+		pthread_create(&threads[nthreads++], NULL, netmap_thread, NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create netmap thread: %s", strerror(errno));
+		exit(1);
+	} else {
+		sleep(1);
 	}
 
-	// check parameters
-	if (ifname[0] == 0 && rulefile[0] == 0) {
-		usage();
+	if((work_mode & NETMAP_MODE || work_mode & MASTER_MODE) && 
+		pthread_create(&threads[nthreads++], NULL, libevent_thread, NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create libevent thread: %s", strerror(errno));
+		exit(1);
+	}
+
+	if (backup && pthread_create(&threads[nthreads++], NULL, backup_thread, NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create backup thread: %s", strerror(errno));
+		backup = 0;
+		nthreads--;
+	}
+
+	if (mirror && pthread_create(&threads[nthreads++], NULL, mirror_thread, NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create mirror thread: %s", strerror(errno));
+		mirror = 0;
+		nthreads--;
+	}
+
+	for(i = 0; i < nthreads; i++) {
+		pthread_join(threads[i], NULL);
 	}
 }
 
-static void signal_hander(int sig)
-{
-	static int called = 0;
-	int save = dirty != 0;
-	t01_log(T01_WARNING, "received control-C, shutdowning");
-	if (called)
-		return;
-	else
-		called = 1;
-	if (save) {
-		t01_log(T01_NOTICE,
-			"Saving the final TDB snapshot before exiting.");
-		if (save_rules(rulefile) != 0) {
-			t01_log(T01_WARNING,
-				"Error trying to save the DB, can't exit.");
-			return;
-		}
-	}
-	shutdown_app = 1;
-	aeStop(el);
-}
 
-static void init_server()
+static void init_netmap()
 {
-	struct nmreq base;
+	struct nmreq req;
 	char interface[64];
-	char err[ANET_ERR_LEN];
 
 	zmalloc_enable_thread_safeness();
+	event_set_mem_functions(zmalloc, zrealloc, zfree);
+
 	init_log(verbose, logfile);
 	lastsave = upstart = time(NULL);
 	gettimeofday(&upstart_tv, NULL);
@@ -923,9 +976,9 @@ static void init_server()
 		"Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off",
 		ifname);
 
-	bzero(&base, sizeof(base));
+	bzero(&req, sizeof(req));
 	sprintf(interface, "netmap:%s", ifname);
-	nmr = nm_open(interface, &base, 0, NULL);
+	nmr = nm_open(interface, &req, 0, NULL);
 	if (nmr == NULL) {
 		t01_log(T01_WARNING, "Unable to open %s: %s", ifname,
 			strerror(errno));
@@ -940,7 +993,7 @@ static void init_server()
 			"Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off",
 			ofname);
 		sprintf(interface, "netmap:%s", ofname);
-		out_nmr = nm_open(interface, &base, 0, NULL);
+		out_nmr = nm_open(interface, &req, 0, NULL);
 		if (out_nmr == NULL) {
 			t01_log(T01_WARNING,
 				"Unable to open %s: %s, use %s instead", ofname,
@@ -949,16 +1002,11 @@ static void init_server()
 		}
 	}
 
-	if (rulefile[0]) {
-		int rule_num = load_rules(rulefile, &ndpi_mask);
-		if (rule_num > 0) {
-			t01_log(T01_NOTICE, "Load %d rules from file %s",
-				rule_num, rulefile);
-		} else {
-			rule_num = 0;
-		}
-	}
+	workflow = setup_detection();
+}
 
+static void init_engine() 
+{
 	if (filter[0]) {
 		char *temp = zstrdup(filter), *p, *last = NULL;
 		p = strtok_r(temp, ",", &last);
@@ -1015,6 +1063,43 @@ static void init_server()
 
 		pthread_spin_init(&mirror_lock, 0);
 	}
+}
+
+static void init_rulemgmt()
+{	
+	char err[ANET_ERR_LEN];
+	char *bind_ip;
+	int port;
+
+	if (ruledb[0]) {
+		int rule_num = load_rules(ruledb);
+		if (rule_num > 0) {
+			t01_log(T01_NOTICE, "Load %d rules from file %s",
+				rule_num, ruledb);
+		} else {
+			rule_num = 0;
+		}
+	}
+
+	if(work_mode & MASTER_MODE || work_mode & SLAVE_MODE) {
+		char *sep = strchr(master_address, ':');
+		if (sep) {
+			*sep = 0;
+			strncpy(master_ip, master_address, sizeof(master_ip));
+			sep++;
+			master_port = atoi(sep);
+		} else {
+			strncpy(master_ip, master_address, sizeof(master_ip));
+		}
+	} 
+
+	if(work_mode & NETMAP_MODE) {
+		bind_ip = rule_ip;
+		port = rule_port;
+	} else {
+		bind_ip = master_ip;
+		port = master_port;
+	}
 
 	/* Open the TCP listening socket for the user commands. */
 	if (port != 0) {
@@ -1030,6 +1115,7 @@ static void init_server()
 				bind_ip[0] ? bind_ip : "*", port, err);
 			exit(1);
 		}
+		t01_log(T01_NOTICE, "Succeed to bind %s:%d", bind_ip, port);
 		anetNonBlock(NULL, tcp_sofd);
 	}
 
@@ -1039,18 +1125,6 @@ static void init_server()
 			"Configured to not listen anywhere, exiting.");
 		exit(1);
 	}
-
-	el = aeCreateEventLoop(10240);
-
-	/* Create an event handler for accepting new connections in TCP and Unix
-	 * domain sockets. */
-	if (tcp_sofd > 0 && aeCreateFileEvent(el, tcp_sofd, AE_READABLE,
-					      tcp_server_can_accept,
-					      NULL) == AE_ERR) {
-		t01_panic
-		    ("Unrecoverable error creating server.ipfd file event.");
-	}
-
 }
 
 void close_listening_sockets()
@@ -1059,24 +1133,37 @@ void close_listening_sockets()
 		close(tcp_sofd);
 }
 
-static void exit_server()
+static void exit_netmap()
 {
 	if (out_nmr != nmr)
 		nm_close(out_nmr);
 	nm_close(nmr);
-	destroy_rules();
+}
+
+static void exit_rulemgmt()
+{
+	if(work_mode & NETMAP_MODE)
+		destroy_rules();
 	close_listening_sockets();
 }
 
 int main(int argc, char **argv)
 {
 	parse_options(argc, argv);
-	init_server();
+
+	if(work_mode & NETMAP_MODE)
+		init_netmap();
+	init_engine();
+	if(work_mode & NETMAP_MODE || work_mode & MASTER_MODE)
+		init_rulemgmt();
 
 	signal(SIGINT, signal_hander);
 	main_thread();
 
-	exit_server();
+	if(work_mode & NETMAP_MODE)
+		exit_netmap();
+	if(work_mode & NETMAP_MODE || work_mode & MASTER_MODE)
+		exit_rulemgmt();
 
 	return 0;
 }

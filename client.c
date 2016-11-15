@@ -3,8 +3,9 @@
 #include <unistd.h>
 #include <errno.h>
 
+#include <event.h>
+#include <http_parser.h>
 #include "client.h"
-#include "http_parser.h"
 #include "http.h"
 #include "zmalloc.h"
 #include "logger.h"
@@ -205,22 +206,33 @@ http_client_on_message_complete(struct http_parser *p) {
 	return 0;
 }
 
+/**
+ * Monitor client FD for possible reads.
+ */
+void
+http_client_monitor_input(struct http_client *c) {
+
+	event_set(&c->ev, c->fd, EV_READ, http_client_can_read, c);
+	event_base_set(c->base, &c->ev);
+	event_add(&c->ev, NULL);
+}
+
 struct http_client *
-http_client_new(aeEventLoop *el, int fd, const char *ip, uint16_t port) {
+http_client_new(struct event_base *base, int fd, const char *ip, uint16_t port) {
 
 	struct http_client *c = zcalloc(1, sizeof(struct http_client));
 
 	c->fd = fd;
-	c->el = el;
+	c->base = base;
 	if(ip) memcpy(c->ip, ip, 16);
 	c->port = port;
 
 	/* registry read event */
-	if(aeCreateFileEvent(el, fd, AE_READABLE, http_client_can_read, c) == AE_ERR) {
-		close(fd);
-		zfree(c);
-		return NULL;
-	}
+	//if(aeCreateFileEvent(el, fd, AE_READABLE, http_client_can_read, c) == AE_ERR) {
+	//	close(fd);
+	//	zfree(c);
+	//	return NULL;
+	//}
     
 	/* parser */
 	http_parser_init(&c->parser, HTTP_REQUEST);
@@ -235,6 +247,8 @@ http_client_new(aeEventLoop *el, int fd, const char *ip, uint16_t port) {
 	c->settings.on_header_value = http_client_on_header_value;
 
 	c->last_cb = LAST_CB_NONE;
+
+	http_client_monitor_input(c);
 
 	return c;
 }
@@ -285,10 +299,10 @@ http_client_reset(struct http_client *c) {
 void
 http_client_free(struct http_client *c) {
 
-	if(c->el && c->fd != -1) {
+	/*if(c->el && c->fd != -1) {
 		aeDeleteFileEvent(c->el, c->fd, AE_READABLE);
 		aeDeleteFileEvent(c->el, c->fd, AE_WRITABLE);
-	}
+	}*/
 	close(c->fd);
 	http_client_reset(c);
 	zfree(c->buffer);
@@ -298,7 +312,7 @@ http_client_free(struct http_client *c) {
 int
 http_client_read(struct http_client *c) {
 
-	char buffer[4096];
+	char buffer[4096] = {0};
 	int ret;
 
 	ret = read(c->fd, buffer, sizeof(buffer));
@@ -316,6 +330,7 @@ http_client_read(struct http_client *c) {
 	}
 	memcpy(c->buffer + c->sz, buffer, ret);
 	c->sz += ret;
+	c->buffer[c->sz] = 0;
 
 	/* keep track of total sent */
 	c->request_sz += ret;
@@ -375,13 +390,12 @@ client_get_header(struct http_client *c, const char *key) {
 }
 
 void
-http_client_can_read(struct aeEventLoop *el, int fd, void *p, int mask) {
+http_client_can_read(int fd, short event, void *p) {
 
 	struct http_client *c = p;
 	int ret, nparsed;
 
 	(void)fd;
-	(void)mask;
 
 	ret = http_client_read(c);
 	if(ret <= 0) {
@@ -397,16 +411,21 @@ http_client_can_read(struct aeEventLoop *el, int fd, void *p, int mask) {
 	nparsed = http_client_execute(c);
 	
 	if(c->failed_alloc) {
+		c->broken = 1;
 		http_send_error(c, 503, "Service Unavailable");
 	} else if (c->parser.flags & F_CONNECTION_CLOSE) {
 		c->broken = 1;
 	} else if(nparsed != ret) {
+		c->broken = 1;
 		http_send_error(c, 400, "Bad Request");
 	} 
 
 	if(c->broken) { /* terminate client */
 		t01_log(T01_WARNING, "Terminate client %s:%d", c->ip, c->port);
 		http_client_free(c);
+	} else {
+		/* start monitoring input again */
+		http_client_monitor_input(c);
 	}
 }
 

@@ -3,18 +3,20 @@
 #include <unistd.h>
 #include <stdio.h>
 
+#include <event.h>
 #include "http.h"
 #include "client.h"
 #include "zmalloc.h"
 
 /* HTTP Response */
 
-struct http_response *http_response_init(int code, const char *msg) {
+struct http_response *http_response_init(struct event_base *base, int code, const char *msg) {
 
 	/* create object */
 	struct http_response *r = zcalloc(1, sizeof(struct http_response));
 
 	r->code = code;
+	r->base = base;
 	r->msg = msg;
 	r->keep_alive = 0; /* default */
 
@@ -131,18 +133,27 @@ http_can_write(int fd, short event, void *p) {
 void
 http_schedule_write(int fd, struct http_response *r) {
 
-	//http_can_write(fd, 0, r);
+	if(r->base) { /* async */
+		event_set(&r->ev, fd, EV_WRITE, http_can_write, r);
+		event_base_set(r->base, &r->ev);
+		event_add(&r->ev, NULL);
+	} else { /* blocking */
+		http_can_write(fd, 0, r);
+	}
+
+	/*
 	int ret;
 	
 	do{
 		ret = write(fd, r->out + r->sent, r->out_sz - r->sent);	
 		if(ret > 0)
 			r->sent += ret;
-		if(ret <= 0 || r->out_sz - r->sent == 0) { /* error or done */
+		if(ret <= 0 || r->out_sz - r->sent == 0) { // error or done 
 			http_response_cleanup(r, fd, (int)r->out_sz == r->sent ? 1 : 0);
 			break;
 		}
 	}while(1);
+	*/
 }
 
 static char *
@@ -254,7 +265,7 @@ http_response_set_connection_header(struct http_client *c, struct http_response 
 void
 http_send_error(struct http_client *c, short code, const char *msg) {
 
-	struct http_response *resp = http_response_init(code, msg);
+	struct http_response *resp = http_response_init(c->base, code, msg);
 	resp->http_version = c->http_version;
 	http_response_set_connection_header(c, resp);
 	http_response_set_body(resp, NULL, 0);
@@ -280,7 +291,7 @@ http_response_set_keep_alive(struct http_response *r, int enabled) {
 void
 http_send_options(struct http_client *c) {
 
-	struct http_response *resp = http_response_init(200, "OK");
+	struct http_response *resp = http_response_init(c->base, 200, "OK");
 	resp->http_version = c->http_version;
 	http_response_set_connection_header(c, resp);
 
@@ -295,15 +306,15 @@ http_send_options(struct http_client *c) {
  * Write HTTP chunk.
  */
 void
-http_response_write_chunk(int fd, const char *p, size_t sz) {
+http_response_write_chunk(struct http_client *c, const char *p, size_t sz) {
 
-	struct http_response *r = http_response_init(0, NULL);
+	struct http_response *r = http_response_init(c->base, 0, NULL);
 	r->keep_alive = 1; /* chunks are always keep-alive */
 
 	/* format packet */
 	r->out = format_chunk(p, sz, &r->out_sz);
 
 	/* send async write */
-	http_schedule_write(fd, r);
+	http_schedule_write(c->fd, r);
 }
 

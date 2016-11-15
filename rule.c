@@ -26,21 +26,19 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
-#include <stdio.h>
-#include <unistd.h>
 #include <string.h>
+#include <unistd.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <errno.h>
 #include <time.h>
 #include <regex.h>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
 #include "t01.h"
 #include "rule.h"
+#include "crc64.h"
 #include "cJSON.h"
 #include "ndpi_api.h"
 #include "ndpi_util.h"
@@ -109,8 +107,7 @@ static inline int match_payload(int match, const char *payload,
 	return 0;
 }
 
-static inline uint8_t get_protocol(const char *protocol, uint8_t * master,
-				   NDPI_PROTOCOL_BITMASK * mask)
+static inline uint8_t get_protocol(const char *protocol, uint8_t * master)
 {
 	int prot = 0;
 	if (strcasecmp(protocol, "http") == 0) {
@@ -150,8 +147,6 @@ static inline uint8_t get_protocol(const char *protocol, uint8_t * master,
 		*master = 0;
 		prot = IPPROTO_UDP;
 	}
-	if (mask && *master)
-		NDPI_BITMASK_ADD(*mask, *master);
 	return prot;
 }
 
@@ -250,7 +245,7 @@ static int tdb_load_hit(FILE * fp, struct hit_record *h)
 	return len;
 }
 
-int transform_one_rule(struct rule *rule, NDPI_PROTOCOL_BITMASK * mask)
+int transform_one_rule(struct rule *rule)
 {
 	if (rule->human_saddr[0])
 		get_ip(rule->human_saddr, &rule->saddr0, &rule->saddr1);
@@ -260,8 +255,7 @@ int transform_one_rule(struct rule *rule, NDPI_PROTOCOL_BITMASK * mask)
 
 	if (rule->human_protocol[0])
 		rule->protocol =
-		    get_protocol(rule->human_protocol, &(rule->master_protocol),
-				 mask);
+		    get_protocol(rule->human_protocol, &(rule->master_protocol));
 
 	if (rule->human_action[0]
 	    && (rule->action = get_action(rule->human_action)) == 0) {
@@ -336,10 +330,8 @@ static void parse_one_rule(cJSON * json, struct rule *rule)
 	}
 }
 
-static int load_rules_from_json(const char *data, struct list_head *head,
-				void *ndpi_mask)
+static int load_rules_from_json(const char *data, struct list_head *head)
 {
-	NDPI_PROTOCOL_BITMASK *mask = (NDPI_PROTOCOL_BITMASK *) ndpi_mask;
 	cJSON *json = cJSON_Parse(data);
 	if (!json) {
 		t01_log(T01_WARNING, "Cannot parse json: %s",
@@ -372,7 +364,7 @@ static int load_rules_from_json(const char *data, struct list_head *head,
 		INIT_LIST_HEAD(&rule->hit_head);
 
 		parse_one_rule(item, rule);
-		if (transform_one_rule(rule, mask) < 0) {
+		if (transform_one_rule(rule) < 0) {
 			zfree(rule);
 			continue;
 		}
@@ -392,7 +384,7 @@ out:
 	return ret;
 }
 
-int load_rules(const char *filename, void *ndpi_mask)
+int load_rules(const char *filename)
 {
 	uint32_t dbid;
 	int type, tdbver, i = 0;
@@ -401,8 +393,12 @@ int load_rules(const char *filename, void *ndpi_mask)
 	struct rule *curr_rule;
 
 	fp = fopen(filename, "r");
-	if (fp == NULL)
+	if (fp == NULL) {
+		t01_log(T01_WARNING,
+		"Cannot read rule %s: %s, aborting now", filename, strerror(errno));
+		exit(1);
 		return -1;
+	}
 
 	if (tdb_load_raw(fp, buf, 8) == 0)
 		goto eoferr;
@@ -431,7 +427,7 @@ int load_rules(const char *filename, void *ndpi_mask)
 		data[size] = '\0';
 		fclose(fp);
 
-		ret = load_rules_from_json(data, &rule_list, ndpi_mask);
+		ret = load_rules_from_json(data, &rule_list);
 		zfree(data);
 		return ret;
 	}
@@ -767,7 +763,7 @@ static char *rule2jsonstr(struct rule *rule)
 	return cjson2string(root);
 }
 
-int get_ruleids(char **out, size_t * out_len)
+int get_ruleids(char **out, size_t * out_len, int json)
 {
 	uint32_t *ids;
 	struct list_head *pos;
@@ -788,6 +784,11 @@ int get_ruleids(char **out, size_t * out_len)
 		if (rule->used == 0)
 			continue;
 		ids[i++] = rule->id;
+	}
+	if(!json) {
+		*out = (char*)ids;
+		*out_len = sizeof(uint32_t) * n;
+		return 0;
 	}
 
 	cJSON *array = cJSON_CreateIntArray((int *)ids, n);
@@ -929,7 +930,7 @@ int update_rule(uint32_t id, const char *body, int body_len)
 	new_rule.id = id;
 	new_rule.used = 1;
 	cJSON_Delete(root);
-	if (transform_one_rule(&new_rule, NULL) < 0)
+	if (transform_one_rule(&new_rule) < 0)
 		return -1;
 
 	list_for_each(pos, &rule_list) {
@@ -987,7 +988,7 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 	bzero(&src_rule, sizeof(src_rule));
 	parse_one_rule(root, &src_rule);
 	cJSON_Delete(root);
-	if (transform_one_rule(&src_rule, NULL) < 0)
+	if (transform_one_rule(&src_rule) < 0)
 		return -1;
 
 	/* Find a recycled rule */
@@ -1012,7 +1013,7 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 
 	memcpy(new_rule, &src_rule, offsetof(struct rule, list));
 	new_rule->used = 1;
-	new_rule->id = ++max_id;
+	new_rule->id = src_rule.id ? src_rule.id : ++max_id;
 	dirty++;
 
 	root = cJSON_CreateObject();
@@ -1021,6 +1022,138 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 	*out_len = strlen(*out);
 
 	return 0;
+}
+
+int sync_rules(const char *body, int body_len)
+{
+	char *msg = NULL;
+	struct rule *rules = NULL;
+	int ret = 0;
+	int nrules, i;
+	cJSON *json;
+	struct list_head *pos, *n;
+	struct rule *rule;
+	struct hit_record *hit;
+
+	/* Step 1: parse json rules */
+	if (!(json = cJSON_Parse(body))) {
+		t01_log(T01_WARNING, "Cannot parse json: %s",
+			cJSON_GetErrorPtr());
+		return -3;
+	}
+	nrules = cJSON_GetArraySize(json);
+	if (nrules == 0)
+		goto step1;
+	rules = zmalloc(nrules * sizeof(struct rule));
+	if (!rules) {
+		msg = "Out of memory";
+		ret = -2;
+		goto step1;
+	}
+	for (i = 0; i < nrules; i++) {
+		cJSON *item = cJSON_GetArrayItem(json, i);
+		struct rule *rule = rules + i;
+		if (!item) {
+			t01_log(T01_WARNING, "Cannot parse %d item: %s",
+				i, cJSON_GetErrorPtr());
+			continue;
+		}
+
+		bzero(rule, sizeof(struct rule));
+		parse_one_rule(item, rule);
+		if (transform_one_rule(rule) < 0) 
+			continue;
+		rule->used = 1;
+	}
+step1:
+	cJSON_Delete(json);
+	if (ret < 0) {
+		t01_log(T01_WARNING, "Cannot sync rules: %s", msg);
+		return ret;
+	}
+
+	/* Step 2: Walk through original slave rules and check whether it matches 
+	 * with master rules. If not match delete original slave rule. */
+	list_for_each_safe(pos, n, &rule_list) {
+		rule = list_entry(pos, struct rule, list);
+		if(rule->used == 0) continue;
+		for(i = 0; i < nrules; i++) {
+			if(rule->id == rules[i].id)
+				break;
+		}
+
+		if(i == nrules) { 
+			/* doesn't match, destroy match and hits */
+			struct list_head *pos2, *n2, *hhead;
+			t01_log(T01_NOTICE, "Sync rules: remove rule %d", rule->id);
+			hhead = &rule->hit_head;
+			rule->used = 0;
+			if (list_empty(hhead) == 0) {
+				list_for_each_safe(pos2, n2, hhead) {
+					list_del(pos2);
+					hit = list_entry(pos2, struct hit_record, list);
+					zfree(hit);
+				}
+			}
+			bzero(rule, offsetof(struct rule, list));
+			dirty++;
+		} else {
+			/* id match, check rule's content further */
+			if(memcmp(rule, &rules[i], offsetof(struct rule, protocol)) != 0) {
+				struct list_head *pos2, *n2, *hhead;
+				t01_log(T01_NOTICE, "Sync rules: update rule %d", rule->id);
+				memcpy(rule, &rules[i], offsetof(struct rule, protocol));
+				hhead = &rule->hit_head;
+				if (list_empty(hhead) == 0) {
+					list_for_each_safe(pos2, n2, hhead) {
+						list_del(pos2);
+						hit = list_entry(pos2, struct hit_record, list);
+						zfree(hit);
+					}
+					rule->hits = rule->saved_hits = 0;
+				}
+				dirty++;
+			}
+			rules[i].used = 2;
+		}
+	}
+
+	/* Step 3: Walk through post-processed master rules and insert into original slave rule. */
+	for(i = 0; i < nrules; i++) {
+		struct rule *new_rule = NULL;
+
+		if(rules[i].used == 2) continue;
+		t01_log(T01_NOTICE, "Sync rules: add rule %d", rules[i].id);
+
+		/* Find a recycled rule or malloc new rule */
+		list_for_each(pos, &rule_list) {
+			struct rule *rule2 = list_entry(pos, struct rule, list);
+			if (rule2->used == 0) {
+				new_rule = rule2;
+				break;
+			}
+		}
+		if (!new_rule) {
+			new_rule = zmalloc(sizeof(*new_rule));
+			if (!new_rule) {
+				return -1;
+			}
+			bzero(new_rule, sizeof(*new_rule));
+			INIT_LIST_HEAD(&new_rule->hit_head);
+			list_add_tail(&new_rule->list, &rule_list);
+		}
+
+		memcpy(new_rule, &rules[i], offsetof(struct rule, list));
+		new_rule->used = 1;
+		dirty++;
+		if(new_rule->id > max_id) max_id = new_rule->id;
+		transform_one_rule(new_rule);
+	}
+
+step2:
+	zfree(rules);
+
+	return ret;
 }
 
 struct rule *match_rule_from_packet(void *flow_, void *packet)
@@ -1089,4 +1222,43 @@ struct rule *match_rule_from_packet(void *flow_, void *packet)
 	}
 
 	return NULL;
+}
+
+static int rule_cmp(const void *a, const void *b)
+{
+	struct rule *ra = (struct rule *)a;
+	struct rule *rb = (struct rule *)b;
+	return ra->id - rb->id;
+}
+
+uint64_t calc_crc64_rules()
+{
+	uint64_t cksum = 0;
+	struct list_head *pos;
+	int len, total = 0, i;
+	struct rule *rules = NULL;
+
+	/* Calculate how many valid rules*/
+	list_for_each(pos, &rule_list) {
+		struct rule *rule = list_entry(pos, struct rule, list);
+		if (rule->used == 0)
+			continue;
+		total ++;
+		rules = zrealloc(rules, total * sizeof(struct rule));
+		memcpy(&rules[total-1], rule, sizeof(struct rule));
+	}
+
+	/* Sort rules according to id */
+	qsort(rules, total, sizeof(struct rule), rule_cmp);
+
+	/* Calulcate crc */
+	for(i = 0; i < total; i++) {
+		struct rule *rule = rules + i;
+		len = (char*)&rule->protocol - (char*)rule;
+		cksum = crc64(cksum, (unsigned char*)rule, len);
+	}
+	
+	zfree(rules);
+
+	return cksum;	
 }

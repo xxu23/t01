@@ -82,13 +82,15 @@ struct rule {
 #define T01_MATCH_MATCH 			1
 #define T01_MATCH_REGEX			2
 
-int load_rules(const char *filename, void *ndpi_mask);
+int load_rules(const char *filename);
 
 int save_rules(const char *filename);
 
 int save_rules_background(const char *filename);
 
 void destroy_rules();
+
+uint64_t calc_crc64_rules();
 
 struct rule *match_rule_from_packet(void *flow, void *packet);
 
@@ -97,7 +99,7 @@ int add_one_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
 		       uint8_t smac[], uint8_t dmac[]);
 
 void release_buffer(char **out);
-int get_ruleids(char **out, size_t *out_len);
+int get_ruleids(char **out, size_t *out_len, int json);
 int get_rule(uint32_t id, char **out, size_t *out_len);
 int get_rules(uint32_t *id, size_t len, char **out, size_t *out_len);
 int get_hits(uint32_t rule_id, int offset, int limit, char **out,
@@ -105,5 +107,6 @@ int get_hits(uint32_t rule_id, int offset, int limit, char **out,
 int delete_rule(uint32_t id);
 int update_rule(uint32_t id, const char *body, int body_len);
 int create_rule(const char *body, int body_len, char **out, size_t *out_len);
+int sync_rules(const char *body, int body_len);
 
 #endif /* __RULE_H__ */

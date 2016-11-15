@@ -35,8 +35,10 @@
 #include <unistd.h>
 #include <errno.h>
 #include <inttypes.h>
+
+#include <evhttp.h>
 #include "t01.h"
-#include "ae.h"
+#include "list.h"
 #include "anet.h"
 #include "networking.h"
 #include "rule.h"
@@ -48,7 +50,16 @@
 
 #define MAX_ACCEPTS_PER_CALL 1000
 
-void tcp_server_can_accept(aeEventLoop * el, int fd, void *privdata, int mask)
+static ZLIST_HEAD(slave_list);
+
+struct slave_client {
+	struct list_head list;
+	char ip[16];
+	int port;
+	uint64_t cksum;
+};
+
+void server_can_accept(int fd, short event, void *ptr)
 {
 	int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
 	char cip[16];
@@ -63,7 +74,7 @@ void tcp_server_can_accept(aeEventLoop * el, int fd, void *privdata, int mask)
 			return;
 		}
 		t01_log(T01_NOTICE, "Accepted %s:%d [fd=%d]", cip, cport, cfd);
-		http_client_new(el, cfd, cip, cport);
+		http_client_new(base, cfd, cip, cport);
 	}
 }
 
@@ -201,7 +212,7 @@ static void send_client_reply(struct cmd *cmd, const char *p, size_t sz,
 	const char *ct = content_type;
 	struct http_response *resp;
 
-	resp = http_response_init(200, "OK");
+	resp = http_response_init(cmd->client->base, 200, "OK");
 	http_response_set_header(resp, "Content-Type", ct);
 	http_response_set_body(resp, p, sz);
 	http_response_set_keep_alive(resp, 1);
@@ -227,7 +238,7 @@ static int client_get_ruleids(struct http_client *c, struct cmd *cmd)
 {
 	char *result = NULL;
 	size_t len = 0;
-	get_ruleids(&result, &len);
+	get_ruleids(&result, &len, 1);
 
 	send_client_reply(cmd, result, len, "application/json");
 	release_buffer(&result);
@@ -350,6 +361,59 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 	return 0;
 }
 
+static int client_sync_rules(struct http_client *c, struct cmd *cmd)
+{
+	int ret = sync_rules(cmd->body, cmd->body_len);
+	if (ret == 0) {
+		send_client_reply(cmd, NULL, 0, "application/json");
+	} else {
+		http_send_error(c, 400, "Bad Request");
+	}
+	return ret;
+}
+
+static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
+{
+	int i;
+	int slave_port = 0;
+	uint64_t cksum = 0;
+	struct list_head *pos;
+	struct slave_client *slave = NULL;
+
+	for (i = 0; i < c->query_count; i++) {
+		if (strcasecmp(c->queries[i].key, "port") == 0)
+			slave_port = atoi(c->queries[i].val);
+		else if (strcasecmp(c->queries[i].key, "crc64") == 0)
+			sscanf(c->queries[i].val, "%llx", &cksum);
+	}
+
+	if(slave_port <= 0 || slave_port >= 65535){
+		http_send_error(c, 400, "Bad Request");
+		return -1;
+	}
+
+	
+	list_for_each(pos, &slave_list) {
+		struct slave_client *s = list_entry(pos, struct slave_client, list);
+		if (strcmp(s->ip, c->ip) == 0 && s->port == slave_port) {
+			slave = s;
+			break;
+		}
+	}
+	if(!slave) {
+		slave = zmalloc(sizeof(*slave));
+		bzero(slave, sizeof(*slave));
+		strncpy(slave->ip, c->ip, sizeof(slave->ip));
+		slave->port = slave_port;
+		list_add_tail(&slave->list, &slave_list);
+		t01_log(T01_NOTICE, "New slave client %s:%d", c->ip, slave_port);
+	}
+	slave->cksum = cksum;
+
+	send_client_reply(cmd, "OK", 2, "application/json");
+	return 0;
+}
+
 static struct http_cmd_table {
 	int method;
 	const char *command;
@@ -364,6 +428,9 @@ static struct http_cmd_table {
 	{ HTTP_PUT, "rule", 1, client_update_rule}, 
 	{ HTTP_DELETE, "rule", 1, client_delete_rule},
 	{ HTTP_GET, "info", 0, client_get_server_info},
+	{ HTTP_POST, "registry", 0, client_registry_cluster},
+	{ HTTP_GET, "registry", 0, client_registry_cluster},
+	{ HTTP_POST, "rulessync", 0, client_sync_rules},
 };
 
 static void cmd_dispatch(struct http_client *c, struct cmd *cmd, int method)
@@ -431,4 +498,82 @@ int cmd_run_delete(struct http_client *c, const char *uri, size_t uri_len)
 	cmd_free(cmd);
 
 	return 0;
+}
+
+void slave_request_cb(struct evhttp_request *req, void *arg) {
+	struct evhttp_connection *conn = arg;
+	if(!req) {
+		evhttp_connection_free(conn);
+		return;
+	}
+	size_t len = evbuffer_get_length(req->input_buffer);
+	unsigned char* str = evbuffer_pullup(req->input_buffer, len);
+}
+
+int slave_registry_master(const char *master_ip, int master_port, int self_port)
+{
+	struct evhttp_connection *conn;
+	struct evhttp_request *req;
+	uint64_t cksum = calc_crc64_rules();
+	char path[128];
+
+	conn = evhttp_connection_base_new(base, NULL, master_ip, master_port);
+ 	req = evhttp_request_new(slave_request_cb, conn);
+	evhttp_connection_free_on_completion(conn);
+	evhttp_connection_set_timeout(conn, 5);
+	evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
+	snprintf(path, 128, "/registry?port=%d&crc64=%llx", self_port, cksum);
+	evhttp_make_request(conn, req, EVHTTP_REQ_GET, path);
+
+	return 0;
+}
+
+void master_request_syncrules_cb(struct evhttp_request *req, void *arg) {
+	struct evhttp_connection *conn = arg;
+	if(!req) {
+		t01_log(T01_NOTICE,"timeout");
+		evhttp_connection_free(conn);
+		return;
+	}
+}
+
+int master_check_slaves()
+{
+	uint64_t cksum = calc_crc64_rules();
+	struct list_head *pos;
+	struct evhttp_connection *conn;
+	struct evhttp_request *req;
+	struct evbuffer *buffer;
+	uint32_t *ids = NULL;
+	size_t len = 0, len2 = 0;
+	char *rules = NULL;
+	char buf[32];
+	
+	list_for_each(pos, &slave_list) {
+		struct slave_client *s = list_entry(pos, struct slave_client, list);
+		if(s->cksum == cksum) continue;
+
+		t01_log(T01_NOTICE, "CRC not match: master %llx VS slave[%s:%d] %llx",
+		    cksum, s->ip, s->port, s->cksum);
+
+		if(!ids && get_ruleids((char**)&ids, &len, 0) < 0) 
+			continue;
+		len /= sizeof(uint32_t);
+		if(!rules && get_rules(ids, len, &rules, &len2) < 0)
+			continue;
+
+		conn = evhttp_connection_base_new(base, NULL, s->ip, s->port);
+		req = evhttp_request_new(master_request_syncrules_cb, conn);
+		buffer = evhttp_request_get_output_buffer(req);
+		
+		evhttp_connection_free_on_completion(conn);
+		evhttp_connection_set_timeout(conn, 5);
+		evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
+		
+		evbuffer_add(buffer, rules, len2);
+		evutil_snprintf(buf, sizeof(buf)-1, "%lu", (unsigned long)len2);
+		evhttp_add_header(req->output_headers, "Content-Length", buf);
+
+		evhttp_make_request(conn, req, EVHTTP_REQ_POST, "/rulessync");
+	}
 }

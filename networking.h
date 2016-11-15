@@ -33,7 +33,7 @@
 
 struct http_client;
 
-void tcp_server_can_accept(aeEventLoop * el, int fd, void *privdata, int mask);
+void server_can_accept(int fd, short event, void *ptr);
 
 int cmd_run_get(struct http_client *client, const char *uri, size_t uri_len);
 int cmd_run_post(struct http_client *client, const char *uri, size_t uri_len,
@@ -41,5 +41,9 @@ int cmd_run_post(struct http_client *client, const char *uri, size_t uri_len,
 int cmd_run_put(struct http_client *client, const char *uri, size_t uri_len,
 		const char *body, size_t body_len);
 int cmd_run_delete(struct http_client *client, const char *uri, size_t uri_len);
+
+int slave_registry_master(const char *master_ip, int master_port, int self_port);
+
+int master_check_slaves();
 
 #endif /* __NETWORKING_H__ */

@@ -131,7 +131,10 @@ static void (*zmalloc_oom_handler)(size_t) = zmalloc_default_oom;
 void *zmalloc(size_t size) {
     void *ptr = malloc(size+PREFIX_SIZE);
 
-    if (!ptr) zmalloc_oom_handler(size);
+    if (!ptr) {
+        zmalloc_oom_handler(size);
+        return NULL;
+    }
 #ifdef HAVE_MALLOC_SIZE
     update_zmalloc_stat_alloc(zmalloc_size(ptr));
     return ptr;
@@ -147,7 +150,10 @@ void *zcalloc(size_t n, size_t size) {
     size *= n;
     void *ptr = calloc(1, size+PREFIX_SIZE);
 
-    if (!ptr) zmalloc_oom_handler(size);
+    if (!ptr) {
+        zmalloc_oom_handler(size);
+        return NULL;
+    }
 #ifdef HAVE_MALLOC_SIZE
     update_zmalloc_stat_alloc(zmalloc_size(ptr));
     return ptr;
@@ -178,7 +184,10 @@ void *zrealloc(void *ptr, size_t size) {
     realptr = (char*)ptr-PREFIX_SIZE;
     oldsize = *((size_t*)realptr);
     newptr = realloc(realptr,size+PREFIX_SIZE);
-    if (!newptr) zmalloc_oom_handler(size);
+    if (!newptr) {
+        zmalloc_oom_handler(size);
+        return NULL:
+    }
 
     *((size_t*)newptr) = size;
     update_zmalloc_stat_free(oldsize);
@@ -222,6 +231,7 @@ void zfree(void *ptr) {
 char *zstrdup(const char *s) {
     size_t l = strlen(s)+1;
     char *p = zmalloc(l);
+    if(!p) return NULL;
 
     memcpy(p,s,l);
     return p;

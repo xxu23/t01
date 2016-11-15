@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, YAO Wei <njustyw at gmail dot com>
+ * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,40 +27,16 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _T01_H_
-#define _T01_H_
+#ifndef __REDIS_UTIL_H
+#define __REDIS_UTIL_H
 
-enum t01_work_mode {NONE_MODE=0x00, NETMAP_MODE=0x01, SLAVE_MODE=0x02, MASTER_MODE=0x04};
-
-extern enum t01_work_mode work_mode;
-
-extern struct event_base *base;
-
-extern struct list_head rule_list;
-extern int dirty;
-extern int dirty_before_bgsave;
-extern lastbgsave_status;
-extern time_t lastsave;
-extern pid_t tdb_child_pid;
-
-extern time_t upstart;
-extern char ifname[32], ofname[32];
-
-extern uint64_t total_flow_bytes;
-extern uint64_t raw_packet_count;
-extern uint64_t ip_packet_count;
-extern uint64_t ip_packet_count_out;
-extern uint64_t total_wire_bytes, total_ip_bytes;
-extern uint64_t total_ip_bytes_out;
-extern uint64_t tcp_count, udp_count;
-extern uint64_t hits; 
-extern uint64_t bytes_per_second_in;
-extern uint64_t bytes_per_second_out;
-extern uint64_t pkts_per_second_in;
-extern uint64_t pkts_per_second_out;
-
-void close_listening_sockets();
-
-void release_memory();
+int stringmatchlen(const char *p, int plen, const char *s, int slen, int nocase);
+int stringmatch(const char *p, const char *s, int nocase);
+long long memtoll(const char *p, int *err);
+int ll2string(char *s, size_t len, long long value);
+int string2ll(const char *s, size_t slen, long long *value);
+int string2l(const char *s, size_t slen, long *value);
+int d2string(char *buf, size_t len, double value);
+int pathIsBaseName(char *path);
 
 #endif

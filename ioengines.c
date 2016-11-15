@@ -41,7 +41,7 @@
 #include "msgpack.h"
 #include "logger.h"
 
-static LIST_HEAD(engine_list);
+static ZLIST_HEAD(engine_list);
 
 void unregister_ioengine(struct ioengine_ops *ops)
 {
