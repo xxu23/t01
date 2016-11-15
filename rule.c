@@ -52,7 +52,7 @@
 #define T01_TDB_TYPE_HIT  2
 #define T01_TDB_TYPE_EOF  255
 
-#define MAX_HITS_PER_RULE 5000
+#define MAX_HITS_PER_RULE 16*1024*4
 
 static uint32_t max_id;
 
@@ -64,6 +64,8 @@ static inline uint8_t get_action(const char *action)
 		return T01_ACTION_REDIRECT;
 	else if (strcmp(action, "confuse") == 0)
 		return T01_ACTION_CONFUSE;
+	else if (strcmp(action, "mirror") == 0)
+		return T01_ACTION_MIRROR;
 	return 0;
 }
 
@@ -1155,14 +1157,41 @@ step2:
 
 	return ret;
 }
-
-struct rule *match_rule_from_packet(void *flow_, void *packet)
+struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow, void *packet)
 {
-	struct ndpi_flow_info *flow = (struct ndpi_flow_info *)flow_;
 	struct list_head *pos;
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
-		if (rule->used == 0)
+		if (rule->used == 0 || rule->action != T01_ACTION_MIRROR)
+			continue;
+
+		if (rule->dport || rule->sport || rule->daddr0 || rule->saddr0) {
+			if (rule->dport && rule->dport != flow->dst_port)
+				continue;
+			if (rule->daddr0
+			    && (flow->dst_ip < rule->daddr0
+				|| flow->dst_ip > rule->daddr1))
+				continue;
+			if (rule->sport && rule->sport != flow->src_port)
+				continue;
+			if (rule->saddr0
+			    && (flow->src_ip < rule->saddr0
+				|| flow->src_ip > rule->saddr1))
+				continue;
+		}
+
+		return rule;
+	}
+
+	return NULL;
+}
+
+struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, void *packet)
+{
+	struct list_head *pos;
+	list_for_each(pos, &rule_list) {
+		struct rule *rule = list_entry(pos, struct rule, list);
+		if (rule->used == 0 || rule->action == T01_ACTION_MIRROR)
 			continue;
 
 		if (flow->protocol == NDPI_PROTOCOL_UNKNOWN)

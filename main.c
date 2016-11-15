@@ -131,8 +131,20 @@ struct filter_buffer {
 	uint16_t dport;
 	char buffer[0];
 };
+ 
+static int mirror_filter_from_rule(struct ndpi_flow_info *flow, void *packet)
+{
+	struct rule *rule = match_rule_before_mirrored(flow, packet);
+	if(!rule) return 0;
+	
+	add_one_hit_record(rule, flow->last_seen / 1000,
+			   flow->src_ip, flow->dst_ip,
+			   flow->src_port, flow->dst_port,
+			   (uint8_t *) packet + 6, (uint8_t *) packet);
+	return 1;
+}
 
-static int netflow_data_filter(struct ndpi_flow_info *flow)
+static int netflow_data_filter(struct ndpi_flow_info *flow, void *packet)
 {
 	int i;
 
@@ -470,7 +482,6 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
 		if (likely(next_idx != bak_consume_idx)) {
 			struct backup_data *d = &backup_copy[bak_produce_idx];
 			struct nm_pkthdr *h = (struct nm_pkthdr *)header;
-			//printf("P %d %d\n", bak_produce_idx, flow->protocol);
 
 			d->len = h->len;
 			d->buffer = zmalloc(h->len);
@@ -483,7 +494,7 @@ next:
 		}
 	}
 
-	struct rule *rule = match_rule_from_packet(flow, packet);
+	struct rule *rule = match_rule_after_detected(flow, packet);
 	if (!rule)
 		return;
 	add_one_hit_record(rule, flow->last_seen / 1000,
@@ -584,8 +595,9 @@ struct ndpi_workflow *setup_detection()
 	ndpi_workflow_set_flow_detected_callback(workflow,
 						 on_protocol_discovered,
 						 (void *)(uintptr_t) workflow);
-	ndpi_set_mirror_data_callback(workflow, netflow_data_clone,
-				      netflow_data_filter);
+	ndpi_set_mirror_data_callback(workflow, mirror_filter_from_rule,
+						netflow_data_clone,
+						netflow_data_filter);
 
 	// enable all protocols
 	NDPI_BITMASK_SET_ALL(ndpi_mask);
@@ -652,7 +664,6 @@ static void *backup_thread(void *args)
 						   flow->detected_protocol.
 						   protocol));
 
-		//printf("C %d %d %s\n", bak_consume_idx, flow->protocol, protocol);
 		store_payload_via_ioengine(&backup_engine, flow, protocol,
 					   d->buffer, d->len);
 
@@ -837,7 +848,7 @@ static void *libevent_thread(void *args)
 	if(work_mode & NETMAP_MODE) {
 		event_assign(&ev2, base, -1, EV_PERSIST, statistics_cb, (void*) &ev2);
 		evutil_timerclear(&tv2);
-		tv2.tv_sec = 2000;		
+		tv2.tv_sec = 2;		
 		event_add(&ev2, &tv2);
 	}
 	

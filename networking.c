@@ -530,10 +530,25 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 
 void master_request_syncrules_cb(struct evhttp_request *req, void *arg) {
 	struct evhttp_connection *conn = arg;
+	char *address;
+	uint16_t port;
+	int code;
+
+	evhttp_connection_get_peer(conn, &address, &port);
 	if(!req) {
-		t01_log(T01_NOTICE,"timeout");
+		t01_log(T01_WARNING, "Failed to connect to slave %s:%d",
+			address, port);
 		evhttp_connection_free(conn);
 		return;
+	}
+
+	code = evhttp_request_get_response_code(req);
+	if(code == 200) {
+		t01_log(T01_WARNING, "Succeed to sync rules with slave %s:%d",
+			address, port);
+	} else {
+		t01_log(T01_WARNING, "Failed to sync rules with slave %s:%d",
+			address, port);
 	}
 }
 

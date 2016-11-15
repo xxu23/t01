@@ -434,9 +434,14 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
 
       *src = newflow->src_id, *dst = newflow->dst_id;
 
-      if(workflow->__filter_callback && workflow->__data_clone_callback) {
-        if(workflow->__filter_callback(newflow))
-          workflow->__data_clone_callback(workflow->__packet_data, workflow->__packet_header->len, 
+      if(workflow->__data_clone_callback) {
+        data_filter_callback_ptr callback1 = workflow->__filter_callback;
+        data_filter_callback_ptr callback2 = workflow->__rules_filter_callback;
+
+        if((callback1 && callback1(newflow, workflow->__packet_data)) ||
+            (callback2 && callback2(newflow, workflow->__packet_data)))
+          workflow->__data_clone_callback(workflow->__packet_data, 
+                                          workflow->__packet_header->len, 
                                           newflow->protocol, workflow->last_time,
                                           newflow->src_ip, newflow->src_port,
                                           newflow->dst_ip, newflow->dst_port);
@@ -453,12 +458,16 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
     else
       *src = flow->dst_id, *dst = flow->src_id;
 
-    if(workflow->__filter_callback && workflow->__data_clone_callback) {
-      if(workflow->__filter_callback(flow))
-        workflow->__data_clone_callback(workflow->__packet_data, workflow->__packet_header->len, 
-                                          flow->protocol, workflow->last_time,
-                                          flow->src_ip, flow->src_port,
-                                          flow->dst_ip, flow->dst_port);
+    if(workflow->__data_clone_callback) {
+      data_filter_callback_ptr callback1 = workflow->__filter_callback;
+      data_filter_callback_ptr callback2 = workflow->__rules_filter_callback;
+      if((callback1 && callback1(flow, workflow->__packet_data)) ||
+            (callback2 && callback2(flow, workflow->__packet_data)))
+        workflow->__data_clone_callback(workflow->__packet_data, 
+                                        workflow->__packet_header->len, 
+                                        flow->protocol, workflow->last_time,
+                                        flow->src_ip, flow->src_port,
+                                        flow->dst_ip, flow->dst_port);
     }
 
     if(flag == 0) flow->src_ipid = id, flow->src_ttl = ttl;
