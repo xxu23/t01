@@ -1018,10 +1018,7 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 	new_rule->id = src_rule.id ? src_rule.id : ++max_id;
 	dirty++;
 
-	root = cJSON_CreateObject();
-	cJSON_AddNumberToObject(root, "id", new_rule->id);
-	*out = cjson2string(root);
-	*out_len = strlen(*out);
+	get_rule(new_rule->id, out, out_len);
 
 	return 0;
 }
