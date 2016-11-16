@@ -315,35 +315,6 @@ static void signal_hander(int sig)
 	event_base_loopexit(base, NULL);
 }
 
-static char *ipproto_name(u_short proto_id)
-{
-	static char proto[8];
-
-	switch (proto_id) {
-	case IPPROTO_TCP:
-		return ("TCP");
-		break;
-	case IPPROTO_UDP:
-		return ("UDP");
-		break;
-	case IPPROTO_ICMP:
-		return ("ICMP");
-		break;
-	case IPPROTO_ICMPV6:
-		return ("ICMPV6");
-		break;
-	case 112:
-		return ("VRRP");
-		break;
-	case IPPROTO_IGMP:
-		return ("IGMP");
-		break;
-	}
-
-	snprintf(proto, sizeof(proto), "%u", proto_id);
-	return (proto);
-}
-
 static char *format_traffic(float numBits, int bits, char *buf)
 {
 	char unit;
@@ -597,9 +568,10 @@ struct ndpi_workflow *setup_detection()
 	ndpi_workflow_set_flow_detected_callback(workflow,
 						 on_protocol_discovered,
 						 (void *)(uintptr_t) workflow);
-	ndpi_set_mirror_data_callback(workflow, mirror_filter_from_rule,
-						netflow_data_clone,
-						netflow_data_filter);
+	ndpi_set_mirror_data_callback(workflow, 
+						mirror_filter_from_rule,
+						mirror ? netflow_data_clone: NULL,
+						mirror ? netflow_data_filter : NULL);
 
 	// enable all protocols
 	NDPI_BITMASK_SET_ALL(ndpi_mask);
@@ -618,6 +590,8 @@ struct ndpi_workflow *setup_detection()
 
 static void *mirror_thread(void *args)
 {
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+
 	while (!shutdown_app) {
 		struct list_head *pos, *n;
 		struct filter_buffer *fb;
@@ -635,6 +609,7 @@ static void *mirror_thread(void *args)
 		}
 	}
 
+	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
 	return NULL;
 }
 
@@ -642,6 +617,7 @@ static void *backup_thread(void *args)
 {
 	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
 	char protocol[64];
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
 	while (!shutdown_app) {
 		if (bak_consume_idx == bak_produce_idx) {
@@ -676,6 +652,7 @@ next:
 			bak_consume_idx = 0;
 	}
 
+	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
 	return NULL;
 }
 
@@ -837,6 +814,7 @@ static void *libevent_thread(void *args)
 	struct timeval tv2, tv3, tv4;
 
 	/* initialize libevent */
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 	base = event_base_new();
 
 	/* start rule management server */
@@ -874,6 +852,8 @@ static void *libevent_thread(void *args)
 	}
 
 	event_base_dispatch(base);
+	
+	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
 }
 
 static inline int receive_packets(struct netmap_ring *ring,
@@ -904,6 +884,7 @@ static void *netmap_thread(void *args)
 	struct netmap_ring *rxring = NULL;
 	struct netmap_if *nifp = nmr->nifp;
 
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 	memset(pfd, 0, sizeof(pfd));
 	pfd[0].fd = nmr->fd;
 	pfd[0].events = POLLIN;
@@ -930,6 +911,7 @@ static void *netmap_thread(void *args)
 		ndpi_workflow_clean_idle_flows(workflow, 0);
 	}
 
+	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
 	return NULL;
 }
 
@@ -971,18 +953,21 @@ static void main_thread()
 	}
 }
 
-
-static void init_netmap()
+static void init_system()
 {
-	struct nmreq req;
-	char interface[64];
-
 	zmalloc_enable_thread_safeness();
 	event_set_mem_functions(zmalloc, zrealloc, zfree);
 
 	init_log(verbose, logfile);
 	lastsave = upstart = time(NULL);
 	gettimeofday(&upstart_tv, NULL);
+}
+
+
+static void init_netmap()
+{
+	struct nmreq req;
+	char interface[64];
 
 	manage_interface_promisc_mode(ifname, 1);
 	t01_log(T01_DEBUG,
@@ -1053,6 +1038,7 @@ static void init_engine()
 		zfree(temp);
 	}
 
+	pthread_spin_init(&mirror_lock, 0);
 	if (engine[0] && engine_opt[0]) {
 		if (load_ioengine(&backup_engine, engine) < 0 ||
 		    load_ioengine(&mirror_engine, engine) < 0) {
@@ -1073,8 +1059,6 @@ static void init_engine()
 		} else {
 			backup = 1;
 		}
-
-		pthread_spin_init(&mirror_lock, 0);
 	}
 }
 
@@ -1164,9 +1148,10 @@ int main(int argc, char **argv)
 {
 	parse_options(argc, argv);
 
+	init_system();
+	init_engine();
 	if(work_mode & NETMAP_MODE)
 		init_netmap();
-	init_engine();
 	if(work_mode & NETMAP_MODE || work_mode & MASTER_MODE)
 		init_rulemgmt();
 
