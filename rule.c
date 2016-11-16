@@ -45,8 +45,10 @@
 #include "ndpi_protocol_ids.h"
 #include "logger.h"
 #include "zmalloc.h"
+#include "util.h"
 
-#define T01_TDB_VERSION 1
+#define T01_TDB_VERSION 2
+#define T01_TDB_MINI_VERSION 1
 
 #define T01_TDB_TYPE_RULE 1
 #define T01_TDB_TYPE_HIT  2
@@ -55,6 +57,7 @@
 #define MAX_HITS_PER_RULE 16*1024*4
 
 static uint32_t max_id;
+static uint8_t tdbver;
 
 static inline uint8_t get_action(const char *action)
 {
@@ -241,7 +244,11 @@ static int tdb_load_rule(FILE * fp, struct rule *r)
 
 static int tdb_load_hit(FILE * fp, struct hit_record *h)
 {
-	size_t len = (char *)&h->list - (char *)h;
+	size_t len;
+	if(tdbver == 1) 
+		len = (char *)&h->localip - (char *)h;
+	else
+		len = (char *)&h->list - (char *)h;
 	if (fread(h, 1, len, fp) < len)
 		return -1;
 	return len;
@@ -389,7 +396,7 @@ out:
 int load_rules(const char *filename)
 {
 	uint32_t dbid;
-	int type, tdbver, i = 0;
+	int type, i = 0;
 	char buf[8];
 	FILE *fp;
 	struct rule *curr_rule;
@@ -435,9 +442,9 @@ int load_rules(const char *filename)
 	}
 
 	tdbver = atoi(buf + 3);
-	if (tdbver != T01_TDB_VERSION) {
+	if (tdbver < T01_TDB_MINI_VERSION) {
 		fclose(fp);
-		t01_log(T01_WARNING, "Can't handle TDB format version %d",
+		t01_log(T01_WARNING, "Can't handle TDB format early than version %d",
 			tdbver);
 		return -1;
 	}
@@ -491,7 +498,8 @@ eoferr:			/* unexpected end of file is handled here with a fatal exit */
 int add_one_hit_record(struct rule *r, uint64_t time,
 		       uint32_t saddr, uint32_t daddr,
 		       uint16_t sport, uint16_t dport,
-		       uint8_t smac[], uint8_t dmac[])
+		       uint8_t smac[], uint8_t dmac[], 
+			 uint32_t localip, uint8_t proto, uint16_t pktlen)
 {
 	struct hit_record *h = zmalloc(sizeof(*h));
 	if (!h)
@@ -504,6 +512,9 @@ int add_one_hit_record(struct rule *r, uint64_t time,
 	h->daddr = daddr;
 	h->sport = sport;
 	h->dport = dport;
+	h->localip = localip;
+	h->pktlen = pktlen;
+	h->proto = proto;
 	memcpy(h->smac, smac, 6);
 	memcpy(h->dmac, dmac, 6);
 
@@ -854,6 +865,7 @@ static cJSON *hit2cjson(struct hit_record *hit)
 	cJSON_AddNumberToObject(root, "id", hit->id);
 	cJSON_AddNumberToObject(root, "rule_id", hit->rule_id);
 	cJSON_AddNumberToObject(root, "time", hit->time);
+	cJSON_AddNumberToObject(root, "pktlen", hit->pktlen);
 	if (hit->sport)
 		cJSON_AddNumberToObject(root, "sport", hit->sport);
 	if (hit->dport)
@@ -867,6 +879,16 @@ static cJSON *hit2cjson(struct hit_record *hit)
 	if (hit->daddr) {
 		inet_ntop(AF_INET, &hit->daddr, ip, sizeof(ip));
 		cJSON_AddStringToObject(root, "daddr", ip);
+	}
+
+	if (hit->localip) {
+		inet_ntop(AF_INET, &hit->localip, ip, sizeof(ip));
+		cJSON_AddStringToObject(root, "localip", ip);
+	}
+
+	{
+		strcpy(ip, ipproto_name(hit->proto));
+		cJSON_AddStringToObject(root, "proto", ip);
 	}
 
 	sprintf(ip, "%02x-%02x-%02x-%02x-%02x-%02x",

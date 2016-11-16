@@ -478,7 +478,7 @@ static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
 	}
 	slave->cksum = cksum;
 
-	send_client_reply(cmd, "OK", 2, "application/json");
+	send_client_reply(cmd, NULL, 0, "application/json");
 	return 0;
 }
 

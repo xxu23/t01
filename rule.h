@@ -43,6 +43,9 @@ struct hit_record {
 	uint8_t smac[6];
 	uint8_t dmac[6];
 	uint64_t time;
+	uint32_t localip;
+	uint8_t proto;
+	uint16_t pktlen;
 	struct list_head list;
 };
 
@@ -99,8 +102,9 @@ struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, void *packet
 struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow, void *packet);
 
 int add_one_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
-		       uint32_t daddr, uint16_t sport, uint16_t dport,
-		       uint8_t smac[], uint8_t dmac[]);
+		 		uint32_t daddr, uint16_t sport, uint16_t dport,
+				uint8_t smac[], uint8_t dmac[], uint32_t localip,
+				uint8_t proto, uint16_t pktlen);
 
 void release_buffer(char **out);
 

@@ -140,7 +140,8 @@ static int mirror_filter_from_rule(struct ndpi_flow_info *flow, void *packet)
 	add_one_hit_record(rule, flow->last_seen / 1000,
 			   flow->src_ip, flow->dst_ip,
 			   flow->src_port, flow->dst_port,
-			   (uint8_t *) packet + 6, (uint8_t *) packet);
+			   (uint8_t *) packet + 6, (uint8_t *) packet,
+			   0, flow->protocol, flow->pktlen);
 	return 1;
 }
 
@@ -500,7 +501,8 @@ next:
 	add_one_hit_record(rule, flow->last_seen / 1000,
 			   flow->src_ip, flow->dst_ip,
 			   flow->src_port, flow->dst_port,
-			   (uint8_t *) packet + 6, (uint8_t *) packet);
+			   (uint8_t *) packet + 6, (uint8_t *) packet,
+			   0, flow->protocol, flow->pktlen);
 
 	char result[1500] = { 0 };
 	int len = make_packet(rule, packet, result, sizeof(result), flow);

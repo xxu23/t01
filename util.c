@@ -37,6 +37,7 @@
 #include <sys/time.h>
 #include <float.h>
 #include <stdint.h>
+#include <arpa/inet.h>
 
 #include "util.h"
 
@@ -474,4 +475,36 @@ void getRandomHexChars(char *p, unsigned int len) {
  * environments where Redis runs. */
 int pathIsBaseName(char *path) {
     return strchr(path,'/') == NULL && strchr(path,'\\') == NULL;
+}
+
+char *ipproto_name(uint8_t proto_id)
+{
+	static char proto[8];
+
+	switch (proto_id) {
+	case IPPROTO_TCP:
+		return ("TCP");
+		break;
+	case IPPROTO_UDP:
+		return ("UDP");
+		break;
+	case IPPROTO_ICMP:
+		return ("ICMP");
+		break;
+	case IPPROTO_ICMPV6:
+		return ("ICMPV6");
+		break;
+	case 112:
+		return ("VRRP");
+		break;
+	case IPPROTO_IGMP:
+		return ("IGMP");
+		break;
+	default:
+		return ("UNKNOWN");
+		break;
+	}
+
+	snprintf(proto, sizeof(proto), "%u", proto_id);
+	return (proto);
 }

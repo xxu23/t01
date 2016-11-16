@@ -553,6 +553,7 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
     flow->packets++, flow->bytes += rawsize;
     flow->last_seen = time;
     flow->payload_offset = payload-(u_int8_t *)workflow->__packet_data;
+    flow->pktlen = workflow->__packet_header->len;
   } else {
     return(0);
   }

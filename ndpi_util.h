@@ -62,6 +62,7 @@ typedef struct ndpi_flow_info {
   u_int8_t payload_offset;
   u_int8_t src_ttl;
   u_int8_t dst_ttl;
+  u_int16_t pktlen;
   u_int64_t last_seen;
   u_int64_t bytes;
   u_int32_t packets;
