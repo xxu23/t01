@@ -54,10 +54,23 @@ static ZLIST_HEAD(slave_list);
 
 struct slave_client {
 	struct list_head list;
+	int online;
 	char ip[16];
 	int port;
 	uint64_t cksum;
 };
+
+static void mark_slave_offline(const char *ip, int port)
+{
+	struct list_head *pos;
+	list_for_each(pos, &slave_list) {
+		struct slave_client *s = list_entry(pos, struct slave_client, list);
+		if (strcmp(s->ip, ip) == 0 && s->port == port) {
+			s->online = 0;
+			break;
+		}
+	}
+}
 
 void server_can_accept(int fd, short event, void *ptr)
 {
@@ -206,6 +219,19 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 	return cmd;
 }
 
+static void send_client_reply2(struct http_client *c, const char *p, 
+				size_t sz, const char *content_type)
+{
+	const char *ct = content_type;
+	struct http_response *resp;
+
+	resp = http_response_init(c->base, 200, "OK");
+	http_response_set_header(resp, "Content-Type", ct);
+	http_response_set_body(resp, p, sz);
+	http_response_set_keep_alive(resp, 1);
+	http_response_write(resp, c->fd);
+}
+
 static void send_client_reply(struct cmd *cmd, const char *p, size_t sz,
 			      const char *content_type)
 {
@@ -307,6 +333,7 @@ void master_sync_rule_cb(struct evhttp_request *req, void *arg) {
 		t01_log(T01_WARNING, "Failed to connect to slave %s:%d",
 			address, port);
 		evhttp_connection_free(conn);
+		mark_slave_offline(address, port);
 		return;
 	}
 
@@ -315,6 +342,8 @@ void master_sync_rule_cb(struct evhttp_request *req, void *arg) {
 		t01_log(T01_WARNING, "Succeed to sync rule with slave %s:%d",
 			address, port);
 	} else {
+		if(code == 0)
+			mark_slave_offline(address, port);
 		t01_log(T01_WARNING, "Failed to sync rule with slave %s:%d",
 			address, port);
 	}
@@ -406,26 +435,119 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 	cJSON *root = cJSON_CreateObject();
 	char *result;
 	
-	cJSON_AddStringToObject(root, "iface", ifname);
-	cJSON_AddStringToObject(root, "oface", ofname[0]?ofname:ifname);
 	cJSON_AddNumberToObject(root, "upstart", upstart);
 	cJSON_AddNumberToObject(root, "now", time(NULL));
-	cJSON_AddNumberToObject(root, "total_pkts_in", ip_packet_count);
-	cJSON_AddNumberToObject(root, "total_pkts_out", ip_packet_count_out);
-	cJSON_AddNumberToObject(root, "total_bytes_in", total_ip_bytes);
-	cJSON_AddNumberToObject(root, "total_bytes_out", total_ip_bytes_out);
-	cJSON_AddNumberToObject(root, "avg_pkts_in", pkts_per_second_in);
-	cJSON_AddNumberToObject(root, "avg_pkts_out", pkts_per_second_out);
-	cJSON_AddNumberToObject(root, "avg_bytes_in", bytes_per_second_in);
-	cJSON_AddNumberToObject(root, "avg_bytes_out", bytes_per_second_out);
-	cJSON_AddNumberToObject(root, "hits", hits);
-	cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
-	
+	if(work_mode & NETMAP_MODE) {
+		cJSON_AddStringToObject(root, "iface", ifname);
+		cJSON_AddStringToObject(root, "oface", ofname[0]?ofname:ifname);
+		cJSON_AddNumberToObject(root, "total_pkts_in", ip_packet_count);
+		cJSON_AddNumberToObject(root, "total_pkts_out", ip_packet_count_out);
+		cJSON_AddNumberToObject(root, "total_bytes_in", total_ip_bytes);
+		cJSON_AddNumberToObject(root, "total_bytes_out", total_ip_bytes_out);
+		cJSON_AddNumberToObject(root, "avg_pkts_in", pkts_per_second_in);
+		cJSON_AddNumberToObject(root, "avg_pkts_out", pkts_per_second_out);
+		cJSON_AddNumberToObject(root, "avg_bytes_in", bytes_per_second_in);
+		cJSON_AddNumberToObject(root, "avg_bytes_out", bytes_per_second_out);
+		cJSON_AddNumberToObject(root, "hits", hits);
+		cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
+	} else {
+		struct list_head *pos;
+		cJSON *array = cJSON_CreateArray(), *item;
+		struct slave_client *s;
+
+		list_for_each(pos, &slave_list) {
+			s = list_entry(pos, struct slave_client, list);
+			item = cJSON_CreateObject();
+			cJSON_AddStringToObject(item, "ip", s->ip);
+			cJSON_AddNumberToObject(item, "port", s->port);
+			cJSON_AddNumberToObject(item, "online", s->online);
+			cJSON_AddItemToArray(array, item);
+		}
+		cJSON_AddItemToObject(root, "nodes", array);
+	}
+
 	result = cJSON_Print(root);
 	send_client_reply(cmd, result, strlen(result), "application/json");
 
 	cJSON_Delete(root);
 	cJSON_FreePrint(result);
+	return 0;
+}
+
+struct master_ev_args
+{
+	struct evhttp_connection *conn;
+	struct http_client *client;
+};
+
+void master_get_info_cb(struct evhttp_request *req, void *arg) {
+	struct master_ev_args *ev_arg = arg;
+	struct evhttp_connection *conn = ev_arg->conn;
+	struct http_client *client = ev_arg->client;
+	char *address;
+	uint16_t port;
+	int code;
+
+	evhttp_connection_get_peer(conn, &address, &port);
+	if(!req) {
+		t01_log(T01_WARNING, "Failed to connect to slave %s:%d",
+			address, port);
+		evhttp_connection_free(conn);
+		mark_slave_offline(address, port);
+		zfree(ev_arg);
+		return;
+	}
+
+	code = evhttp_request_get_response_code(req);
+	if(code == 200) {
+		size_t len = evbuffer_get_length(req->input_buffer);
+		unsigned char* str = evbuffer_pullup(req->input_buffer, len);
+		send_client_reply2(client, str, len, "application/json");
+	} else {
+		if(code == 0)
+			mark_slave_offline(address, port);
+		t01_log(T01_WARNING, "Failed to sync rule with slave %s:%d",
+			address, port);
+	}
+	zfree(ev_arg);
+}
+
+static int client_get_slave_info(struct http_client *c, struct cmd *cmd)
+{
+	char ip[48] = {0};
+	int port = 0;
+	int query_count = c->query_count, i, j = 0;
+	struct evhttp_connection *conn;
+	struct evhttp_request *req;
+	struct evbuffer *buffer;
+	struct master_ev_args *arg;
+	
+	if(work_mode & NETMAP_MODE) {
+		http_send_error(c, 400, "Bad Request");
+		return 0;
+	}
+
+	for (i = 0; i < query_count; i++) {
+		if (strcasecmp(c->queries[i].key, "ip") == 0)
+			strncpy(ip, c->queries[i].val, sizeof(ip));
+		else if (strcasecmp(c->queries[i].key, "port") == 0)
+			port = atoi(c->queries[i].val);
+	}
+	if(port <= 0 || port >=65535 || ip[0] == 0 || inet_addr(ip) == -1) {
+		http_send_error(c, 400, "Bad Request");
+		return 0;
+	}	
+
+	arg = zmalloc(sizeof(*arg));
+	conn = evhttp_connection_base_new(base, NULL, ip, port);
+	req = evhttp_request_new(master_get_info_cb, arg);
+	arg->conn = conn;
+	arg->client = c;
+	evhttp_connection_free_on_completion(conn);
+	evhttp_connection_set_timeout(conn, 5);
+	evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
+	evhttp_make_request(conn, req, EVHTTP_REQ_GET, "/info");	
+	
 	return 0;
 }
 
@@ -460,7 +582,6 @@ static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
 		return -1;
 	}
 
-	
 	list_for_each(pos, &slave_list) {
 		struct slave_client *s = list_entry(pos, struct slave_client, list);
 		if (strcmp(s->ip, c->ip) == 0 && s->port == slave_port) {
@@ -477,6 +598,7 @@ static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
 		t01_log(T01_NOTICE, "New slave client %s:%d", c->ip, slave_port);
 	}
 	slave->cksum = cksum;
+	slave->online = 1;
 
 	send_client_reply(cmd, NULL, 0, "application/json");
 	return 0;
@@ -496,6 +618,7 @@ static struct http_cmd_table {
 	{ HTTP_PUT, "rule", 1, client_update_rule}, 
 	{ HTTP_DELETE, "rule", 1, client_delete_rule},
 	{ HTTP_GET, "info", 0, client_get_server_info},
+	{ HTTP_GET, "sinfo", 0, client_get_slave_info},
 	{ HTTP_POST, "registry", 0, client_registry_cluster},
 	{ HTTP_GET, "registry", 0, client_registry_cluster},
 	{ HTTP_POST, "rulessync", 0, client_sync_rules},
@@ -607,6 +730,7 @@ void master_request_syncrules_cb(struct evhttp_request *req, void *arg) {
 		t01_log(T01_WARNING, "Failed to connect to slave %s:%d",
 			address, port);
 		evhttp_connection_free(conn);
+		mark_slave_offline(address, port);
 		return;
 	}
 
@@ -615,6 +739,8 @@ void master_request_syncrules_cb(struct evhttp_request *req, void *arg) {
 		t01_log(T01_WARNING, "Succeed to sync rules with slave %s:%d",
 			address, port);
 	} else {
+		if(code == 0)
+			mark_slave_offline(address, port);
 		t01_log(T01_WARNING, "Failed to sync rules with slave %s:%d",
 			address, port);
 	}
@@ -634,7 +760,8 @@ int master_check_slaves()
 	
 	list_for_each(pos, &slave_list) {
 		struct slave_client *s = list_entry(pos, struct slave_client, list);
-		if(s->cksum == cksum) continue;
+		if(s->online == 0 || s->cksum == cksum)
+			continue;
 
 		t01_log(T01_NOTICE, "CRC not match: master %llx VS slave[%s:%d] %llx",
 		    cksum, s->ip, s->port, s->cksum);
