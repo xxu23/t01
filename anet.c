@@ -288,6 +288,28 @@ static int anetCreateSocket(char *err, int domain) {
     return s;
 }
 
+int anetCreateUdpSocket(char *err, char *ip, int port, struct sockaddr* addr, size_t addr_len)
+{
+    int s;
+    struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
+    if ((s = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+        anetSetError(err, "creating udp socket: %s", strerror(errno));
+        return ANET_ERR;
+    }
+
+    if (anetSetReuseAddr(err,s) == ANET_ERR) {
+        close(s);
+        return ANET_ERR;
+    }
+
+    bzero(addr, addr_len);
+    addr_in->sin_family = AF_INET;
+    addr_in->sin_addr.s_addr = inet_addr(ip);
+    addr_in->sin_port = htons(port);
+
+    return s;
+}
+
 #define ANET_CONNECT_NONE 0
 #define ANET_CONNECT_NONBLOCK 1
 static int anetTcpGenericConnect(char *err, char *addr, int port, int flags)
@@ -402,6 +424,19 @@ int anetRead(int fd, char *buf, int count)
     return totlen;
 }
 
+int anetUdpWrite(int fd, char *buf, int count, struct sockaddr* addr, size_t addr_len)
+{
+   int nwritten, totlen = 0;
+    while(totlen != count) {
+        nwritten = sendto(fd, buf, count-totlen, 0, addr, addr_len);
+        if (nwritten == 0) return totlen;
+        if (nwritten == -1) return -1;
+        totlen += nwritten;
+        buf += nwritten;
+    }
+    return totlen;
+}
+
 /* Like write(2) but make sure 'count' is read before to return
  * (unless error is encountered) */
 int anetWrite(int fd, char *buf, int count)
@@ -440,6 +475,47 @@ static int anetV6Only(char *err, int s) {
         return ANET_ERR;
     }
     return ANET_OK;
+}
+
+int anetUdpServer(char *err, int port, char *bindaddr)
+{
+    int s, rv;
+    char _port[6];  /* strlen("65535") */
+    struct addrinfo hints, *servinfo, *p;
+
+    snprintf(_port,6,"%d",port);
+    memset(&hints,0,sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_PASSIVE;    /* No effect if bindaddr != NULL */
+
+    if ((rv = getaddrinfo(bindaddr,_port,&hints,&servinfo)) != 0) {
+        anetSetError(err, "%s", gai_strerror(rv));
+        return ANET_ERR;
+    }
+    for (p = servinfo; p != NULL; p = p->ai_next) {
+        if ((s = socket(p->ai_family,p->ai_socktype,p->ai_protocol)) == -1)
+            continue;
+
+        if (anetSetReuseAddr(err,s) == ANET_ERR) goto error;
+
+        if (bind(s,p->ai_addr,p->ai_addrlen) == -1) {
+            anetSetError(err, "bind: %s", strerror(errno));
+            close(s);
+            return ANET_ERR;
+          }
+        goto end;
+    }
+    if (p == NULL) {
+        anetSetError(err, "unable to bind socket");
+        goto error;
+    }
+
+error:
+    s = ANET_ERR;
+end:
+    freeaddrinfo(servinfo);
+    return s;
 }
 
 static int _anetTcpServer(char *err, int port, char *bindaddr, int af, int backlog)

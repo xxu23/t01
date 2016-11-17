@@ -47,6 +47,8 @@
 #undef ip_len
 #endif
 
+struct sockaddr;
+
 int anetTcpConnect(char *err, char *addr, int port);
 int anetTcpNonBlockConnect(char *err, char *addr, int port);
 int anetUnixConnect(char *err, char *path);
@@ -69,5 +71,9 @@ int anetSendTimeout(char *err, int fd, long long ms);
 int anetPeerToString(int fd, char *ip, size_t ip_len, int *port);
 int anetKeepAlive(char *err, int fd, int interval);
 int anetSockName(int fd, char *ip, size_t ip_len, int *port);
+
+int anetCreateUdpSocket(char *err, char *ip, int port, struct sockaddr* addr, size_t addr_len);
+int anetUdpWrite(int fd, char *buf, int count, struct sockaddr* addr, size_t addr_len);
+int anetUdpServer(char *err, int port, char *bindaddr);
 
 #endif

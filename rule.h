@@ -31,7 +31,25 @@
 #ifndef __RULE_H__
 #define __RULE_H__
 
-#include "list.h"
+#include "list.h" 
+
+#define HITS_THRESHOLD_PER_SECOND 3000
+
+struct log_rz
+{	
+	uint8_t smac[6];
+	uint8_t dmac[6];
+	uint32_t src_ip;
+	uint32_t dst_ip;
+	uint16_t src_port;
+	uint16_t dst_port;
+	uint32_t local_ip;
+	uint32_t time;
+	uint32_t rule_id;
+	uint8_t rule_type;
+	uint8_t proto;
+	uint16_t pktlen;
+};
 
 struct hit_record {
 	uint32_t id;
@@ -101,10 +119,12 @@ struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, void *packet
 
 struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow, void *packet);
 
-int add_one_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
-		 		uint32_t daddr, uint16_t sport, uint16_t dport,
-				uint8_t smac[], uint8_t dmac[], uint32_t localip,
-				uint8_t proto, uint16_t pktlen);
+int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
+	 		uint32_t daddr, uint16_t sport, uint16_t dport,
+			uint8_t smac[], uint8_t dmac[], uint32_t localip,
+			uint8_t proto, uint16_t pktlen);
+
+int add_log_rz(struct log_rz *lr);
 
 void release_buffer(char **out);
 

@@ -226,13 +226,6 @@ http_client_new(struct event_base *base, int fd, const char *ip, uint16_t port) 
 	c->base = base;
 	if(ip) memcpy(c->ip, ip, 16);
 	c->port = port;
-
-	/* registry read event */
-	//if(aeCreateFileEvent(el, fd, AE_READABLE, http_client_can_read, c) == AE_ERR) {
-	//	close(fd);
-	//	zfree(c);
-	//	return NULL;
-	//}
     
 	/* parser */
 	http_parser_init(&c->parser, HTTP_REQUEST);
@@ -318,7 +311,7 @@ http_client_read(struct http_client *c) {
 	ret = read(c->fd, buffer, sizeof(buffer));
 	if(ret <= 0) {
 		/* broken link, free buffer and client object */
-		t01_log(T01_WARNING, "Client %s:%d [fd=%d] disconnect", c->ip, c->port, c->fd);
+		t01_log(T01_DEBUG, "Client %s:%d [fd=%d] disconnect", c->ip, c->port, c->fd);
 		http_client_free(c);
 		return (int)CLIENT_DISCONNECTED;
 	}
@@ -421,7 +414,7 @@ http_client_can_read(int fd, short event, void *p) {
 	} 
 
 	if(c->broken) { /* terminate client */
-		t01_log(T01_WARNING, "Terminate client %s:%d", c->ip, c->port);
+		t01_log(T01_DEBUG, "Terminate client %s:%d", c->ip, c->port);
 		http_client_free(c);
 	} else {
 		/* start monitoring input again */
@@ -444,7 +437,7 @@ http_client_process(struct http_client *c) {
 
 	switch(c->parser.method) {
 		case HTTP_GET:
-			t01_log(T01_NOTICE, "GET %s", c->path);
+			t01_log(T01_DEBUG, "GET %s", c->path);
 			ret = cmd_run_get(c, path, path_sz);
 			break;
 

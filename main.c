@@ -59,6 +59,7 @@ struct backup_data {
 };
 
 #define DEFAULT_RULEDB "/var/lib/t01/dump.tdb"
+#define DEFAULT_PID_FILE "/var/run/t01.pid"
 #define MAX_FILTERS 5000
 #define MAX_BACKUP_DATA 65536
 
@@ -86,8 +87,10 @@ enum t01_work_mode work_mode = NONE_MODE;
 struct event_base *base;
 
 static struct ndpi_workflow *workflow;
+static int daemon_mode = 0;
 static char master_address[64];
 static ZLIST_HEAD(filter_buffer_list);
+static ZLIST_HEAD(hitslog_list);
 static struct timeval upstart_tv;
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
 static int bak_produce_idx = 0;
@@ -97,6 +100,7 @@ static int rule_port = 9899;
 static char master_ip[32];
 static int master_port;
 static int tcp_sofd;
+static int udp_logfd;
 static char ruledb[256];
 static char logfile[256];
 static struct nm_desc *nmr, *out_nmr;
@@ -113,6 +117,7 @@ static int enable_all_protocol = 1;
 static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
 static pthread_spinlock_t mirror_lock;
+static pthread_spinlock_t hitlog_lock;
 
 static struct filter_strategy {
 	uint8_t protocol;
@@ -131,17 +136,50 @@ struct filter_buffer {
 	uint16_t dport;
 	char buffer[0];
 };
+
+struct hits_log_rz {
+	struct list_head list;
+	struct log_rz hit;
+};
+
+static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow, uint8_t *packet)
+{
+	if(work_mode & SLAVE_MODE){
+		/* Send log to master or log server*/
+		struct hits_log_rz *hl = zcalloc(1, sizeof(*hl));
+		if (!hl)
+			return;
+		hl->hit.rule_id = rule->id;
+		hl->hit.pktlen = flow->pktlen;
+		hl->hit.proto = flow->protocol;
+		hl->hit.time = flow->last_seen / 1000;
+		hl->hit.src_ip = flow->src_ip;
+		hl->hit.dst_ip = flow->dst_ip;
+		hl->hit.src_port = flow->src_port;
+		hl->hit.dst_port = flow->dst_port;
+		memcpy(hl->hit.smac, packet + 6, 6);
+		memcpy(hl->hit.dmac, packet, 6);
+
+		pthread_spin_lock(&hitlog_lock);
+		list_add_tail(&hl->list, &hitslog_list);
+		pthread_spin_unlock(&hitlog_lock);
+	} else {
+		/* Store in local disk */
+		add_hit_record(rule, flow->last_seen / 1000,
+			   flow->src_ip, flow->dst_ip,
+			   flow->src_port, flow->dst_port,
+			   (uint8_t *) packet + 6, (uint8_t *) packet,
+			   0, flow->protocol, flow->pktlen);
+	}
+}
  
 static int mirror_filter_from_rule(struct ndpi_flow_info *flow, void *packet)
 {
 	struct rule *rule = match_rule_before_mirrored(flow, packet);
 	if(!rule) return 0;
 	
-	add_one_hit_record(rule, flow->last_seen / 1000,
-			   flow->src_ip, flow->dst_ip,
-			   flow->src_port, flow->dst_port,
-			   (uint8_t *) packet + 6, (uint8_t *) packet,
-			   0, flow->protocol, flow->pktlen);
+	process_hitslog(rule, flow, (uint8_t *)packet);
+
 	return 1;
 }
 
@@ -182,6 +220,34 @@ static void netflow_data_clone(void *data, uint32_t n,
 	pthread_spin_unlock(&mirror_lock);
 }
 
+static void create_pidfile(void) 
+{
+    FILE *fp = fopen(DEFAULT_PID_FILE, "w");
+    if (fp) {
+        fprintf(fp,"%d\n",(int)getpid());
+        fclose(fp);
+    }
+}
+
+static void daemonize(void)
+{
+    int fd;
+
+    if (fork() != 0) exit(0); /* parent exits */
+    setsid(); /* create a new session */
+
+    /* Every output goes to /dev/null. If Redis is daemonized but
+     * the 'logfile' is set to 'stdout' in the configuration file
+     * it will not log at all. */
+    if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
+        dup2(fd, STDIN_FILENO);
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        if (fd > STDERR_FILENO) close(fd);
+    }
+}
+
+
 static void usage()
 {
 	const char *cmd = "t01";
@@ -194,6 +260,7 @@ static void usage()
 		"\t-b ip                     ip address binded for rule management\n"
 		"\t-p port                   port listening for rule management (default 9899)\n"
 		"\t-S | -M                   slave or master mode for rule management\n"
+		"\t-d                        run in daemon mode or not\n"
 		"\t-j ip:port                master address for rule management cluster (eg 192.168.1.2:9898)\n"
 		"\t-F filter                 filter strategy for mirroring netflow (eg 80/tcp,53/udp)\n"
 		"\t-e engine                 backend engine to store network flow data\n"
@@ -209,7 +276,7 @@ static void parse_options(int argc, char **argv)
 {
 	int opt;
 
-	while ((opt = getopt(argc, argv, "SMhi:o:c:e:b:p:E:v:l:F:j:")) != EOF) {
+	while ((opt = getopt(argc, argv, "SMdhi:o:c:e:b:p:E:v:l:F:j:")) != EOF) {
 		switch (opt) {
 		case 'S':
 			work_mode |= SLAVE_MODE;
@@ -217,6 +284,10 @@ static void parse_options(int argc, char **argv)
 
 		case 'M':
 			work_mode |= MASTER_MODE;
+			break;
+
+		case 'd':
+			daemon_mode = 1;
 			break;
 
 		case 'i':
@@ -310,6 +381,11 @@ static void signal_hander(int sig)
 				"Error trying to save the DB, can't exit.");
 			return;
 		}
+
+		if (daemon_mode) {
+        		t01_log(T01_NOTICE,"Removing the pid file.");
+        		unlink(DEFAULT_PID_FILE);
+   		}
 	}
 	shutdown_app = 1;
 	event_base_loopexit(base, NULL);
@@ -469,11 +545,7 @@ next:
 	struct rule *rule = match_rule_after_detected(flow, packet);
 	if (!rule)
 		return;
-	add_one_hit_record(rule, flow->last_seen / 1000,
-			   flow->src_ip, flow->dst_ip,
-			   flow->src_port, flow->dst_port,
-			   (uint8_t *) packet + 6, (uint8_t *) packet,
-			   0, flow->protocol, flow->pktlen);
+	process_hitslog(rule, flow, packet);
 
 	char result[1500] = { 0 };
 	int len = make_packet(rule, packet, result, sizeof(result), flow);
@@ -759,7 +831,7 @@ static void rulesaving_cb(evutil_socket_t fd, short event, void *arg)
 	300, 1}, {
 	60, 30}, {
 	5, 500}, {
-	1, 3000}};
+	1, HITS_THRESHOLD_PER_SECOND}};
 
 	/* Check if a background saving or AOF rewrite in progress terminated. */
 	if (tdb_child_pid != -1) {
@@ -808,14 +880,59 @@ static void master_cb(evutil_socket_t fd, short event, void *arg)
 	master_check_slaves();
 }
 
+static void *hitslog_thread(void *args)
+{
+	struct sockaddr_in addr;
+	socklen_t len = sizeof(addr);
+	int fd;
+	char err[ANET_ERR_LEN];
+
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+	fd = anetCreateUdpSocket(err, master_ip, master_port, 
+					(struct sockaddr*)&addr, len);
+	if(fd < 0) {
+		t01_log(T01_WARNING, "Cannot create socket: %s", err);
+		goto leave;
+	}
+
+	while (!shutdown_app) {
+		struct list_head *pos, *n;
+		struct hits_log_rz *hlr;
+
+		list_for_each_safe(pos, n, &hitslog_list) {
+			hlr = list_entry(pos, struct hits_log_rz, list);
+			pthread_spin_lock(&hitlog_lock);
+			list_del(pos);
+			pthread_spin_unlock(&hitlog_lock);
+
+			anetUdpWrite(fd, (char*)&hlr->hit, sizeof(hlr->hit), 
+					(struct sockaddr*)&addr, len);
+			zfree(hlr);
+		}
+	}
+
+	close(fd);
+
+leave:
+	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
+	return NULL;
+}
+
 static void *libevent_thread(void *args)
 {
-	struct event ev1, ev2, ev3, ev4;
+	struct event ev0, ev1, ev2, ev3, ev4;
 	struct timeval tv2, tv3, tv4;
 
 	/* initialize libevent */
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 	base = event_base_new();
+
+	/* start hit log udp server */
+	if (udp_logfd > 0) {
+		event_set(&ev0, udp_logfd, EV_READ | EV_PERSIST, udp_server_can_read, NULL);
+		event_base_set(base, &ev0);
+		event_add(&ev0, NULL);
+	}
 
 	/* start rule management server */
 	if (tcp_sofd > 0) {
@@ -918,7 +1035,7 @@ static void *netmap_thread(void *args)
 static void main_thread()
 {
 	int err, i, nthreads = 0;
-	pthread_t threads[4];
+	pthread_t threads[5];
 
 	gettimeofday(&last_report_ts, NULL);
 
@@ -929,6 +1046,12 @@ static void main_thread()
 	} else {
 		sleep(1);
 	}
+
+	if(work_mode & SLAVE_MODE && 
+		pthread_create(&threads[nthreads++], NULL, hitslog_thread, NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create hitslog thread: %s", strerror(errno));
+		exit(1);
+	} 
 
 	if((work_mode & NETMAP_MODE || work_mode & MASTER_MODE) && 
 		pthread_create(&threads[nthreads++], NULL, libevent_thread, NULL) != 0) {
@@ -955,8 +1078,13 @@ static void main_thread()
 
 static void init_system()
 {
+	if (daemon_mode) {
+		daemonize();
+		create_pidfile();
+	}
+
 	zmalloc_enable_thread_safeness();
-	event_set_mem_functions(zmalloc, zrealloc, zfree);
+	//event_set_mem_functions(zmalloc, zrealloc, zfree);
 
 	init_log(verbose, logfile);
 	lastsave = upstart = time(NULL);
@@ -1112,8 +1240,20 @@ static void init_rulemgmt()
 				bind_ip[0] ? bind_ip : "*", port, err);
 			exit(1);
 		}
-		t01_log(T01_NOTICE, "Succeed to bind %s:%d", bind_ip, port);
+		t01_log(T01_NOTICE, "Succeed to bind tcp %s:%d", bind_ip, port);
 		anetNonBlock(NULL, tcp_sofd);
+		
+		if(work_mode & MASTER_MODE) {
+			udp_logfd = anetUdpServer(err, port, bind_ip);
+			if (udp_logfd == ANET_ERR) {
+				t01_log(T01_WARNING,
+					"Could not create server udp listening socket %s:%d: %s",
+					bind_ip[0] ? bind_ip : "*", port, err);
+				exit(1);
+			}
+			t01_log(T01_NOTICE, "Succeed to bind udp %s:%d", bind_ip, port);
+			anetNonBlock(NULL, udp_logfd);
+		}
 	}
 
 	/* Abort if there are no listening sockets at all. */
@@ -1122,12 +1262,16 @@ static void init_rulemgmt()
 			"Configured to not listen anywhere, exiting.");
 		exit(1);
 	}
+
+	pthread_spin_init(&hitlog_lock, 0);
 }
 
 void close_listening_sockets()
 {
 	if (tcp_sofd != -1)
 		close(tcp_sofd);
+	if (udp_logfd != -1)
+		close(udp_logfd);
 }
 
 static void exit_netmap()
@@ -1156,6 +1300,7 @@ int main(int argc, char **argv)
 		init_rulemgmt();
 
 	signal(SIGINT, signal_hander);
+	signal(SIGTERM, signal_hander);
 	main_thread();
 
 	if(work_mode & NETMAP_MODE)

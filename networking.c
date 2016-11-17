@@ -72,6 +72,24 @@ static void mark_slave_offline(const char *ip, int port)
 	}
 }
 
+void udp_server_can_read(int fd, short event, void *ptr)
+{
+	struct sockaddr_in addr;
+	socklen_t len;
+	int nread;
+	struct log_rz lr;
+
+	if((nread = recvfrom(fd, &lr, sizeof(lr), 0, (struct sockaddr*)&addr, &len)) <= 0)
+		return;
+	else if(nread != sizeof(lr))
+		return;
+
+	if(lr.local_ip == 0)
+		lr.local_ip = addr.sin_addr.s_addr;
+
+	add_log_rz(&lr);
+}
+
 void server_can_accept(int fd, short event, void *ptr)
 {
 	int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
@@ -86,7 +104,7 @@ void server_can_accept(int fd, short event, void *ptr)
 					"Accepting client connection: %s", err);
 			return;
 		}
-		t01_log(T01_NOTICE, "Accepted %s:%d [fd=%d]", cip, cport, cfd);
+		t01_log(T01_DEBUG, "Accepted %s:%d [fd=%d]", cip, cport, cfd);
 		http_client_new(base, cfd, cip, cport);
 	}
 }
@@ -360,7 +378,9 @@ static void sync_slaves_rules(const char *path, int method,
 
 	list_for_each(pos, &slave_list) {
 		struct slave_client *s = list_entry(pos, struct slave_client, list);
-		t01_log(T01_NOTICE, "wakeup slave[%s:%d] to sync rule", s->ip, s->port);
+		if(s->online == 0)
+			continue;
+		t01_log(T01_NOTICE, "Connect slave[%s:%d] to sync rule", s->ip, s->port);
 
 		conn = evhttp_connection_base_new(base, NULL, s->ip, s->port);
 		req = evhttp_request_new(master_sync_rule_cb, conn);
@@ -480,7 +500,7 @@ struct master_ev_args
 	struct http_client *client;
 };
 
-void master_get_info_cb(struct evhttp_request *req, void *arg) {
+void master_get_sinfo_cb(struct evhttp_request *req, void *arg) {
 	struct master_ev_args *ev_arg = arg;
 	struct evhttp_connection *conn = ev_arg->conn;
 	struct http_client *client = ev_arg->client;
@@ -501,7 +521,7 @@ void master_get_info_cb(struct evhttp_request *req, void *arg) {
 	code = evhttp_request_get_response_code(req);
 	if(code == 200) {
 		size_t len = evbuffer_get_length(req->input_buffer);
-		unsigned char* str = evbuffer_pullup(req->input_buffer, len);
+		unsigned char *str = evbuffer_pullup(req->input_buffer, len);
 		send_client_reply2(client, str, len, "application/json");
 	} else {
 		if(code == 0)
@@ -540,7 +560,7 @@ static int client_get_slave_info(struct http_client *c, struct cmd *cmd)
 
 	arg = zmalloc(sizeof(*arg));
 	conn = evhttp_connection_base_new(base, NULL, ip, port);
-	req = evhttp_request_new(master_get_info_cb, arg);
+	req = evhttp_request_new(master_get_sinfo_cb, arg);
 	arg->conn = conn;
 	arg->client = c;
 	evhttp_connection_free_on_completion(conn);
@@ -590,12 +610,11 @@ static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
 		}
 	}
 	if(!slave) {
-		slave = zmalloc(sizeof(*slave));
-		bzero(slave, sizeof(*slave));
+		slave = zcalloc(1, sizeof(*slave));
 		strncpy(slave->ip, c->ip, sizeof(slave->ip));
 		slave->port = slave_port;
 		list_add_tail(&slave->list, &slave_list);
-		t01_log(T01_NOTICE, "New slave client %s:%d", c->ip, slave_port);
+		t01_log(T01_NOTICE, "Slave client %s:%d join", c->ip, slave_port);
 	}
 	slave->cksum = cksum;
 	slave->online = 1;
@@ -697,8 +716,6 @@ void slave_request_cb(struct evhttp_request *req, void *arg) {
 		evhttp_connection_free(conn);
 		return;
 	}
-	size_t len = evbuffer_get_length(req->input_buffer);
-	unsigned char* str = evbuffer_pullup(req->input_buffer, len);
 }
 
 int slave_registry_master(const char *master_ip, int master_port, int self_port)

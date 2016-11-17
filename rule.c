@@ -495,11 +495,31 @@ eoferr:			/* unexpected end of file is handled here with a fatal exit */
 	return -1;
 }
 
-int add_one_hit_record(struct rule *r, uint64_t time,
-		       uint32_t saddr, uint32_t daddr,
-		       uint16_t sport, uint16_t dport,
-		       uint8_t smac[], uint8_t dmac[], 
-			 uint32_t localip, uint8_t proto, uint16_t pktlen)
+int add_log_rz(struct log_rz *lr)
+{
+	struct rule *r = NULL;
+	struct hit_record *h;
+	struct list_head *pos;
+
+	list_for_each(pos, &rule_list) {
+		struct rule *rule = list_entry(pos, struct rule, list);
+		if (rule->id == lr->rule_id) {
+			r = rule;
+			break;
+		}
+	}
+	if(!r)
+		return -1;
+
+	return add_hit_record(r, lr->time, lr->src_ip, lr->dst_ip, lr->src_port, 
+					lr->dst_port, lr->smac, lr->dmac, lr->local_ip, 
+					lr->proto, lr->pktlen);	
+}
+
+int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr, 
+			uint32_t daddr, uint16_t sport, uint16_t dport,
+			uint8_t smac[], uint8_t dmac[], uint32_t localip, 
+			uint8_t proto, uint16_t pktlen)
 {
 	struct hit_record *h = zmalloc(sizeof(*h));
 	if (!h)
@@ -963,7 +983,7 @@ int update_rule(uint32_t id, const char *body, int body_len)
 			new_rule.hits = rule->hits;
 			new_rule.saved_hits = rule->saved_hits;
 			memcpy(rule, &new_rule, offsetof(struct rule, list));
-			dirty++;
+			dirty += HITS_THRESHOLD_PER_SECOND;
 			return 0;
 		}
 	}
@@ -988,7 +1008,7 @@ int delete_rule(uint32_t id)
 				zfree(hit);
 				}
 			bzero(rule, offsetof(struct rule, list));
-			dirty++;
+			dirty += HITS_THRESHOLD_PER_SECOND;
 			return 0;
 		}
 	}
@@ -1038,7 +1058,7 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 	memcpy(new_rule, &src_rule, offsetof(struct rule, list));
 	new_rule->used = 1;
 	new_rule->id = src_rule.id ? src_rule.id : ++max_id;
-	dirty++;
+	dirty += HITS_THRESHOLD_PER_SECOND;
 
 	get_rule(new_rule->id, out, out_len);
 
@@ -1117,7 +1137,7 @@ step1:
 				}
 			}
 			bzero(rule, offsetof(struct rule, list));
-			dirty++;
+			dirty += HITS_THRESHOLD_PER_SECOND;
 		} else {
 			/* id match, check rule's content further */
 			if(memcmp(rule, &rules[i], offsetof(struct rule, protocol)) != 0) {
@@ -1133,7 +1153,7 @@ step1:
 					}
 					rule->hits = rule->saved_hits = 0;
 				}
-				dirty++;
+				dirty += HITS_THRESHOLD_PER_SECOND;
 			}
 			rules[i].used = 2;
 		}
@@ -1166,7 +1186,7 @@ step1:
 
 		memcpy(new_rule, &rules[i], offsetof(struct rule, list));
 		new_rule->used = 1;
-		dirty++;
+		dirty += HITS_THRESHOLD_PER_SECOND;
 		if(new_rule->id > max_id) max_id = new_rule->id;
 		transform_one_rule(new_rule);
 	}

@@ -33,6 +33,7 @@
 
 struct http_client;
 
+void udp_server_can_read(int fd, short event, void *ptr);
 void server_can_accept(int fd, short event, void *ptr);
 
 int cmd_run_get(struct http_client *client, const char *uri, size_t uri_len);
