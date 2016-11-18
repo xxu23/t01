@@ -1,6 +1,0 @@
-[
-{"dport": 80, "protocol":"http", "condition":{"match":"match", "which":"host", "payload":"www.sohu.com"}, "action":"redirect", "params":["www.sina.com.cn"]},
-{"dport": 80, "protocol":"http", "condition":{"match":"regex", "which":"url", "payload":".*jpg"}, "action":"redirect", "params":["www.github.com/fluidicon.png"]},
-{"protocol":"dns", "condition":{"match":"regex", "which":"host", "payload":".*qq.com"}, "action":"confuse", "params":["8.8.8.8"]},
-{"dport": 8080, "protocol":"http", "saddr":"192.168.*.*", "action":"redirect", "params":["www.163.com.cn"]}
-]
