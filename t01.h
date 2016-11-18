@@ -30,13 +30,15 @@
 #ifndef _T01_H_
 #define _T01_H_
 
+#define MAX_FILTERS 5000
+#define DEFAULT_RULE_PORT 9899
+#define DEFAULT_RULEDB "/var/lib/t01/dump.tdb"
+#define DEFAULT_PID_FILE "/var/run/t01.pid"
+#define MAX_BACKUP_DATA 65536
+
 enum t01_work_mode {NONE_MODE=0x00, NETMAP_MODE=0x01, SLAVE_MODE=0x02, MASTER_MODE=0x04};
 
-extern enum t01_work_mode work_mode;
-
 extern struct event_base *base;
-
-extern struct list_head rule_list;
 extern int dirty;
 extern int dirty_before_bgsave;
 extern lastbgsave_status;
@@ -44,7 +46,27 @@ extern time_t lastsave;
 extern pid_t tdb_child_pid;
 
 extern time_t upstart;
-extern char ifname[32], ofname[32];
+
+struct t01_config {
+	char ifname[32];
+	char ofname[32];
+	char ruledb[256];
+	char logfile[256];
+	char filter[MAX_FILTERS * 16];
+	char engine[64];
+	char engine_opt[256];
+	int daemon_mode;
+	char master_ip[32];
+	int master_port;
+	char rule_ip[32];
+	int rule_port;
+	char hit_ip[32];
+	int hit_port;
+	int verbose;
+	enum t01_work_mode work_mode;
+};
+
+extern struct t01_config tconfig;
 
 extern uint64_t total_flow_bytes;
 extern uint64_t raw_packet_count;

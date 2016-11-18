@@ -40,6 +40,7 @@
 #include <arpa/inet.h>
 
 #include "util.h"
+#include "zmalloc.h"
 
 /* Glob-style pattern matching. */
 int stringmatchlen(const char *pattern, int patternLen,
@@ -507,4 +508,22 @@ char *ipproto_name(uint8_t proto_id)
 
 	snprintf(proto, sizeof(proto), "%u", proto_id);
 	return (proto);
+}
+
+
+int parseipandport(const char *addr, char *ip, size_t len, uint16_t *port)
+{
+	char *temp = zstrdup(addr);
+	char *sep = strchr(temp, ':');
+	if (sep) {
+		*sep = 0;
+		strncpy(ip, temp, len);
+		sep++;
+		*port = atoi(sep);
+	} else {
+		strncpy(ip, temp, len);
+		*port = 0;
+	}
+	zfree(temp);
+	return 0;
 }

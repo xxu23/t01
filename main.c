@@ -58,18 +58,11 @@ struct backup_data {
 	struct ndpi_flow_info *flow;
 };
 
-#define DEFAULT_RULEDB "/var/lib/t01/dump.tdb"
-#define DEFAULT_PID_FILE "/var/run/t01.pid"
-#define MAX_FILTERS 5000
-#define MAX_BACKUP_DATA 65536
-
-ZLIST_HEAD(rule_list);
 int dirty = 0;
 int dirty_before_bgsave;
 int lastbgsave_status;
 time_t lastsave;
 pid_t tdb_child_pid = -1;
-char ifname[32], ofname[32];
 time_t upstart;
 uint64_t total_flow_bytes = 0;
 uint64_t raw_packet_count = 0;
@@ -83,36 +76,26 @@ uint64_t bytes_per_second_in = 0;
 uint64_t bytes_per_second_out = 0;
 uint64_t pkts_per_second_in = 0;
 uint64_t pkts_per_second_out = 0;
-enum t01_work_mode work_mode = NONE_MODE;
 struct event_base *base;
+struct t01_config tconfig;
 
 static struct ndpi_workflow *workflow;
-static int daemon_mode = 0;
-static char master_address[64];
 static ZLIST_HEAD(filter_buffer_list);
 static ZLIST_HEAD(hitslog_list);
 static struct timeval upstart_tv;
+static char master_address[64];
+static char hit_address[64];
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
 static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
-static char rule_ip[32];
-static int rule_port = 9899;
-static char master_ip[32];
-static int master_port;
 static int tcp_sofd;
 static int udp_logfd;
-static char ruledb[256];
-static char logfile[256];
 static struct nm_desc *nmr, *out_nmr;
 static uint8_t shutdown_app = 0;
-static char filter[MAX_FILTERS * 16];
-static char engine[64];
-static char engine_opt[256];
 static struct ioengine_data backup_engine;
 static struct ioengine_data mirror_engine;
 static int backup = 0;
 static int mirror = 0;
-static int verbose = T01_VERBOSE;
 static int enable_all_protocol = 1;
 static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
@@ -142,10 +125,11 @@ struct hits_log_rz {
 	struct log_rz hit;
 };
 
-static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow, uint8_t *packet)
+static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
+			    uint8_t * packet)
 {
-	if(work_mode & SLAVE_MODE){
-		/* Send log to master or log server*/
+	if (tconfig.work_mode & SLAVE_MODE) {
+		/* Send log to master or log server */
 		struct hits_log_rz *hl = zcalloc(1, sizeof(*hl));
 		if (!hl)
 			return;
@@ -166,19 +150,20 @@ static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow, uint
 	} else {
 		/* Store in local disk */
 		add_hit_record(rule, flow->last_seen / 1000,
-			   flow->src_ip, flow->dst_ip,
-			   flow->src_port, flow->dst_port,
-			   (uint8_t *) packet + 6, (uint8_t *) packet,
-			   0, flow->protocol, flow->pktlen);
+			       flow->src_ip, flow->dst_ip,
+			       flow->src_port, flow->dst_port,
+			       (uint8_t *) packet + 6, (uint8_t *) packet,
+			       0, flow->protocol, flow->pktlen);
 	}
 }
- 
+
 static int mirror_filter_from_rule(struct ndpi_flow_info *flow, void *packet)
 {
 	struct rule *rule = match_rule_before_mirrored(flow, packet);
-	if(!rule) return 0;
-	
-	process_hitslog(rule, flow, (uint8_t *)packet);
+	if (!rule)
+		return 0;
+
+	process_hitslog(rule, flow, (uint8_t *) packet);
 
 	return 1;
 }
@@ -220,33 +205,34 @@ static void netflow_data_clone(void *data, uint32_t n,
 	pthread_spin_unlock(&mirror_lock);
 }
 
-static void create_pidfile(void) 
+static void create_pidfile(void)
 {
-    FILE *fp = fopen(DEFAULT_PID_FILE, "w");
-    if (fp) {
-        fprintf(fp,"%d\n",(int)getpid());
-        fclose(fp);
-    }
+	FILE *fp = fopen(DEFAULT_PID_FILE, "w");
+	if (fp) {
+		fprintf(fp, "%d\n", (int)getpid());
+		fclose(fp);
+	}
 }
 
 static void daemonize(void)
 {
-    int fd;
+	int fd;
 
-    if (fork() != 0) exit(0); /* parent exits */
-    setsid(); /* create a new session */
+	if (fork() != 0)
+		exit(0);	/* parent exits */
+	setsid();		/* create a new session */
 
-    /* Every output goes to /dev/null. If Redis is daemonized but
-     * the 'logfile' is set to 'stdout' in the configuration file
-     * it will not log at all. */
-    if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
-        dup2(fd, STDIN_FILENO);
-        dup2(fd, STDOUT_FILENO);
-        dup2(fd, STDERR_FILENO);
-        if (fd > STDERR_FILENO) close(fd);
-    }
+	/* Every output goes to /dev/null. If Redis is daemonized but
+	 * the 'logfile' is set to 'stdout' in the configuration file
+	 * it will not log at all. */
+	if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
+		dup2(fd, STDIN_FILENO);
+		dup2(fd, STDOUT_FILENO);
+		dup2(fd, STDERR_FILENO);
+		if (fd > STDERR_FILENO)
+			close(fd);
+	}
 }
-
 
 static void usage()
 {
@@ -256,12 +242,13 @@ static void usage()
 		"%s arguments\n"
 		"\t-i interface              interface that captures incoming traffic\n"
 		"\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
-		"\t-c ruledb                 rule db file that saving rule and hit record\n"
+		"\t-c tconfig.ruledb                 rule db file that saving rule and hit record\n"
 		"\t-b ip                     ip address binded for rule management\n"
 		"\t-p port                   port listening for rule management (default 9899)\n"
 		"\t-S | -M                   slave or master mode for rule management\n"
 		"\t-d                        run in daemon mode or not\n"
 		"\t-j ip:port                master address for rule management cluster (eg 192.168.1.2:9898)\n"
+		"\t-H ip:port                udp server address for rule hits\n"
 		"\t-F filter                 filter strategy for mirroring netflow (eg 80/tcp,53/udp)\n"
 		"\t-e engine                 backend engine to store network flow data\n"
 		"\t-E eigine_opt             arguments attached to specified engine\n"
@@ -276,62 +263,69 @@ static void parse_options(int argc, char **argv)
 {
 	int opt;
 
-	while ((opt = getopt(argc, argv, "SMdhi:o:c:e:b:p:E:v:l:F:j:")) != EOF) {
+	while ((opt =
+		getopt(argc, argv, "SMdhi:o:c:e:b:p:E:v:l:F:j:H:")) != EOF) {
 		switch (opt) {
 		case 'S':
-			work_mode |= SLAVE_MODE;
+			tconfig.work_mode |= SLAVE_MODE;
 			break;
 
 		case 'M':
-			work_mode |= MASTER_MODE;
+			tconfig.work_mode |= MASTER_MODE;
 			break;
 
 		case 'd':
-			daemon_mode = 1;
+			tconfig.daemon_mode = 1;
 			break;
 
 		case 'i':
-			strncpy(ifname, optarg, sizeof(ifname));
+			strncpy(tconfig.ifname, optarg, sizeof(tconfig.ifname));
 			break;
 
 		case 'o':
-			strncpy(ofname, optarg, sizeof(ofname));
+			strncpy(tconfig.ofname, optarg, sizeof(tconfig.ofname));
 			break;
 
 		case 'j':
 			strncpy(master_address, optarg, sizeof(master_address));
 			break;
 
+		case 'H':
+			strncpy(hit_address, optarg, sizeof(hit_address));
+			break;
+
 		case 'p':
-			rule_port = atoi(optarg);
+			tconfig.rule_port = atoi(optarg);
 			break;
 
 		case 'b':
-			strncpy(rule_ip, optarg, sizeof(rule_ip));
+			strncpy(tconfig.rule_ip, optarg,
+				sizeof(tconfig.rule_ip));
 			break;
 
 		case 'c':
-			strncpy(ruledb, optarg, sizeof(ruledb));
+			strncpy(tconfig.ruledb, optarg, sizeof(tconfig.ruledb));
 			break;
 
 		case 'v':
-			verbose = atoi(optarg);
+			tconfig.verbose = atoi(optarg);
 			break;
 
 		case 'l':
-			strncpy(logfile, optarg, sizeof(logfile));
+			strncpy(tconfig.logfile, optarg,
+				sizeof(tconfig.logfile));
 			break;
 
 		case 'F':
-			strncpy(filter, optarg, sizeof(filter));
+			strncpy(tconfig.filter, optarg, sizeof(tconfig.filter));
 			break;
 
 		case 'e':
-			strcpy(engine, optarg);
+			strcpy(tconfig.engine, optarg);
 			break;
 
 		case 'E':
-			strcpy(engine_opt, optarg);
+			strcpy(tconfig.engine_opt, optarg);
 			break;
 
 		case 'h':
@@ -345,23 +339,37 @@ static void parse_options(int argc, char **argv)
 	}
 
 	// check parameters
-	if(work_mode & SLAVE_MODE && work_mode & MASTER_MODE) {
+	if (tconfig.work_mode & SLAVE_MODE && tconfig.work_mode & MASTER_MODE) {
 		fprintf(stderr, "Both master and slave mode is not support\n");
 		usage();
 	}
-	if((work_mode & SLAVE_MODE || work_mode & MASTER_MODE) && master_address[0] == 0) {
-		fprintf(stderr, "Master address should be specified in master/slave mode\n");
+	if ((tconfig.work_mode & SLAVE_MODE || tconfig.work_mode & MASTER_MODE)
+	    && master_address[0] == 0) {
+		fprintf(stderr,
+			"Master address should be specified in master/slave mode\n");
 		usage();
 	}
-	if(work_mode & SLAVE_MODE || work_mode == NONE_MODE) 
-		work_mode |= NETMAP_MODE;
+	if (tconfig.work_mode & SLAVE_MODE || tconfig.work_mode == NONE_MODE)
+		tconfig.work_mode |= NETMAP_MODE;
 
-	if (work_mode & NETMAP_MODE && ifname[0] == 0 && ruledb[0] == 0) {
-		fprintf(stderr, "Incoming interface should be specified in netmap/slave mode\n");
+	if (tconfig.work_mode & NETMAP_MODE && tconfig.ifname[0] == 0
+	    && tconfig.ruledb[0] == 0) {
+		fprintf(stderr,
+			"Incoming interface should be specified in netmap/slave mode\n");
 		usage();
 	}
-	if(ruledb[0] == 0)
-		strcpy(ruledb, DEFAULT_RULEDB);
+	if (tconfig.ruledb[0] == 0)
+		strcpy(tconfig.ruledb, DEFAULT_RULEDB);
+	if (tconfig.rule_port = 0)
+		tconfig.rule_port = DEFAULT_RULE_PORT;
+	if (master_address[0]) {
+		parseipandport(master_address, tconfig.master_ip,
+			       sizeof(tconfig.master_ip), &tconfig.master_port);
+	}
+	if (hit_address[0]) {
+		parseipandport(hit_address, tconfig.hit_ip,
+			       sizeof(tconfig.hit_ip), &tconfig.hit_port);
+	}
 }
 
 static void signal_hander(int sig)
@@ -376,16 +384,16 @@ static void signal_hander(int sig)
 	if (save) {
 		t01_log(T01_NOTICE,
 			"Saving the final TDB snapshot before exiting.");
-		if (save_rules(ruledb) != 0) {
+		if (save_rules(tconfig.ruledb) != 0) {
 			t01_log(T01_WARNING,
 				"Error trying to save the DB, can't exit.");
 			return;
 		}
 
-		if (daemon_mode) {
-        		t01_log(T01_NOTICE,"Removing the pid file.");
-        		unlink(DEFAULT_PID_FILE);
-   		}
+		if (tconfig.daemon_mode) {
+			t01_log(T01_NOTICE, "Removing the pid file.");
+			unlink(DEFAULT_PID_FILE);
+		}
 	}
 	shutdown_app = 1;
 	event_base_loopexit(base, NULL);
@@ -554,7 +562,7 @@ next:
 		total_ip_bytes_out += len;
 		ip_packet_count_out++;
 
-		if (verbose) {
+		if (tconfig.verbose) {
 			char l[48], u[48];
 			char msg[4096];
 			int offset = 0;
@@ -585,11 +593,10 @@ next:
 				    snprintf(msg + offset, sizeof(msg) - offset,
 					     "[proto: %u/%s]",
 					     flow->detected_protocol.protocol,
-					     ndpi_get_proto_name(workflow->
-								 ndpi_struct,
-								 flow->
-								 detected_protocol.
-								 protocol));
+					     ndpi_get_proto_name
+					     (workflow->ndpi_struct,
+					      flow->detected_protocol.
+					      protocol));
 
 			offset +=
 			    snprintf(msg + offset, sizeof(msg) - offset,
@@ -640,10 +647,10 @@ struct ndpi_workflow *setup_detection()
 	ndpi_workflow_set_flow_detected_callback(workflow,
 						 on_protocol_discovered,
 						 (void *)(uintptr_t) workflow);
-	ndpi_set_mirror_data_callback(workflow, 
-						mirror_filter_from_rule,
-						mirror ? netflow_data_clone: NULL,
-						mirror ? netflow_data_filter : NULL);
+	ndpi_set_mirror_data_callback(workflow,
+				      mirror_filter_from_rule,
+				      mirror ? netflow_data_clone : NULL,
+				      mirror ? netflow_data_filter : NULL);
 
 	// enable all protocols
 	NDPI_BITMASK_SET_ALL(ndpi_mask);
@@ -673,10 +680,10 @@ static void *mirror_thread(void *args)
 			list_del(pos);
 			pthread_spin_unlock(&mirror_lock);
 			fb = list_entry(pos, struct filter_buffer, list);
-			store_raw_via_ioengine(&mirror_engine, fb->buffer, fb->len,
-					   fb->protocol, fb->ts,
-					   fb->saddr, fb->sport,
-					   fb->daddr, fb->dport);
+			store_raw_via_ioengine(&mirror_engine, fb->buffer,
+					       fb->len, fb->protocol, fb->ts,
+					       fb->saddr, fb->sport, fb->daddr,
+					       fb->dport);
 			zfree(fb);
 		}
 	}
@@ -733,17 +740,14 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg)
 	struct ndpi_stats *stat = &workflow->stats;
 	struct timeval curr_ts;
 	uint64_t tot_usec, since_usec;
-	struct list_head *pos;
 	uint64_t total_hits = 0;
 	unsigned int avg_pkt_size = 0;
 	uint64_t curr_raw_packet_count =
 	    stat->raw_packet_count - raw_packet_count;
-	uint64_t curr_ip_packet_count =
-	    stat->ip_packet_count - ip_packet_count;
+	uint64_t curr_ip_packet_count = stat->ip_packet_count - ip_packet_count;
 	uint64_t curr_total_wire_bytes =
 	    stat->total_wire_bytes - total_wire_bytes;
-	uint64_t curr_total_ip_bytes =
-	    stat->total_ip_bytes - total_ip_bytes;
+	uint64_t curr_total_ip_bytes = stat->total_ip_bytes - total_ip_bytes;
 	uint64_t curr_tcp_count = stat->tcp_count - tcp_count;
 	uint64_t curr_udp_count = stat->udp_count - udp_count;
 	uint64_t curr_hits;
@@ -763,16 +767,10 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg)
 	total_ip_bytes = stat->total_ip_bytes;
 	tcp_count = stat->tcp_count;
 	udp_count = stat->udp_count;
-	list_for_each(pos, &rule_list) {
-		struct rule *rule = list_entry(pos, struct rule, list);
-		if (rule->used == 0)
-			continue;
-		total_hits += rule->hits;
-	}
+	total_hits = calc_totalhits();
 
 	if (since_usec > 0) {
-		pkts_per_second_in =
-		    ip_packet_count * 1000000.0f / since_usec;
+		pkts_per_second_in = ip_packet_count * 1000000.0f / since_usec;
 		pkts_per_second_out =
 		    ip_packet_count_out * 1000000.0f / since_usec;
 		bytes_per_second_in =
@@ -782,10 +780,8 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg)
 	}
 
 	printf("\nTraffic statistics:\n");
-	printf("\tEthernet bytes:        %-13llu\n",
-	       curr_total_wire_bytes);
-	printf("\tIP bytes:              %-13llu\n",
-	       curr_total_ip_bytes);
+	printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
+	printf("\tIP bytes:              %-13llu\n", curr_total_ip_bytes);
 	printf
 	    ("\tIP packets:            %-13llu of %llu packets total\n",
 	     curr_ip_packet_count, curr_raw_packet_count);
@@ -795,15 +791,13 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg)
 	if (tot_usec > 0) {
 		char buf[32], buf1[32];
 		float t =
-		    (float)(curr_ip_packet_count * 1000000) /
-		    (float)tot_usec;
+		    (float)(curr_ip_packet_count * 1000000) / (float)tot_usec;
 		float b =
 		    (float)(curr_total_wire_bytes * 8 * 1000000) /
 		    (float)tot_usec;
 		float traffic_duration = tot_usec;
 		printf("\tTraffic throughput:    %s pps / %s/sec\n",
-		       format_packets(t, buf), format_traffic(b, 1,
-							      buf1));
+		       format_packets(t, buf), format_traffic(b, 1, buf1));
 		printf("\tTraffic duration:      %.3f sec\n",
 		       traffic_duration / 1000000);
 		printf("\tIncoming throughput:   %s pps / %s/sec\n",
@@ -863,7 +857,7 @@ static void rulesaving_cb(evutil_socket_t fd, short event, void *arg)
 				t01_log(T01_NOTICE,
 					"%d changes in %d seconds. Saving...",
 					sp->changes, (int)sp->seconds);
-				save_rules_background(ruledb);
+				save_rules_background(tconfig.ruledb);
 				break;
 			}
 		}
@@ -872,7 +866,8 @@ static void rulesaving_cb(evutil_socket_t fd, short event, void *arg)
 
 static void slave_cb(evutil_socket_t fd, short event, void *arg)
 {
-	slave_registry_master(master_ip, master_port, rule_port);
+	slave_registry_master(tconfig.master_ip, tconfig.master_port,
+			      tconfig.rule_port);
 }
 
 static void master_cb(evutil_socket_t fd, short event, void *arg)
@@ -883,14 +878,29 @@ static void master_cb(evutil_socket_t fd, short event, void *arg)
 static void *hitslog_thread(void *args)
 {
 	struct sockaddr_in addr;
-	socklen_t len = sizeof(addr);
+	socklen_t addr_len = sizeof(addr);
 	int fd;
 	char err[ANET_ERR_LEN];
+	char *udp_ip;
+	int udp_port;
+	size_t offset = 0;
+	int log_len;
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
-	fd = anetCreateUdpSocket(err, master_ip, master_port, 
-					(struct sockaddr*)&addr, len);
-	if(fd < 0) {
+	if(tconfig.hit_ip[0] && tconfig.hit_port) {
+		udp_ip = tconfig.hit_ip;
+		udp_port = tconfig.hit_port;
+		offset = offsetof(struct log_rz, src_ip);
+		log_len = sizeof(struct log_rz) - offset;
+	} else {
+		udp_ip = tconfig.master_ip;
+		udp_port = tconfig.master_port;
+		offset = 0;
+		log_len = sizeof(struct log_rz);
+	}
+	fd = anetCreateUdpSocket(err, udp_ip, udp_port,
+				 (struct sockaddr *)&addr, addr_len);
+	if (fd < 0) {
 		t01_log(T01_WARNING, "Cannot create socket: %s", err);
 		goto leave;
 	}
@@ -905,8 +915,8 @@ static void *hitslog_thread(void *args)
 			list_del(pos);
 			pthread_spin_unlock(&hitlog_lock);
 
-			anetUdpWrite(fd, (char*)&hlr->hit, sizeof(hlr->hit), 
-					(struct sockaddr*)&addr, len);
+			anetUdpWrite(fd, (char *)&hlr->hit+offset, log_len,
+				     (struct sockaddr *)&addr, addr_len);
 			zfree(hlr);
 		}
 	}
@@ -929,47 +939,53 @@ static void *libevent_thread(void *args)
 
 	/* start hit log udp server */
 	if (udp_logfd > 0) {
-		event_set(&ev0, udp_logfd, EV_READ | EV_PERSIST, udp_server_can_read, NULL);
+		event_set(&ev0, udp_logfd, EV_READ | EV_PERSIST,
+			  udp_server_can_read, NULL);
 		event_base_set(base, &ev0);
 		event_add(&ev0, NULL);
 	}
 
 	/* start rule management server */
 	if (tcp_sofd > 0) {
-		event_set(&ev1, tcp_sofd, EV_READ | EV_PERSIST, server_can_accept, NULL);
+		event_set(&ev1, tcp_sofd, EV_READ | EV_PERSIST,
+			  server_can_accept, NULL);
 		event_base_set(base, &ev1);
 		event_add(&ev1, NULL);
 	}
 
 	/* Initalize timeout event */
-	if(work_mode & NETMAP_MODE) {
-		event_assign(&ev2, base, -1, EV_PERSIST, statistics_cb, (void*) &ev2);
+	if (tconfig.work_mode & NETMAP_MODE) {
+		event_assign(&ev2, base, -1, EV_PERSIST, statistics_cb,
+			     (void *)&ev2);
 		evutil_timerclear(&tv2);
-		tv2.tv_sec = 2;		
+		tv2.tv_sec = 2;
 		event_add(&ev2, &tv2);
 	}
-	
-	if(work_mode & NETMAP_MODE || work_mode & MASTER_MODE) {
+
+	if (tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE) {
 		evutil_timerclear(&tv3);
 		tv3.tv_usec = 1000;
-		event_assign(&ev3, base, -1, EV_PERSIST, rulesaving_cb, (void*) &ev3);
+		event_assign(&ev3, base, -1, EV_PERSIST, rulesaving_cb,
+			     (void *)&ev3);
 		event_add(&ev3, &tv3);
 	}
 
-	if(work_mode & SLAVE_MODE) {
+	if (tconfig.work_mode & SLAVE_MODE) {
 		evutil_timerclear(&tv4);
 		tv4.tv_sec = 5;
-		event_assign(&ev4, base, -1, EV_PERSIST, slave_cb, (void*) &ev4);
+		event_assign(&ev4, base, -1, EV_PERSIST, slave_cb,
+			     (void *)&ev4);
 		event_add(&ev4, &tv4);
-	} else if(work_mode & MASTER_MODE) {
+	} else if (tconfig.work_mode & MASTER_MODE) {
 		evutil_timerclear(&tv4);
 		tv4.tv_sec = 5;
-		event_assign(&ev4, base, -1, EV_PERSIST, master_cb, (void*) &ev4);
+		event_assign(&ev4, base, -1, EV_PERSIST, master_cb,
+			     (void *)&ev4);
 		event_add(&ev4, &tv4);
 	}
 
 	event_base_dispatch(base);
-	
+
 	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
 }
 
@@ -1010,7 +1026,7 @@ static void *netmap_thread(void *args)
 		pfd[1].events = POLLOUT;
 		nfds++;
 	}
-	
+
 	while (!shutdown_app) {
 		/* should use a parameter to decide how often to send */
 		pfd[0].revents = pfd[1].revents = 0;
@@ -1039,91 +1055,104 @@ static void main_thread()
 
 	gettimeofday(&last_report_ts, NULL);
 
-	if(work_mode & NETMAP_MODE && 
-		pthread_create(&threads[nthreads++], NULL, netmap_thread, NULL) != 0) {
-		t01_log(T01_WARNING, "Can't create netmap thread: %s", strerror(errno));
+	if (tconfig.work_mode & NETMAP_MODE &&
+	    pthread_create(&threads[nthreads++], NULL, netmap_thread,
+			   NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create netmap thread: %s",
+			strerror(errno));
 		exit(1);
 	} else {
 		sleep(1);
 	}
 
-	if(work_mode & SLAVE_MODE && 
-		pthread_create(&threads[nthreads++], NULL, hitslog_thread, NULL) != 0) {
-		t01_log(T01_WARNING, "Can't create hitslog thread: %s", strerror(errno));
-		exit(1);
-	} 
-
-	if((work_mode & NETMAP_MODE || work_mode & MASTER_MODE) && 
-		pthread_create(&threads[nthreads++], NULL, libevent_thread, NULL) != 0) {
-		t01_log(T01_WARNING, "Can't create libevent thread: %s", strerror(errno));
+	if (tconfig.work_mode & SLAVE_MODE &&
+	    pthread_create(&threads[nthreads++], NULL, hitslog_thread,
+			   NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create hitslog thread: %s",
+			strerror(errno));
 		exit(1);
 	}
 
-	if (backup && pthread_create(&threads[nthreads++], NULL, backup_thread, NULL) != 0) {
-		t01_log(T01_WARNING, "Can't create backup thread: %s", strerror(errno));
+	if ((tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE)
+	    && pthread_create(&threads[nthreads++], NULL, libevent_thread,
+			      NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create libevent thread: %s",
+			strerror(errno));
+		exit(1);
+	}
+
+	if (backup
+	    && pthread_create(&threads[nthreads++], NULL, backup_thread,
+			      NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create backup thread: %s",
+			strerror(errno));
 		backup = 0;
 		nthreads--;
 	}
 
-	if (mirror && pthread_create(&threads[nthreads++], NULL, mirror_thread, NULL) != 0) {
-		t01_log(T01_WARNING, "Can't create mirror thread: %s", strerror(errno));
+	if (mirror
+	    && pthread_create(&threads[nthreads++], NULL, mirror_thread,
+			      NULL) != 0) {
+		t01_log(T01_WARNING, "Can't create mirror thread: %s",
+			strerror(errno));
 		mirror = 0;
 		nthreads--;
 	}
 
-	for(i = 0; i < nthreads; i++) {
+	for (i = 0; i < nthreads; i++) {
 		pthread_join(threads[i], NULL);
 	}
 }
 
 static void init_system()
 {
-	if (daemon_mode) {
+	if (tconfig.daemon_mode) {
 		daemonize();
 		create_pidfile();
 	}
 
 	zmalloc_enable_thread_safeness();
-	//event_set_mem_functions(zmalloc, zrealloc, zfree);
+	event_set_mem_functions(zmalloc, zrealloc, zfree);
 
-	init_log(verbose, logfile);
+	init_log(tconfig.verbose, tconfig.logfile);
 	lastsave = upstart = time(NULL);
 	gettimeofday(&upstart_tv, NULL);
 }
-
 
 static void init_netmap()
 {
 	struct nmreq req;
 	char interface[64];
 
-	manage_interface_promisc_mode(ifname, 1);
+	manage_interface_promisc_mode(tconfig.ifname, 1);
 	t01_log(T01_DEBUG,
 		"Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off",
-		ifname);
+		tconfig.ifname);
 
 	bzero(&req, sizeof(req));
-	sprintf(interface, "netmap:%s", ifname);
+	sprintf(interface, "netmap:%s", tconfig.ifname);
 	nmr = nm_open(interface, &req, 0, NULL);
 	if (nmr == NULL) {
-		t01_log(T01_WARNING, "Unable to open %s: %s", ifname,
+		t01_log(T01_WARNING, "Unable to open %s: %s", tconfig.ifname,
 			strerror(errno));
 		exit(1);
 	}
 
-	if (ofname[0] == 0 || strcmp(ifname, ofname) == 0) {
+	if (tconfig.ofname[0] == 0
+	    || strcmp(tconfig.ifname, tconfig.ofname) == 0) {
 		out_nmr = nmr;
 	} else {
-		manage_interface_promisc_mode(ofname, 1);
+		manage_interface_promisc_mode(tconfig.ofname, 1);
 		t01_log(T01_DEBUG,
 			"Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off",
-			ofname);
-		sprintf(interface, "netmap:%s", ofname);
+			tconfig.ofname);
+		sprintf(interface, "netmap:%s", tconfig.ofname);
 		out_nmr = nm_open(interface, &req, 0, NULL);
 		if (out_nmr == NULL) {
 			t01_log(T01_WARNING,
-				"Unable to open %s: %s, use %s instead", ofname,
-				strerror(errno), ifname);
+				"Unable to open %s: %s, use %s instead",
+				tconfig.ofname, strerror(errno),
+				tconfig.ifname);
 			out_nmr = nmr;
 		}
 	}
@@ -1131,10 +1160,10 @@ static void init_netmap()
 	workflow = setup_detection();
 }
 
-static void init_engine() 
+static void init_engine()
 {
-	if (filter[0]) {
-		char *temp = zstrdup(filter), *p, *last = NULL;
+	if (tconfig.filter[0]) {
+		char *temp = zstrdup(tconfig.filter), *p, *last = NULL;
 		p = strtok_r(temp, ",", &last);
 		while (p != NULL) {
 			char protocol[64] = { 0 }, port[10] = {
@@ -1167,23 +1196,23 @@ static void init_engine()
 	}
 
 	pthread_spin_init(&mirror_lock, 0);
-	if (engine[0] && engine_opt[0]) {
-		if (load_ioengine(&backup_engine, engine) < 0 ||
-		    load_ioengine(&mirror_engine, engine) < 0) {
+	if (tconfig.engine[0] && tconfig.engine_opt[0]) {
+		if (load_ioengine(&backup_engine, tconfig.engine) < 0 ||
+		    load_ioengine(&mirror_engine, tconfig.engine) < 0) {
 			t01_log(T01_WARNING, "Unable to load engine %s",
-				engine);
+				tconfig.engine);
 		}
 
-		if (init_ioengine(&mirror_engine, engine_opt) < 0) {
+		if (init_ioengine(&mirror_engine, tconfig.engine_opt) < 0) {
 			t01_log(T01_WARNING, "Unable to init mirror engine %s",
-				engine);
+				tconfig.engine);
 		} else {
 			mirror = 1;
 		}
 
-		if (init_ioengine(&backup_engine, engine_opt) < 0) {
+		if (init_ioengine(&backup_engine, tconfig.engine_opt) < 0) {
 			t01_log(T01_WARNING, "Unable to init backup engine %s",
-				engine);
+				tconfig.engine);
 		} else {
 			backup = 1;
 		}
@@ -1191,39 +1220,27 @@ static void init_engine()
 }
 
 static void init_rulemgmt()
-{	
+{
 	char err[ANET_ERR_LEN];
 	char *bind_ip;
 	int port;
 
-	if (ruledb[0]) {
-		int rule_num = load_rules(ruledb);
+	if (tconfig.ruledb[0]) {
+		int rule_num = load_rules(tconfig.ruledb);
 		if (rule_num > 0) {
 			t01_log(T01_NOTICE, "Load %d rules from file %s",
-				rule_num, ruledb);
+				rule_num, tconfig.ruledb);
 		} else {
 			rule_num = 0;
 		}
 	}
 
-	if(work_mode & MASTER_MODE || work_mode & SLAVE_MODE) {
-		char *sep = strchr(master_address, ':');
-		if (sep) {
-			*sep = 0;
-			strncpy(master_ip, master_address, sizeof(master_ip));
-			sep++;
-			master_port = atoi(sep);
-		} else {
-			strncpy(master_ip, master_address, sizeof(master_ip));
-		}
-	} 
-
-	if(work_mode & NETMAP_MODE) {
-		bind_ip = rule_ip;
-		port = rule_port;
+	if (tconfig.work_mode & NETMAP_MODE) {
+		bind_ip = tconfig.rule_ip;
+		port = tconfig.rule_port;
 	} else {
-		bind_ip = master_ip;
-		port = master_port;
+		bind_ip = tconfig.master_ip;
+		port = tconfig.master_port;
 	}
 
 	/* Open the TCP listening socket for the user commands. */
@@ -1242,8 +1259,8 @@ static void init_rulemgmt()
 		}
 		t01_log(T01_NOTICE, "Succeed to bind tcp %s:%d", bind_ip, port);
 		anetNonBlock(NULL, tcp_sofd);
-		
-		if(work_mode & MASTER_MODE) {
+
+		if (tconfig.work_mode & MASTER_MODE) {
 			udp_logfd = anetUdpServer(err, port, bind_ip);
 			if (udp_logfd == ANET_ERR) {
 				t01_log(T01_WARNING,
@@ -1251,7 +1268,8 @@ static void init_rulemgmt()
 					bind_ip[0] ? bind_ip : "*", port, err);
 				exit(1);
 			}
-			t01_log(T01_NOTICE, "Succeed to bind udp %s:%d", bind_ip, port);
+			t01_log(T01_NOTICE, "Succeed to bind udp %s:%d",
+				bind_ip, port);
 			anetNonBlock(NULL, udp_logfd);
 		}
 	}
@@ -1283,7 +1301,7 @@ static void exit_netmap()
 
 static void exit_rulemgmt()
 {
-	if(work_mode & NETMAP_MODE)
+	if (tconfig.work_mode & NETMAP_MODE)
 		destroy_rules();
 	close_listening_sockets();
 }
@@ -1294,18 +1312,18 @@ int main(int argc, char **argv)
 
 	init_system();
 	init_engine();
-	if(work_mode & NETMAP_MODE)
+	if (tconfig.work_mode & NETMAP_MODE)
 		init_netmap();
-	if(work_mode & NETMAP_MODE || work_mode & MASTER_MODE)
+	if (tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE)
 		init_rulemgmt();
 
 	signal(SIGINT, signal_hander);
 	signal(SIGTERM, signal_hander);
 	main_thread();
 
-	if(work_mode & NETMAP_MODE)
+	if (tconfig.work_mode & NETMAP_MODE)
 		exit_netmap();
-	if(work_mode & NETMAP_MODE || work_mode & MASTER_MODE)
+	if (tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE)
 		exit_rulemgmt();
 
 	return 0;

@@ -58,6 +58,7 @@
 
 static uint32_t max_id;
 static uint8_t tdbver;
+static ZLIST_HEAD(rule_list);
 
 static inline uint8_t get_action(const char *action)
 {
@@ -1329,4 +1330,18 @@ uint64_t calc_crc64_rules()
 	zfree(rules);
 
 	return cksum;	
+}
+
+uint64_t calc_totalhits()
+{
+	struct list_head *pos;
+	uint64_t total_hits = 0;
+
+	list_for_each(pos, &rule_list) {
+		struct rule *rule = list_entry(pos, struct rule, list);
+		if (rule->used == 0)
+			continue;
+		total_hits += rule->hits;
+	}
+	return total_hits;
 }

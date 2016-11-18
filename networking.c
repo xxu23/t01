@@ -38,6 +38,7 @@
 
 #include <evhttp.h>
 #include "t01.h"
+#undef offsetof
 #include "list.h"
 #include "anet.h"
 #include "networking.h"
@@ -64,7 +65,8 @@ static void mark_slave_offline(const char *ip, int port)
 {
 	struct list_head *pos;
 	list_for_each(pos, &slave_list) {
-		struct slave_client *s = list_entry(pos, struct slave_client, list);
+		struct slave_client *s =
+		    list_entry(pos, struct slave_client, list);
 		if (strcmp(s->ip, ip) == 0 && s->port == port) {
 			s->online = 0;
 			break;
@@ -79,12 +81,14 @@ void udp_server_can_read(int fd, short event, void *ptr)
 	int nread;
 	struct log_rz lr;
 
-	if((nread = recvfrom(fd, &lr, sizeof(lr), 0, (struct sockaddr*)&addr, &len)) <= 0)
+	if ((nread =
+	     recvfrom(fd, &lr, sizeof(lr), 0, (struct sockaddr *)&addr,
+		      &len)) <= 0)
 		return;
-	else if(nread != sizeof(lr))
+	else if (nread != sizeof(lr))
 		return;
 
-	if(lr.local_ip == 0)
+	if (lr.local_ip == 0)
 		lr.local_ip = addr.sin_addr.s_addr;
 
 	add_log_rz(&lr);
@@ -118,8 +122,8 @@ struct cmd {
 	size_t body_len;
 };
 
-static struct cmd *cmd_new(struct http_client *client, int count, 
-					const char *body, size_t body_len)
+static struct cmd *cmd_new(struct http_client *client, int count,
+			   const char *body, size_t body_len)
 {
 	struct cmd *c = zcalloc(1, sizeof(struct cmd));
 
@@ -151,7 +155,7 @@ static char *decode_uri(const char *uri, size_t length, size_t * out_len,
 	size_t i, j;
 	int in_query = always_decode_plus;
 	char *ret = zmalloc(length + 1);
-	bzero(ret, length+1);
+	bzero(ret, length + 1);
 
 	for (i = j = 0; i < length; i++) {
 		c = uri[i];
@@ -237,8 +241,8 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 	return cmd;
 }
 
-static void send_client_reply2(struct http_client *c, const char *p, 
-				size_t sz, const char *content_type)
+static void send_client_reply(struct http_client *c, const char *p,
+			      size_t sz, const char *content_type)
 {
 	const char *ct = content_type;
 	struct http_response *resp;
@@ -250,19 +254,6 @@ static void send_client_reply2(struct http_client *c, const char *p,
 	http_response_write(resp, c->fd);
 }
 
-static void send_client_reply(struct cmd *cmd, const char *p, size_t sz,
-			      const char *content_type)
-{
-	const char *ct = content_type;
-	struct http_response *resp;
-
-	resp = http_response_init(cmd->client->base, 200, "OK");
-	http_response_set_header(resp, "Content-Type", ct);
-	http_response_set_body(resp, p, sz);
-	http_response_set_keep_alive(resp, 1);
-	http_response_write(resp, cmd->client->fd);
-}
-
 static int client_get_rule(struct http_client *c, struct cmd *cmd)
 {
 	uint32_t id = atoi(cmd->argv[1]);
@@ -270,7 +261,7 @@ static int client_get_rule(struct http_client *c, struct cmd *cmd)
 	size_t len = 0;
 	int ret = get_rule(id, &result, &len);
 	if (ret == 0) {
-		send_client_reply(cmd, result, len, "application/json");
+		send_client_reply(c, result, len, "application/json");
 		release_buffer(&result);
 	} else {
 		http_send_error(c, 404, "Not Found");
@@ -284,7 +275,7 @@ static int client_get_ruleids(struct http_client *c, struct cmd *cmd)
 	size_t len = 0;
 	get_ruleids(&result, &len, 1);
 
-	send_client_reply(cmd, result, len, "application/json");
+	send_client_reply(c, result, len, "application/json");
 	release_buffer(&result);
 
 	return 0;
@@ -302,7 +293,7 @@ static int client_get_rules(struct http_client *c, struct cmd *cmd)
 			ids[j++] = atoi(c->queries[i].val);
 	}
 	get_rules(ids, j, &result, &len);
-	send_client_reply(cmd, result, len, "application/json");
+	send_client_reply(c, result, len, "application/json");
 	release_buffer(&result);
 
 	return 0;
@@ -326,28 +317,31 @@ static int client_get_hits(struct http_client *c, struct cmd *cmd)
 		else if (strcasecmp(c->queries[i].key, "limit") == 0)
 			limit = atoi(c->queries[i].val);
 	}
-	if(offset < 0) offset = 0;
-	if(limit <= 0 || limit > MAX_LIMIT) limit = MAX_LIMIT;
+	if (offset < 0)
+		offset = 0;
+	if (limit <= 0 || limit > MAX_LIMIT)
+		limit = MAX_LIMIT;
 
 	ret = get_hits(rule_id, offset, limit, &result, &len);
-	if(ret == 0){
-		send_client_reply(cmd, result, len, "application/json");
+	if (ret == 0) {
+		send_client_reply(c, result, len, "application/json");
 		release_buffer(&result);
 	} else {
-		http_send_error(c, 404, "Not Found");	
+		http_send_error(c, 404, "Not Found");
 	}
 
 	return ret;
 }
 
-void master_sync_rule_cb(struct evhttp_request *req, void *arg) {
+void master_sync_rule_cb(struct evhttp_request *req, void *arg)
+{
 	struct evhttp_connection *conn = arg;
 	char *address;
 	uint16_t port;
 	int code;
 
 	evhttp_connection_get_peer(conn, &address, &port);
-	if(!req) {
+	if (!req) {
 		t01_log(T01_WARNING, "Failed to connect to slave %s:%d",
 			address, port);
 		evhttp_connection_free(conn);
@@ -356,44 +350,49 @@ void master_sync_rule_cb(struct evhttp_request *req, void *arg) {
 	}
 
 	code = evhttp_request_get_response_code(req);
-	if(code == 200) {
+	if (code == 200) {
 		t01_log(T01_WARNING, "Succeed to sync rule with slave %s:%d",
 			address, port);
 	} else {
-		if(code == 0)
+		if (code == 0)
 			mark_slave_offline(address, port);
 		t01_log(T01_WARNING, "Failed to sync rule with slave %s:%d",
 			address, port);
 	}
 }
 
-static void sync_slaves_rules(const char *path, int method, 
-					const char *body, size_t len)
+static void sync_slaves_rules(const char *path, int method,
+			      const char *body, size_t len)
 {
-	struct list_head *pos; 
+	struct list_head *pos;
 	struct evhttp_connection *conn;
 	struct evhttp_request *req;
 	struct evbuffer *buffer;
 	char buf[32];
 
 	list_for_each(pos, &slave_list) {
-		struct slave_client *s = list_entry(pos, struct slave_client, list);
-		if(s->online == 0)
+		struct slave_client *s =
+		    list_entry(pos, struct slave_client, list);
+		if (s->online == 0)
 			continue;
-		t01_log(T01_NOTICE, "Connect slave[%s:%d] to sync rule", s->ip, s->port);
+		t01_log(T01_NOTICE, "Connect slave[%s:%d] to sync rule", s->ip,
+			s->port);
 
 		conn = evhttp_connection_base_new(base, NULL, s->ip, s->port);
 		req = evhttp_request_new(master_sync_rule_cb, conn);
 		buffer = evhttp_request_get_output_buffer(req);
-		
+
 		evhttp_connection_free_on_completion(conn);
 		evhttp_connection_set_timeout(conn, 5);
-		evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
-		
-		if(body && len) {
+		evhttp_add_header(req->output_headers, "Connection",
+				  "Keep-Alive");
+
+		if (body && len) {
 			evbuffer_add(buffer, body, len);
-			evutil_snprintf(buf, sizeof(buf)-1, "%lu", (unsigned long)len);
-			evhttp_add_header(req->output_headers, "Content-Length", buf);
+			evutil_snprintf(buf, sizeof(buf) - 1, "%lu",
+					(unsigned long)len);
+			evhttp_add_header(req->output_headers, "Content-Length",
+					  buf);
 		}
 
 		evhttp_make_request(conn, req, method, path);
@@ -406,9 +405,10 @@ static int client_create_rule(struct http_client *c, struct cmd *cmd)
 	size_t len = 0;
 	int ret = create_rule(cmd->body, cmd->body_len, &result, &len);
 	if (ret == 0) {
-		if(work_mode & MASTER_MODE) 
-			sync_slaves_rules("/rules", EVHTTP_REQ_POST, result, len);
-		send_client_reply(cmd, result, len, "application/json");
+		if (tconfig.work_mode & MASTER_MODE)
+			sync_slaves_rules("/rules", EVHTTP_REQ_POST, result,
+					  len);
+		send_client_reply(c, result, len, "application/json");
 		release_buffer(&result);
 	} else {
 		http_send_error(c, 400, "Bad Request");
@@ -421,12 +421,13 @@ static int client_update_rule(struct http_client *c, struct cmd *cmd)
 	uint32_t id = atoi(cmd->argv[1]);
 	int ret = update_rule(id, cmd->body, cmd->body_len);
 	if (ret == 0) {
-		if(work_mode & MASTER_MODE) {
-			char 	path[128];
+		if (tconfig.work_mode & MASTER_MODE) {
+			char path[128];
 			snprintf(path, sizeof(path), "/rule/%u", id);
-			sync_slaves_rules(path, EVHTTP_REQ_PUT, cmd->body, cmd->body_len);
+			sync_slaves_rules(path, EVHTTP_REQ_PUT, cmd->body,
+					  cmd->body_len);
 		}
-		send_client_reply(cmd, NULL, 0, "application/json");
+		send_client_reply(c, NULL, 0, "application/json");
 	} else {
 		http_send_error(c, 400, "Bad Request");
 	}
@@ -438,12 +439,12 @@ static int client_delete_rule(struct http_client *c, struct cmd *cmd)
 	uint32_t id = atoi(cmd->argv[1]);
 	int ret = delete_rule(id);
 	if (ret == 0) {
-		if(work_mode & MASTER_MODE) {
+		if (tconfig.work_mode & MASTER_MODE) {
 			char path[128];
 			snprintf(path, sizeof(path), "/rule/%u", id);
 			sync_slaves_rules(path, EVHTTP_REQ_DELETE, NULL, 0);
 		}
-		send_client_reply(cmd, NULL, 0, "application/json");
+		send_client_reply(c, NULL, 0, "application/json");
 	} else {
 		http_send_error(c, 400, "Bad Request");
 	}
@@ -454,22 +455,30 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 {
 	cJSON *root = cJSON_CreateObject();
 	char *result;
-	
+
 	cJSON_AddNumberToObject(root, "upstart", upstart);
 	cJSON_AddNumberToObject(root, "now", time(NULL));
-	if(work_mode & NETMAP_MODE) {
-		cJSON_AddStringToObject(root, "iface", ifname);
-		cJSON_AddStringToObject(root, "oface", ofname[0]?ofname:ifname);
+	cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
+	if (tconfig.work_mode & NETMAP_MODE) {
+		cJSON_AddStringToObject(root, "iface", tconfig.ifname);
+		cJSON_AddStringToObject(root, "oface",
+					tconfig.ofname[0] ? tconfig.
+					ofname : tconfig.ifname);
 		cJSON_AddNumberToObject(root, "total_pkts_in", ip_packet_count);
-		cJSON_AddNumberToObject(root, "total_pkts_out", ip_packet_count_out);
+		cJSON_AddNumberToObject(root, "total_pkts_out",
+					ip_packet_count_out);
 		cJSON_AddNumberToObject(root, "total_bytes_in", total_ip_bytes);
-		cJSON_AddNumberToObject(root, "total_bytes_out", total_ip_bytes_out);
-		cJSON_AddNumberToObject(root, "avg_pkts_in", pkts_per_second_in);
-		cJSON_AddNumberToObject(root, "avg_pkts_out", pkts_per_second_out);
-		cJSON_AddNumberToObject(root, "avg_bytes_in", bytes_per_second_in);
-		cJSON_AddNumberToObject(root, "avg_bytes_out", bytes_per_second_out);
+		cJSON_AddNumberToObject(root, "total_bytes_out",
+					total_ip_bytes_out);
+		cJSON_AddNumberToObject(root, "avg_pkts_in",
+					pkts_per_second_in);
+		cJSON_AddNumberToObject(root, "avg_pkts_out",
+					pkts_per_second_out);
+		cJSON_AddNumberToObject(root, "avg_bytes_in",
+					bytes_per_second_in);
+		cJSON_AddNumberToObject(root, "avg_bytes_out",
+					bytes_per_second_out);
 		cJSON_AddNumberToObject(root, "hits", hits);
-		cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
 	} else {
 		struct list_head *pos;
 		cJSON *array = cJSON_CreateArray(), *item;
@@ -484,23 +493,25 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 			cJSON_AddItemToArray(array, item);
 		}
 		cJSON_AddItemToObject(root, "nodes", array);
+
+		cJSON_AddNumberToObject(root, "hits", calc_totalhits());
 	}
 
 	result = cJSON_Print(root);
-	send_client_reply(cmd, result, strlen(result), "application/json");
+	send_client_reply(c, result, strlen(result), "application/json");
 
 	cJSON_Delete(root);
 	cJSON_FreePrint(result);
 	return 0;
 }
 
-struct master_ev_args
-{
+struct master_ev_args {
 	struct evhttp_connection *conn;
 	struct http_client *client;
 };
 
-void master_get_sinfo_cb(struct evhttp_request *req, void *arg) {
+void master_get_sinfo_cb(struct evhttp_request *req, void *arg)
+{
 	struct master_ev_args *ev_arg = arg;
 	struct evhttp_connection *conn = ev_arg->conn;
 	struct http_client *client = ev_arg->client;
@@ -509,7 +520,7 @@ void master_get_sinfo_cb(struct evhttp_request *req, void *arg) {
 	int code;
 
 	evhttp_connection_get_peer(conn, &address, &port);
-	if(!req) {
+	if (!req) {
 		t01_log(T01_WARNING, "Failed to connect to slave %s:%d",
 			address, port);
 		evhttp_connection_free(conn);
@@ -519,12 +530,12 @@ void master_get_sinfo_cb(struct evhttp_request *req, void *arg) {
 	}
 
 	code = evhttp_request_get_response_code(req);
-	if(code == 200) {
+	if (code == 200) {
 		size_t len = evbuffer_get_length(req->input_buffer);
 		unsigned char *str = evbuffer_pullup(req->input_buffer, len);
-		send_client_reply2(client, str, len, "application/json");
+		send_client_reply(client, str, len, "application/json");
 	} else {
-		if(code == 0)
+		if (code == 0)
 			mark_slave_offline(address, port);
 		t01_log(T01_WARNING, "Failed to sync rule with slave %s:%d",
 			address, port);
@@ -534,15 +545,15 @@ void master_get_sinfo_cb(struct evhttp_request *req, void *arg) {
 
 static int client_get_slave_info(struct http_client *c, struct cmd *cmd)
 {
-	char ip[48] = {0};
+	char ip[48] = { 0 };
 	int port = 0;
 	int query_count = c->query_count, i, j = 0;
 	struct evhttp_connection *conn;
 	struct evhttp_request *req;
 	struct evbuffer *buffer;
 	struct master_ev_args *arg;
-	
-	if(work_mode & NETMAP_MODE) {
+
+	if (tconfig.work_mode & NETMAP_MODE) {
 		http_send_error(c, 400, "Bad Request");
 		return 0;
 	}
@@ -553,10 +564,10 @@ static int client_get_slave_info(struct http_client *c, struct cmd *cmd)
 		else if (strcasecmp(c->queries[i].key, "port") == 0)
 			port = atoi(c->queries[i].val);
 	}
-	if(port <= 0 || port >=65535 || ip[0] == 0 || inet_addr(ip) == -1) {
+	if (port <= 0 || port >= 65535 || ip[0] == 0 || inet_addr(ip) == -1) {
 		http_send_error(c, 400, "Bad Request");
 		return 0;
-	}	
+	}
 
 	arg = zmalloc(sizeof(*arg));
 	conn = evhttp_connection_base_new(base, NULL, ip, port);
@@ -566,8 +577,8 @@ static int client_get_slave_info(struct http_client *c, struct cmd *cmd)
 	evhttp_connection_free_on_completion(conn);
 	evhttp_connection_set_timeout(conn, 5);
 	evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
-	evhttp_make_request(conn, req, EVHTTP_REQ_GET, "/info");	
-	
+	evhttp_make_request(conn, req, EVHTTP_REQ_GET, "/info");
+
 	return 0;
 }
 
@@ -575,7 +586,7 @@ static int client_sync_rules(struct http_client *c, struct cmd *cmd)
 {
 	int ret = sync_rules(cmd->body, cmd->body_len);
 	if (ret == 0) {
-		send_client_reply(cmd, NULL, 0, "application/json");
+		send_client_reply(c, NULL, 0, "application/json");
 	} else {
 		http_send_error(c, 400, "Bad Request");
 	}
@@ -597,29 +608,31 @@ static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
 			sscanf(c->queries[i].val, "%llx", &cksum);
 	}
 
-	if(slave_port <= 0 || slave_port >= 65535){
+	if (slave_port <= 0 || slave_port >= 65535) {
 		http_send_error(c, 400, "Bad Request");
 		return -1;
 	}
 
 	list_for_each(pos, &slave_list) {
-		struct slave_client *s = list_entry(pos, struct slave_client, list);
+		struct slave_client *s =
+		    list_entry(pos, struct slave_client, list);
 		if (strcmp(s->ip, c->ip) == 0 && s->port == slave_port) {
 			slave = s;
 			break;
 		}
 	}
-	if(!slave) {
+	if (!slave) {
 		slave = zcalloc(1, sizeof(*slave));
 		strncpy(slave->ip, c->ip, sizeof(slave->ip));
 		slave->port = slave_port;
 		list_add_tail(&slave->list, &slave_list);
-		t01_log(T01_NOTICE, "Slave client %s:%d join", c->ip, slave_port);
+		t01_log(T01_NOTICE, "Slave client %s:%d join", c->ip,
+			slave_port);
 	}
 	slave->cksum = cksum;
 	slave->online = 1;
 
-	send_client_reply(cmd, NULL, 0, "application/json");
+	send_client_reply(c, NULL, 0, "application/json");
 	return 0;
 }
 
@@ -629,19 +642,19 @@ static struct http_cmd_table {
 	size_t params;
 	int (*action) (struct http_client * client, struct cmd * cmd);
 } tables[] = {
-	{ HTTP_GET, "rule", 1, client_get_rule}, 
-	{ HTTP_GET, "ruleids", 0, client_get_ruleids}, 
-	{ HTTP_GET, "rules", 0, client_get_rules}, 
-	{ HTTP_GET, "hits", 0, client_get_hits}, 
-	{ HTTP_POST, "rules", 0, client_create_rule}, 
-	{ HTTP_PUT, "rule", 1, client_update_rule}, 
-	{ HTTP_DELETE, "rule", 1, client_delete_rule},
-	{ HTTP_GET, "info", 0, client_get_server_info},
-	{ HTTP_GET, "sinfo", 0, client_get_slave_info},
-	{ HTTP_POST, "registry", 0, client_registry_cluster},
-	{ HTTP_GET, "registry", 0, client_registry_cluster},
-	{ HTTP_POST, "rulessync", 0, client_sync_rules},
-};
+	{
+	HTTP_GET, "rule", 1, client_get_rule}, {
+	HTTP_GET, "ruleids", 0, client_get_ruleids}, {
+	HTTP_GET, "rules", 0, client_get_rules}, {
+	HTTP_GET, "hits", 0, client_get_hits}, {
+	HTTP_POST, "rules", 0, client_create_rule}, {
+	HTTP_PUT, "rule", 1, client_update_rule}, {
+	HTTP_DELETE, "rule", 1, client_delete_rule}, {
+	HTTP_GET, "info", 0, client_get_server_info}, {
+	HTTP_GET, "sinfo", 0, client_get_slave_info}, {
+	HTTP_POST, "registry", 0, client_registry_cluster}, {
+	HTTP_GET, "registry", 0, client_registry_cluster}, {
+HTTP_POST, "rulessync", 0, client_sync_rules},};
 
 static void cmd_dispatch(struct http_client *c, struct cmd *cmd, int method)
 {
@@ -651,7 +664,7 @@ static void cmd_dispatch(struct http_client *c, struct cmd *cmd, int method)
 		http_send_error(c, 404, "Not Found");
 		return;
 	}
-	
+
 	for (i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
 		if (tables[i].method == method &&
 		    tables[i].params == cmd->count - 1 &&
@@ -710,9 +723,10 @@ int cmd_run_delete(struct http_client *c, const char *uri, size_t uri_len)
 	return 0;
 }
 
-void slave_request_cb(struct evhttp_request *req, void *arg) {
+void slave_request_cb(struct evhttp_request *req, void *arg)
+{
 	struct evhttp_connection *conn = arg;
-	if(!req) {
+	if (!req) {
 		evhttp_connection_free(conn);
 		return;
 	}
@@ -726,7 +740,7 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 	char path[128];
 
 	conn = evhttp_connection_base_new(base, NULL, master_ip, master_port);
- 	req = evhttp_request_new(slave_request_cb, conn);
+	req = evhttp_request_new(slave_request_cb, conn);
 	evhttp_connection_free_on_completion(conn);
 	evhttp_connection_set_timeout(conn, 5);
 	evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
@@ -736,14 +750,15 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 	return 0;
 }
 
-void master_request_syncrules_cb(struct evhttp_request *req, void *arg) {
+void master_request_syncrules_cb(struct evhttp_request *req, void *arg)
+{
 	struct evhttp_connection *conn = arg;
 	char *address;
 	uint16_t port;
 	int code;
 
 	evhttp_connection_get_peer(conn, &address, &port);
-	if(!req) {
+	if (!req) {
 		t01_log(T01_WARNING, "Failed to connect to slave %s:%d",
 			address, port);
 		evhttp_connection_free(conn);
@@ -752,11 +767,11 @@ void master_request_syncrules_cb(struct evhttp_request *req, void *arg) {
 	}
 
 	code = evhttp_request_get_response_code(req);
-	if(code == 200) {
+	if (code == 200) {
 		t01_log(T01_WARNING, "Succeed to sync rules with slave %s:%d",
 			address, port);
 	} else {
-		if(code == 0)
+		if (code == 0)
 			mark_slave_offline(address, port);
 		t01_log(T01_WARNING, "Failed to sync rules with slave %s:%d",
 			address, port);
@@ -774,31 +789,35 @@ int master_check_slaves()
 	size_t len = 0, len2 = 0;
 	char *rules = NULL;
 	char buf[32];
-	
+
 	list_for_each(pos, &slave_list) {
-		struct slave_client *s = list_entry(pos, struct slave_client, list);
-		if(s->online == 0 || s->cksum == cksum)
+		struct slave_client *s =
+		    list_entry(pos, struct slave_client, list);
+		if (s->online == 0 || s->cksum == cksum)
 			continue;
 
-		t01_log(T01_NOTICE, "CRC not match: master %llx VS slave[%s:%d] %llx",
-		    cksum, s->ip, s->port, s->cksum);
+		t01_log(T01_NOTICE,
+			"CRC not match: master %llx VS slave[%s:%d] %llx",
+			cksum, s->ip, s->port, s->cksum);
 
-		if(!ids && get_ruleids((char**)&ids, &len, 0) < 0) 
+		if (!ids && get_ruleids((char **)&ids, &len, 0) < 0)
 			continue;
 		len /= sizeof(uint32_t);
-		if(!rules && get_rules(ids, len, &rules, &len2) < 0)
+		if (!rules && get_rules(ids, len, &rules, &len2) < 0)
 			continue;
 
 		conn = evhttp_connection_base_new(base, NULL, s->ip, s->port);
 		req = evhttp_request_new(master_request_syncrules_cb, conn);
 		buffer = evhttp_request_get_output_buffer(req);
-		
+
 		evhttp_connection_free_on_completion(conn);
 		evhttp_connection_set_timeout(conn, 5);
-		evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
-		
+		evhttp_add_header(req->output_headers, "Connection",
+				  "Keep-Alive");
+
 		evbuffer_add(buffer, rules, len2);
-		evutil_snprintf(buf, sizeof(buf)-1, "%lu", (unsigned long)len2);
+		evutil_snprintf(buf, sizeof(buf) - 1, "%lu",
+				(unsigned long)len2);
 		evhttp_add_header(req->output_headers, "Content-Length", buf);
 
 		evhttp_make_request(conn, req, EVHTTP_REQ_POST, "/rulessync");
