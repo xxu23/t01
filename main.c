@@ -48,7 +48,7 @@
 #include "ioengine.h"
 #include "t01.h"
 #include "zmalloc.h"
-
+#include <cJSON.h>
 #include <net/netmap_user.h>
 #include <event.h>
 
@@ -85,6 +85,7 @@ static ZLIST_HEAD(hitslog_list);
 static struct timeval upstart_tv;
 static char master_address[64];
 static char hit_address[64];
+static char conffile[256];
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
 static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
@@ -234,15 +235,88 @@ static void daemonize(void)
 	}
 }
 
+#define get_string_from_json(item, json, key, value) 	\
+  item = cJSON_GetObjectItem(json, key); 			\
+  if(item){ 							\
+    strncpy(value, item->valuestring, sizeof(value));	\
+  }									\
+
+#define get_int_from_json(item, json, key, value) 	\
+  item = cJSON_GetObjectItem(json, key); 			\
+  if(item){ 							\
+    value = item->valueint;                             \
+  }
+
+static void load_config(const char *filename)
+{
+	FILE *fp;
+	long size;
+	char *data;
+	cJSON *json, *item;
+	char wm[64];
+
+	/* Read content from file */
+	fp = fopen(filename, "r");
+	if (fp == NULL) {
+		t01_log(T01_WARNING,
+		"Cannot read config %s: %s, aborting now", filename, strerror(errno));
+		exit(1);
+	}
+	fseek(fp, 0, SEEK_END);
+	size = ftell(fp);
+	fseek(fp, 0, SEEK_SET);
+	data = (char *)zmalloc(size + 1);
+	if (!data) {
+		t01_log(T01_WARNING, "Out of memory!");
+		exit(1);
+	}
+	fread(data, 1, size, fp);
+	data[size] = '\0';
+	fclose(fp);
+
+	json = cJSON_Parse(data);
+	if (!json) {
+		t01_log(T01_WARNING, "Cannot parse json: %s", cJSON_GetErrorPtr());
+		exit(1);
+	}
+	zfree(data);
+
+	get_string_from_json(item, json, "ifname", tconfig.ifname);
+	get_string_from_json(item, json, "ofname", tconfig.ofname);
+	get_string_from_json(item, json, "ruledb", tconfig.ruledb);
+	get_string_from_json(item, json, "logfile", tconfig.logfile);
+	get_string_from_json(item, json, "filter", tconfig.filter);
+	get_string_from_json(item, json, "engine", tconfig.engine);
+	get_string_from_json(item, json, "engine_opt", tconfig.engine_opt);
+	get_int_from_json(item, json, "daemon", tconfig.daemon_mode);
+	get_string_from_json(item, json, "master_ip", tconfig.master_ip);
+	get_int_from_json(item, json, "master_port", tconfig.master_port);
+	get_string_from_json(item, json, "rule_ip", tconfig.rule_ip);
+	get_int_from_json(item, json, "rule_port", tconfig.rule_port);
+	get_string_from_json(item, json, "hit_ip", tconfig.hit_ip);
+	get_int_from_json(item, json, "hit_port", tconfig.hit_port);
+	get_int_from_json(item, json, "verbose", tconfig.verbose);
+	get_string_from_json(item, json, "work_mode", wm);
+	if(strcasecmp(wm, "slave") == 0)
+		tconfig.work_mode = SLAVE_MODE;
+	else if(strcasecmp(wm, "master") == 0)
+		tconfig.work_mode = MASTER_MODE;
+	else if(strcasecmp(wm, "netmap") == 0)
+		tconfig.work_mode =NETMAP_MODE;
+
+	cJSON_Delete(json);
+}
+
 static void usage()
 {
 	const char *cmd = "t01";
 	fprintf(stderr,
-		"Usage:\n"
-		"%s arguments\n"
+		"Usage: %s [options]\n"
+		"\nOptions:\n"
+		"\t-c filename               configuration file\n"
 		"\t-i interface              interface that captures incoming traffic\n"
 		"\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
-		"\t-c tconfig.ruledb                 rule db file that saving rule and hit record\n"
+		"\t-r ruledb                 rule db file that saving rule and hit record\n"
 		"\t-b ip                     ip address binded for rule management\n"
 		"\t-p port                   port listening for rule management (default 9899)\n"
 		"\t-S | -M                   slave or master mode for rule management\n"
@@ -264,7 +338,7 @@ static void parse_options(int argc, char **argv)
 	int opt;
 
 	while ((opt =
-		getopt(argc, argv, "SMdhi:o:c:e:b:p:E:v:l:F:j:H:")) != EOF) {
+		getopt(argc, argv, "SMdhc:i:o:r:e:b:p:E:v:l:F:j:H:")) != EOF) {
 		switch (opt) {
 		case 'S':
 			tconfig.work_mode |= SLAVE_MODE;
@@ -303,8 +377,12 @@ static void parse_options(int argc, char **argv)
 				sizeof(tconfig.rule_ip));
 			break;
 
-		case 'c':
+		case 'r':
 			strncpy(tconfig.ruledb, optarg, sizeof(tconfig.ruledb));
+			break;
+
+		case 'c':
+			strncpy(conffile, optarg, sizeof(conffile));
 			break;
 
 		case 'v':
@@ -338,13 +416,24 @@ static void parse_options(int argc, char **argv)
 		}
 	}
 
+	if(conffile[0])
+		load_config(conffile);
+
 	// check parameters
+	if (master_address[0]) {
+		parseipandport(master_address, tconfig.master_ip,
+			       sizeof(tconfig.master_ip), &tconfig.master_port);
+	}
+	if (hit_address[0]) {
+		parseipandport(hit_address, tconfig.hit_ip,
+			       sizeof(tconfig.hit_ip), &tconfig.hit_port);
+	}
 	if (tconfig.work_mode & SLAVE_MODE && tconfig.work_mode & MASTER_MODE) {
 		fprintf(stderr, "Both master and slave mode is not support\n");
 		usage();
 	}
 	if ((tconfig.work_mode & SLAVE_MODE || tconfig.work_mode & MASTER_MODE)
-	    && master_address[0] == 0) {
+	    && tconfig.master_ip[0] == 0) {
 		fprintf(stderr,
 			"Master address should be specified in master/slave mode\n");
 		usage();
@@ -360,16 +449,8 @@ static void parse_options(int argc, char **argv)
 	}
 	if (tconfig.ruledb[0] == 0)
 		strcpy(tconfig.ruledb, DEFAULT_RULEDB);
-	if (tconfig.rule_port = 0)
+	if (tconfig.rule_port == 0)
 		tconfig.rule_port = DEFAULT_RULE_PORT;
-	if (master_address[0]) {
-		parseipandport(master_address, tconfig.master_ip,
-			       sizeof(tconfig.master_ip), &tconfig.master_port);
-	}
-	if (hit_address[0]) {
-		parseipandport(hit_address, tconfig.hit_ip,
-			       sizeof(tconfig.hit_ip), &tconfig.hit_port);
-	}
 }
 
 static void signal_hander(int sig)

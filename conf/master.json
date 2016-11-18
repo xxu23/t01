@@ -1,0 +1,8 @@
+{
+"work_mode" : "master",
+"ruledb": "/var/lib/t01/master.tdb",
+"master_ip": "0.0.0.0",
+"master_port": 9899,
+"verbose": 2,
+"daemon": 0
+}

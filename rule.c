@@ -405,9 +405,8 @@ int load_rules(const char *filename)
 	fp = fopen(filename, "r");
 	if (fp == NULL) {
 		t01_log(T01_WARNING,
-		"Cannot read rule %s: %s, aborting now", filename, strerror(errno));
-		exit(1);
-		return -1;
+		"Cannot read rule %s: %s.", filename, strerror(errno));
+		return 0;
 	}
 
 	if (tdb_load_raw(fp, buf, 8) == 0)

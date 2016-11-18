@@ -1,0 +1,11 @@
+{
+"work_mode" : "netmap",
+"ifname": "eth0",
+"ofname": "eth1",
+"logfile": "/var/log/t01-natmap.log",
+"ruledb": "/var/lib/t01/ruleshits.tdb",
+"rule_ip": "0.0.0.0",
+"rule_port": 9898,
+"verbose": 2,
+"daemon": 0
+}
