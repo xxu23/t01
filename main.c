@@ -129,12 +129,15 @@ struct hits_log_rz {
 static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
 			    uint8_t * packet)
 {
-	if (tconfig.work_mode & SLAVE_MODE) {
+	if (tconfig.work_mode & SLAVE_MODE ||
+		(tconfig.hit_ip[0] && tconfig.hit_port)) {
 		/* Send log to master or log server */
 		struct hits_log_rz *hl = zcalloc(1, sizeof(*hl));
 		if (!hl)
 			return;
+		rule->hits++;
 		hl->hit.rule_id = rule->id;
+		hl->hit.rule_type = rule->action;
 		hl->hit.pktlen = flow->pktlen;
 		hl->hit.proto = flow->protocol;
 		hl->hit.time = flow->last_seen / 1000;
@@ -994,7 +997,7 @@ static void *hitslog_thread(void *args)
 			hlr = list_entry(pos, struct hits_log_rz, list);
 			pthread_spin_lock(&hitlog_lock);
 			list_del(pos);
-			pthread_spin_unlock(&hitlog_lock);
+			pthread_spin_unlock(&hitlog_lock);			
 
 			anetUdpWrite(fd, (char *)&hlr->hit+offset, log_len,
 				     (struct sockaddr *)&addr, addr_len);
@@ -1146,7 +1149,8 @@ static void main_thread()
 		sleep(1);
 	}
 
-	if (tconfig.work_mode & SLAVE_MODE &&
+	if ((tconfig.work_mode & SLAVE_MODE || 
+	     (tconfig.hit_ip[0] && tconfig.hit_port)) &&
 	    pthread_create(&threads[nthreads++], NULL, hitslog_thread,
 			   NULL) != 0) {
 		t01_log(T01_WARNING, "Can't create hitslog thread: %s",
