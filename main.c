@@ -625,6 +625,8 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
 
 			d->len = h->len;
 			d->buffer = zmalloc(h->len);
+			if (d->buffer == NULL) 
+				return;
 			memcpy(d->buffer, packet, h->len);
 			d->flow = flow;
 next:

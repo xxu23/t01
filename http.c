@@ -14,6 +14,8 @@ struct http_response *http_response_init(struct event_base *base, int code, cons
 
 	/* create object */
 	struct http_response *r = zcalloc(1, sizeof(struct http_response));
+	if (!r)
+		return NULL;
 
 	r->code = code;
 	r->base = base;

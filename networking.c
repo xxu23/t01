@@ -126,6 +126,8 @@ static struct cmd *cmd_new(struct http_client *client, int count,
 			   const char *body, size_t body_len)
 {
 	struct cmd *c = zcalloc(1, sizeof(struct cmd));
+	if (!c)
+		return NULL;
 
 	c->client = client;
 	c->count = count;
@@ -194,6 +196,8 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 	}
 
 	cmd = cmd_new(c, param_count, body, body_len);
+	if (!cmd)
+		return NULL;
 
 	/* check if we only have one command or more. */
 	slash = memchr(uri, '/', uri_len);
@@ -205,6 +209,10 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 
 	/* there is always a first parameter, it's the command name */
 	cmd->argv[0] = zmalloc(cmd_len + 1);
+	if (cmd->argv[0] == NULL) {
+		zfree(cmd);
+		return NULL;
+	}
 	memcpy(cmd->argv[0], cmd_name, cmd_len);
 	cmd->argv[0][cmd_len] = 0;
 	cmd->argv_len[0] = cmd_len + 1;
@@ -227,6 +235,12 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 			cmd->argv[cur_param] =
 			    decode_uri(arg, arg_len, &cmd->argv_len[cur_param],
 				       1);
+			if (cmd->argv[cur_param] == NULL) {
+				for (i = 0; i < cur_param; i++) 
+					zfree(cmd->argv[i]);
+				zfree(cmd);
+				return NULL; 
+			}
 			cur_param++;
 		}
 	}
@@ -684,6 +698,8 @@ static void cmd_dispatch(struct http_client *c, struct cmd *cmd, int method)
 int cmd_run_get(struct http_client *c, const char *uri, size_t uri_len)
 {
 	struct cmd *cmd = cmd_init(c, uri, uri_len, NULL, 0);
+	if (!cmd)
+		return -1;
 
 	cmd_dispatch(c, cmd, HTTP_GET);
 	cmd_free(cmd);
@@ -695,6 +711,8 @@ int cmd_run_post(struct http_client *c, const char *uri, size_t uri_len,
 		 const char *body, size_t body_len)
 {
 	struct cmd *cmd = cmd_init(c, uri, uri_len, body, body_len);
+	if (!cmd)
+		return -1;
 
 	cmd_dispatch(c, cmd, HTTP_POST);
 	cmd_free(cmd);
@@ -706,6 +724,8 @@ int cmd_run_put(struct http_client *c, const char *uri, size_t uri_len,
 		const char *body, size_t body_len)
 {
 	struct cmd *cmd = cmd_init(c, uri, uri_len, body, body_len);
+	if (!cmd)
+		return -1;
 
 	cmd_dispatch(c, cmd, HTTP_PUT);
 	cmd_free(cmd);
@@ -716,6 +736,8 @@ int cmd_run_put(struct http_client *c, const char *uri, size_t uri_len,
 int cmd_run_delete(struct http_client *c, const char *uri, size_t uri_len)
 {
 	struct cmd *cmd = cmd_init(c, uri, uri_len, NULL, 0);
+	if (!cmd)
+		return -1;
 
 	cmd_dispatch(c, cmd, HTTP_DELETE);
 	cmd_free(cmd);
