@@ -521,11 +521,26 @@ int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
 			uint8_t smac[], uint8_t dmac[], uint32_t localip, 
 			uint8_t proto, uint16_t pktlen)
 {
-	struct hit_record *h = zmalloc(sizeof(*h));
-	if (!h)
-		return -1;
-	bzero(h, sizeof(*h));
+	struct hit_record *h = NULL;
 
+	if (r->saved_hits == MAX_HITS_PER_RULE) {
+		struct list_head *tail = r->hit_head.prev;
+		h = list_entry(tail, struct hit_record, list);
+		r->saved_hits--;
+		list_del(tail);
+	} else {
+		h = zmalloc(sizeof(*h));
+	}
+	if(!h)
+		return -1;
+
+	list_add(&h->list, &r->hit_head);
+	
+	r->hits++;
+	r->saved_hits++;
+	dirty++;
+
+	bzero(h, sizeof(*h));
 	h->rule_id = r->id;
 	h->time = time;
 	h->saddr = saddr;
@@ -537,21 +552,7 @@ int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
 	h->proto = proto;
 	memcpy(h->smac, smac, 6);
 	memcpy(h->dmac, dmac, 6);
-
-	if (r->saved_hits == MAX_HITS_PER_RULE) {
-		struct list_head *tail = r->hit_head.prev;
-		struct hit_record *hh =
-		    list_entry(tail, struct hit_record, list);
-		r->saved_hits--;
-		list_del(tail);
-		zfree(hh);
-	}
-
-	list_add(&h->list, &r->hit_head);
-	r->hits++;
-	r->saved_hits++;
 	h->id = r->hits;
-	dirty++;
 
 	return 0;
 }
