@@ -533,6 +533,7 @@ int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
 	}
 	if(!h)
 		return -1;
+	bzero(h, sizeof(*h));
 
 	list_add(&h->list, &r->hit_head);
 	
@@ -540,7 +541,6 @@ int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
 	r->saved_hits++;
 	dirty++;
 
-	bzero(h, sizeof(*h));
 	h->rule_id = r->id;
 	h->time = time;
 	h->saddr = saddr;
