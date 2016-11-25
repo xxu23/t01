@@ -317,6 +317,7 @@ static void parse_one_rule(cJSON * json, struct rule *rule)
 	get_int_from_json(item, json, "sport", rule->sport);
 	get_int_from_json(item, json, "dport", rule->dport);
 	get_int_from_json(item, json, "id", rule->id);
+	get_int_from_json(item, json, "type", rule->type);
 
 	parent = cJSON_GetObjectItem(json, "condition");
 	if (parent) {
@@ -737,6 +738,7 @@ static cJSON *rule2cjson(struct rule *rule)
 	};
 
 	cJSON_AddNumberToObject(root, "id", rule->id);
+	cJSON_AddNumberToObject(root, "type", rule->type);
 	if (rule->human_protocol[0])
 		cJSON_AddStringToObject(root, "protocol", rule->human_protocol);
 	if (rule->human_saddr[0])
@@ -797,16 +799,25 @@ static char *rule2jsonstr(struct rule *rule)
 	return cjson2string(root);
 }
 
-int get_ruleids(char **out, size_t * out_len, int json)
+int get_ruleids(int type, char **out, size_t * out_len, int json)
 {
 	uint32_t *ids;
 	struct list_head *pos;
 	int n = 0, i = 0;
+	if (type < 0)
+		type = 0;
+
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
-		if (rule->used == 0)
+		if (rule->used == 0 || (type && rule->type != type))
 			continue;
 		n++;
+	}
+	if (n == 0) {
+		cJSON *array = cJSON_CreateIntArray(NULL, n);
+		*out = cjson2string(array);
+		*out_len = strlen(*out);
+		return 0;
 	}
 
 	ids = (uint32_t *) zmalloc(sizeof(uint32_t) * n);

@@ -75,7 +75,8 @@ struct rule {
 	uint16_t sport;
 	uint16_t dport;
 	char human_action[16];
-	char payload[224];
+	char payload[220];
+	int type;
 	char human_match[16];
 	char human_which[16];
 	char action_params[4][256];
@@ -128,7 +129,7 @@ int add_log_rz(struct log_rz *lr);
 
 void release_buffer(char **out);
 
-int get_ruleids(char **out, size_t *out_len, int json);
+int get_ruleids(int type, char **out, size_t *out_len, int json);
 
 int get_rule(uint32_t id, char **out, size_t *out_len);
 
