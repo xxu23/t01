@@ -356,13 +356,13 @@ int make_dns_spoof_packet(const char *target, const char *hdr, char *datagram,
 	    sizeof(struct udphdr) + data_len;
 }
 
-int make_pptp_rst_packet(const char *hdr, char *datagram, int datagram_len,
+int make_tcp_rst_packet(const char *hdr, char *datagram, int datagram_len,
 			 struct ndpi_flow_info *flow)
 {
 	struct ether_header *eh = (struct ether_header *)hdr;
 	struct iphdr *ippkt = (struct iphdr *)(eh + 1);
 	struct tcphdr *tcppkt = (struct tcphdr *)(ippkt + 1);
-	struct pptp_setlink *pptppkt = (struct pptp_setlink *)(tcppkt + 1);
+	//struct pptp_setlink *pptppkt = (struct pptp_setlink *)(tcppkt + 1);
 	struct ether_header *eth = (struct ether_header *)datagram;
 	struct iphdr *iph = (struct iphdr *)(eth + 1);
 	struct tcphdr *tcph = (struct tcphdr *)(iph + 1);
@@ -428,7 +428,8 @@ int make_packet(const struct rule *rule, const char *hdr,
 		return make_dns_spoof_packet(rule->action_params[0], hdr,
 					     packet, len, flow);
 	else if (rule->action == T01_ACTION_REJECT
-		 && rule->master_protocol == NDPI_PROTOCOL_PPTP)
-		return make_pptp_rst_packet(hdr, packet, len, flow);
+		 && (rule->master_protocol == NDPI_PROTOCOL_PPTP
+		     || rule->protocol == IPPROTO_TCP))
+		return make_tcp_rst_packet(hdr, packet, len, flow);
 	return 0;
 }
