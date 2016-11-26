@@ -536,7 +536,7 @@ int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
 		return -1;
 	bzero(h, sizeof(*h));
 
-	list_add(&h->list, &r->hit_head);
+	list_add_tail(&h->list, &r->hit_head);
 	
 	r->hits++;
 	r->saved_hits++;

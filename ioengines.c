@@ -52,7 +52,7 @@ void unregister_ioengine(struct ioengine_ops *ops)
 void register_ioengine(struct ioengine_ops *ops)
 {
 	t01_log(T01_DEBUG, "ioengine %s registered", ops->name);
-	list_add(&ops->list, &engine_list);
+	list_add_tail(&ops->list, &engine_list);
 }
 
 void close_ioengine(struct ioengine_data *td)
