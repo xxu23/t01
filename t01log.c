@@ -93,10 +93,15 @@ static void *mysql_thread(void *args)
 	int offset = 0;
 	MYSQL mysql;
 	int st;
+	my_bool reconnect = 1;
 
 	t01_log(T01_NOTICE, "Enter thread %s:%d", __FUNCTION__, tid);	
 	
 	mysql_init(&mysql);
+	if (mysql_options(&mysql, MYSQL_OPT_RECONNECT, &reconnect) != 0) {
+		t01_log(T01_WARNING, "Failed to set mysql auto reconnect: %s", mysql_error(&mysql));
+	}
+
  	if (!mysql_real_connect(&mysql, host, username, password,"t01log", port, 0, 0)) {
 		t01_log(T01_WARNING, "Cannot connect to mysql %s:%d: %s", host, port, mysql_error(&mysql));
  		return NULL;
@@ -120,7 +125,7 @@ static void *mysql_thread(void *args)
 				st = mysql_query(&mysql,"START TRANSACTION"); 
 				if(st != 0) {
 					t01_log(T01_WARNING, "Failed to transaction %s", mysql_error(&mysql));
-		 			return;
+		 			continue;
 				}
 			}
 
