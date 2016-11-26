@@ -148,16 +148,17 @@ static void *mysql_thread(void *args)
 			st = mysql_query(&mysql, cmd);
 			if (st != 0) {
 				t01_log(T01_WARNING, "Failed to insert %s", mysql_error(&mysql));
+				cur_pkt = 0;
 				continue;
 			}
 
-			if(cur_pkt == 1024*12) {
+			if(cur_pkt == 1024*12) {				
+				cur_pkt = 0;
 		 		st = mysql_query(&mysql,"COMMIT"); 
 				if(st != 0) {
 					t01_log(T01_WARNING, "Failed to commit %s", mysql_error(&mysql));
 		 			continue;
 				}
-				cur_pkt = 0;
 			}
 		}
 	}
