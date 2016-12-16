@@ -36,7 +36,7 @@ target_link_libraries(t01 z)
 target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libmsgpackc.a)
 target_link_libraries(t01 ${EXTRA_LIBS})
 
-add_executable(t01log t01log.c anet.c logger.c util.c zmalloc.c)
+add_executable(t01log t01log.c anet.c queue.c queue_internal.c logger.c util.c zmalloc.c)
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
 target_link_libraries(t01log m pthread)
 target_link_libraries(t01log ${EXTRA_LIBS})

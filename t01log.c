@@ -40,7 +40,7 @@
 #include <pthread.h>
 
 #include "mysql.h"
-#include "list.h"
+#include "queue.h"
 #include "logger.h"
 #include "anet.h"
 #include "event.h"
@@ -59,14 +59,13 @@ struct log_rz_2
 	uint8_t rule_type;
 	uint8_t proto;
 	uint16_t pktlen;
-	struct list_head list;
 };
 #pragma pack()
 
 #define BATCH_INSERT 64
 #define MAX_THREADS 16
 
-static struct list_head lists[ MAX_THREADS];
+static queue_t* queues[MAX_THREADS];
 static pthread_t tids[MAX_THREADS];
 static int consumed_pkts[MAX_THREADS];
 static uint64_t total_pkts = 0;
@@ -112,52 +111,48 @@ static void *mysql_thread(void *args)
 	}
 
 	while (!shutdown_app) {
-		struct list_head *pos, *n;
 		struct log_rz_2 *log;
 
-		list_for_each_safe(pos, n, &lists[tid]) {
-			log = list_entry(pos, struct log_rz_2, list);
-			//pthread_spin_lock(&hitlog_lock);
-			list_del(pos);
-			//pthread_spin_unlock(&hitlog_lock);	
+		queue_get(queues[tid], (void **)&log);
+		if (!log) continue;
 
-			if(cur_pkt == 0) {
-				st = mysql_query(&mysql,"START TRANSACTION"); 
-				if(st != 0) {
-					t01_log(T01_WARNING, "Failed to transaction %s", mysql_error(&mysql));
-		 			continue;
-				}
-			}
-
-			if (cur_pkt % BATCH_INSERT == 0)
-				offset = sprintf(cmd, "insert into t01log values(%u,%u,%d,%d,%u,%u,%u,%d,%d,%d)",
-					log->src_ip, log->dst_ip, log->src_port, log->dst_port, log->local_ip,
-					log->time, log->rule_id, log->rule_type, log->proto, log->pktlen);
-			else {
-				int len = sprintf(cmd+offset, ", (%u,%u,%d,%d,%u,%u,%u,%d,%d,%d)",
-					log->src_ip, log->dst_ip, log->src_port, log->dst_port, log->local_ip,
-					log->time, log->rule_id, log->rule_type, log->proto, log->pktlen);
-				offset += len;
-			}			
-			zfree(log);
-			consumed_pkts[tid]++;
-
-			if (++cur_pkt % BATCH_INSERT != 0) 
-				continue;
-
-			st = mysql_query(&mysql, cmd);
-			if (st != 0) {
-				t01_log(T01_WARNING, "Failed to insert %s", mysql_error(&mysql));
+		if(cur_pkt == 0) {
+			st = mysql_query(&mysql,"START TRANSACTION"); 
+			if(st != 0) {
+				t01_log(T01_WARNING, "Failed to transaction %s", mysql_error(&mysql));
 				continue;
 			}
+		}
 
-			if(cur_pkt == 1024*12) {
-		 		st = mysql_query(&mysql,"COMMIT"); 
-				if(st != 0) {
-					t01_log(T01_WARNING, "Failed to commit %s", mysql_error(&mysql));
-		 			continue;
-				}
-				cur_pkt = 0;
+		if (cur_pkt % BATCH_INSERT == 0)
+			offset = sprintf(cmd, "insert into t01log values(%u,%u,%d,%d,%u,%u,%u,%d,%d,%d)",
+				log->src_ip, log->dst_ip, log->src_port, log->dst_port, log->local_ip,
+				log->time, log->rule_id, log->rule_type, log->proto, log->pktlen);
+		else {
+			int len = sprintf(cmd+offset, ", (%u,%u,%d,%d,%u,%u,%u,%d,%d,%d)",
+				log->src_ip, log->dst_ip, log->src_port, log->dst_port, log->local_ip,
+				log->time, log->rule_id, log->rule_type, log->proto, log->pktlen);
+			offset += len;
+		}			
+		zfree(log);
+		consumed_pkts[tid]++;
+
+		if (++cur_pkt % BATCH_INSERT != 0) 
+			continue;
+
+		st = mysql_query(&mysql, cmd);
+		if (st != 0) {
+			t01_log(T01_WARNING, "Failed to insert %s", mysql_error(&mysql));
+			cur_pkt = 0;
+			continue;
+		}
+
+		if(cur_pkt == 1024*12) {				
+			cur_pkt = 0;
+			st = mysql_query(&mysql,"COMMIT"); 
+			if(st != 0) {
+				t01_log(T01_WARNING, "Failed to commit %s", mysql_error(&mysql));
+				continue;
 			}
 		}
 	}
@@ -172,7 +167,7 @@ void udp_server_can_read(int fd, short event, void *ptr)
 	struct sockaddr_in addr;
 	socklen_t len;
 	int nread;
-	int pktlen = offsetof(struct log_rz_2, list);
+	int pktlen = sizeof(struct log_rz_2);
 	struct log_rz_2 *log;
 	static int idx = 0;
 
@@ -192,7 +187,8 @@ void udp_server_can_read(int fd, short event, void *ptr)
 	if (log->local_ip == 0)
 		log->local_ip = addr.sin_addr.s_addr;
 
-	list_add_tail(&log->list, &lists[idx]);
+	queue_put(queues[idx], log);
+
 	idx ++;
 	if(idx == nthreads) idx = 0;
 
@@ -252,7 +248,7 @@ static void setup_threads()
 	int i;
 
 	for(i = 0; i < nthreads; i++) {
-		INIT_LIST_HEAD(&lists[i]);
+		queues[i] = queue_create();
 	}
 
 	for(i = 0; i < nthreads; i++) {
@@ -272,7 +268,7 @@ static void finish_threads()
 void time_cb(evutil_socket_t fd, short event, void *arg)
 {
 	uint64_t pkt = total_pkts - last_pkts;
-	uint64_t bytes = pkt * offsetof(struct log_rz_2, list);
+	uint64_t bytes = pkt * sizeof(struct log_rz_2);
 	char buf[32], buf1[32];
 	int i;
 	uint64_t total = 0;
@@ -285,7 +281,7 @@ void time_cb(evutil_socket_t fd, short event, void *arg)
                 total += consumed_pkts[i];
         total_consumed_pkts = total;
 	pkt = total_consumed_pkts - last_consumed_pkts;
-	bytes = pkt * offsetof(struct log_rz_2, list);
+	bytes = pkt * sizeof(struct log_rz_2);
 	t01_log(T01_NOTICE, "MySQL throughput: %s pps / %s/sec",
                 format_packets(pkt, buf), format_traffic(bytes, 0, buf1));
 	last_consumed_pkts = total_consumed_pkts;
