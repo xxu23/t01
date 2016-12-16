@@ -116,22 +116,14 @@ static void *mysql_thread(void *args)
 		queue_get(queues[tid], (void **)&log);
 		if (!log) continue;
 
-<<<<<<< HEAD
 		if(cur_pkt == 0) {
 			st = mysql_query(&mysql,"START TRANSACTION"); 
 			if(st != 0) {
 				t01_log(T01_WARNING, "Failed to transaction %s", mysql_error(&mysql));
-=======
-			st = mysql_query(&mysql, cmd);
-			if (st != 0) {
-				t01_log(T01_WARNING, "Failed to insert %s", mysql_error(&mysql));
-				cur_pkt = 0;
->>>>>>> 54a870b41538ccac4ae23539a831d1bc2a34ac20
 				continue;
 			}
 		}
 
-<<<<<<< HEAD
 		if (cur_pkt % BATCH_INSERT == 0)
 			offset = sprintf(cmd, "insert into t01log values(%u,%u,%d,%d,%u,%u,%u,%d,%d,%d)",
 				log->src_ip, log->dst_ip, log->src_port, log->dst_port, log->local_ip,
@@ -161,15 +153,6 @@ static void *mysql_thread(void *args)
 			if(st != 0) {
 				t01_log(T01_WARNING, "Failed to commit %s", mysql_error(&mysql));
 				continue;
-=======
-			if(cur_pkt == 1024*12) {				
-				cur_pkt = 0;
-		 		st = mysql_query(&mysql,"COMMIT"); 
-				if(st != 0) {
-					t01_log(T01_WARNING, "Failed to commit %s", mysql_error(&mysql));
-		 			continue;
-				}
->>>>>>> 54a870b41538ccac4ae23539a831d1bc2a34ac20
 			}
 		}
 	}
