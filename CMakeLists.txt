@@ -26,7 +26,7 @@ SET(CJSON_SRC_DIR ${THIRD_SRC_DIR}/cJSON)
 SET(HTTPPARSER_SRC_DIR ${THIRD_SRC_DIR}/http-parser)
 SET(THIRD_SRC ${CJSON_SRC_DIR}/cJSON.c ${HTTPPARSER_SRC_DIR}/http_parser.c)
 
-add_executable(t01 logger.c main.c zmalloc.c ndpi_util.c pktgen.c rule.c crc64.c util.c anet.c networking.c client.c http.c ioengines.c engines/redis.c engines/kafka.c engines/netmap.c ${THIRD_SRC})
+add_executable(t01 logger.c t01.c zmalloc.c ndpi_util.c pktgen.c rule.c crc64.c util.c anet.c networking.c client.c http.c ioengines.c engines/redis.c engines/kafka.c engines/netmap.c ${THIRD_SRC})
 target_link_libraries(t01 m pthread)
 target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libndpi.a)
 target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libhiredis.a)

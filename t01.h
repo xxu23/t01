@@ -63,6 +63,7 @@ struct t01_config {
 	char hit_ip[32];
 	int hit_port;
 	int verbose;
+	int id;
 	enum t01_work_mode work_mode;
 };
 

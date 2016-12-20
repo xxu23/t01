@@ -1,15 +1,18 @@
 {
 "work_mode" : "slave",
-"ifname": "eth0",
-"ofname": "eth1",
+"ifname": "em2",
+"ofname": "em3",
 "logfile": "/var/log/t01-slave.log",
-"ruledb": "/var/lib/t01/rules.tdb",
+"ruledb": "/var/lib/t01/rules-slave.tdb",
 "rule_ip": "0.0.0.0",
 "rule_port": 9898,
-"master_ip": "192.168.161.153",
+"master_ip": "192.168.1.105",
 "master_port": 9899,
+"hit_ip": "192.168.1.105",
+"hit_port": 8061,
 "engine": "redis",
 "engine_opt": "127.0.0.1:6379",
 "verbose": 2,
-"daemon": 0
+"id":88,
+"daemon": 1
 }

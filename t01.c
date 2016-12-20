@@ -299,6 +299,7 @@ static void load_config(const char *filename)
 	get_string_from_json(item, json, "hit_ip", tconfig.hit_ip);
 	get_int_from_json(item, json, "hit_port", tconfig.hit_port);
 	get_int_from_json(item, json, "verbose", tconfig.verbose);
+	get_int_from_json(item, json, "id", tconfig.id);
 	get_string_from_json(item, json, "work_mode", wm);
 	if(strcasecmp(wm, "slave") == 0)
 		tconfig.work_mode = SLAVE_MODE;

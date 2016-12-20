@@ -29,6 +29,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <time.h>
 #include <limits.h>
@@ -58,7 +59,9 @@ struct slave_client {
 	int online;
 	char ip[16];
 	int port;
+	int id;
 	uint64_t cksum;
+	uint64_t hits;
 };
 
 static void mark_slave_offline(const char *ip, int port)
@@ -501,10 +504,12 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 		cJSON_AddNumberToObject(root, "avg_bytes_out",
 					bytes_per_second_out);
 		cJSON_AddNumberToObject(root, "hits", hits);
+		cJSON_AddNumberToObject(root, "id", tconfig.id);
 	} else {
 		struct list_head *pos;
 		cJSON *array = cJSON_CreateArray(), *item;
 		struct slave_client *s;
+		uint64_t hits1 = 0, hits2 = calc_totalhits();
 
 		list_for_each(pos, &slave_list) {
 			s = list_entry(pos, struct slave_client, list);
@@ -512,11 +517,15 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 			cJSON_AddStringToObject(item, "ip", s->ip);
 			cJSON_AddNumberToObject(item, "port", s->port);
 			cJSON_AddNumberToObject(item, "online", s->online);
+			cJSON_AddNumberToObject(item, "id", s->id);
 			cJSON_AddItemToArray(array, item);
+			hits1 += s->hits;
 		}
 		cJSON_AddItemToObject(root, "nodes", array);
 
-		cJSON_AddNumberToObject(root, "hits", calc_totalhits());
+		if (hits1 < hits2)
+			hits1 = hits2;
+		cJSON_AddNumberToObject(root, "hits", hits1);
 	}
 
 	result = cJSON_Print(root);
@@ -618,16 +627,21 @@ static int client_sync_rules(struct http_client *c, struct cmd *cmd)
 static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
 {
 	int i;
-	int slave_port = 0;
+	int slave_port = 0, id = 0;
 	uint64_t cksum = 0;
+	uint64_t shits = 0;
 	struct list_head *pos;
 	struct slave_client *slave = NULL;
 
 	for (i = 0; i < c->query_count; i++) {
 		if (strcasecmp(c->queries[i].key, "port") == 0)
 			slave_port = atoi(c->queries[i].val);
+		else if (strcasecmp(c->queries[i].key, "id") == 0)
+                        id = atoi(c->queries[i].val);
 		else if (strcasecmp(c->queries[i].key, "crc64") == 0)
 			sscanf(c->queries[i].val, "%llx", &cksum);
+		else if (strcasecmp(c->queries[i].key, "hits") == 0)
+                        sscanf(c->queries[i].val, "%llx", &shits);
 	}
 
 	if (slave_port <= 0 || slave_port >= 65535) {
@@ -652,6 +666,8 @@ static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
 			slave_port);
 	}
 	slave->cksum = cksum;
+	slave->id = id;
+	slave->hits = shits;
 	slave->online = 1;
 
 	send_client_reply(c, NULL, 0, "application/json");
@@ -767,14 +783,14 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 	struct evhttp_connection *conn;
 	struct evhttp_request *req;
 	uint64_t cksum = calc_crc64_rules();
-	char path[128];
+	char path[1024];
 
 	conn = evhttp_connection_base_new(base, NULL, master_ip, master_port);
 	req = evhttp_request_new(slave_request_cb, conn);
 	evhttp_connection_free_on_completion(conn);
 	evhttp_connection_set_timeout(conn, 5);
 	evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
-	snprintf(path, 128, "/registry?port=%d&crc64=%llx", self_port, cksum);
+	snprintf(path, 1024, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx", self_port, cksum, tconfig.id, hits);
 	evhttp_make_request(conn, req, EVHTTP_REQ_GET, path);
 
 	return 0;
