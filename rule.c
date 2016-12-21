@@ -826,7 +826,7 @@ int get_ruleids(int type, char **out, size_t * out_len, int json)
 		return -1;
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
-		if (rule->used == 0)
+		if (rule->used == 0 || (type && rule->type != type))
 			continue;
 		ids[i++] = rule->id;
 	}
