@@ -94,6 +94,7 @@ static inline uint8_t get_which(const char *which)
 static inline int match_payload(int match, const char *payload,
 				const char *dst, const char *self)
 {
+	if (!dst) return 0;
 	if (match == T01_MATCH_MATCH)
 		return strcasecmp(payload, dst) == 0
 		    && strcasecmp(self, dst) != 0;
@@ -1290,10 +1291,10 @@ struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, void *packet
 					continue;
 			} else if (rule->which == T01_WHICH_URL) {
 				char *url = flow->ndpi_flow->http.url;
-				if (url && url[0] &&
+				if (!url || (url && url[0] &&
 				    match_payload(rule->match, rule->payload,
 						  url,
-						  rule->action_params[0]) != 1)
+						  rule->action_params[0]) != 1))
 					continue;
 			}
 		}
