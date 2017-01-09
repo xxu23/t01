@@ -94,7 +94,8 @@ static inline uint8_t get_which(const char *which)
 static inline int match_payload(int match, const char *payload,
 				const char *dst, const char *self)
 {
-	if (!dst) return 0;
+	if (!dst || !dst[0]) 
+		return 0;
 	if (match == T01_MATCH_MATCH)
 		return strcasecmp(payload, dst) == 0
 		    && strcasecmp(self, dst) != 0;
@@ -1283,7 +1284,7 @@ struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, void *packet
 				char *host1 = flow->ssl.client_certificate;
 				char *host2 = flow->ssl.server_certificate;
 				if (host[0] == 0
-				    && (host[0] != 0 || host2[0] != 0))
+				    && (host1[0] != 0 || host2[0] != 0))
 					host = host1[0] ? host1 : host2;
 				if (match_payload
 				    (rule->match, rule->payload, host,
