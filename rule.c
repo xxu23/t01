@@ -320,6 +320,7 @@ static void parse_one_rule(cJSON * json, struct rule *rule)
 	get_int_from_json(item, json, "dport", rule->dport);
 	get_int_from_json(item, json, "id", rule->id);
 	get_int_from_json(item, json, "type", rule->type);
+	get_int_from_json(item, json, "disabled", rule->disabled);
 
 	parent = cJSON_GetObjectItem(json, "condition");
 	if (parent) {
@@ -740,6 +741,7 @@ static cJSON *rule2cjson(struct rule *rule)
 	};
 
 	cJSON_AddNumberToObject(root, "id", rule->id);
+	cJSON_AddNumberToObject(root, "disabled", rule->disabled);
 	cJSON_AddNumberToObject(root, "type", rule->type);
 	if (rule->human_protocol[0])
 		cJSON_AddStringToObject(root, "protocol", rule->human_protocol);
@@ -862,6 +864,53 @@ int get_rule(uint32_t id, char **out, size_t * out_len)
 
 	*out = rule2jsonstr(rule);
 	*out_len = strlen(*out);
+
+	return 0;
+}
+
+
+int disable_rule(uint32_t id)
+{
+	struct list_head *pos;
+	struct rule *rule = NULL;
+	list_for_each(pos, &rule_list) {
+		struct rule *rule2 = list_entry(pos, struct rule, list);
+		if (rule2->id == id && rule2->used == 1) {
+			rule = rule2;
+			break;
+		}
+	}
+
+	if (!rule)
+		return -1;
+
+	if (rule->disabled == 0) {	
+		rule->disabled = 1;
+		dirty += HITS_THRESHOLD_PER_SECOND;
+	}
+
+	return 0;
+}
+
+int enable_rule(uint32_t id)
+{
+	struct list_head *pos;
+	struct rule *rule = NULL;
+	list_for_each(pos, &rule_list) {
+		struct rule *rule2 = list_entry(pos, struct rule, list);
+		if (rule2->id == id && rule2->used == 1) {
+			rule = rule2;
+			break;
+		}
+	}
+
+	if (!rule)
+		return -1;
+
+	if (rule->disabled) {
+		rule->disabled = 0;
+		dirty += HITS_THRESHOLD_PER_SECOND;
+	}
 
 	return 0;
 }
@@ -1015,6 +1064,7 @@ int delete_rule(uint32_t id)
 			struct list_head *pos2, *n2, *hhead;
 			hhead = &rule->hit_head;
 			rule->used = 0;
+			rule->disabled = 0;
 			if (list_empty(hhead) == 0)
 				list_for_each_safe(pos2, n2, hhead) {
 				list_del(pos2);
@@ -1071,6 +1121,7 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 
 	memcpy(new_rule, &src_rule, offsetof(struct rule, list));
 	new_rule->used = 1;
+	new_rule->disabled = 0;
 	new_rule->id = src_rule.id ? src_rule.id : ++max_id;
 	dirty += HITS_THRESHOLD_PER_SECOND;
 
@@ -1244,7 +1295,7 @@ struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, void *packet
 	struct list_head *pos;
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
-		if (rule->used == 0 || rule->action == T01_ACTION_MIRROR)
+		if (rule->used == 0 || rule->disabled || rule->action == T01_ACTION_MIRROR)
 			continue;
 
 		if (flow->protocol == NDPI_PROTOCOL_UNKNOWN)

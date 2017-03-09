@@ -286,6 +286,30 @@ static int client_get_rule(struct http_client *c, struct cmd *cmd)
 	return ret;
 }
 
+static int client_enable_rule(struct http_client *c, struct cmd *cmd)
+{
+	uint32_t id = atoi(cmd->argv[1]);
+	int ret = enable_rule(id);
+	if (ret == 0) {
+		send_client_reply(c, NULL, 0, "application/json");
+	} else {
+		http_send_error(c, 404, "Not Found");
+	}
+	return ret;
+}
+
+static int client_disable_rule(struct http_client *c, struct cmd *cmd)
+{
+	uint32_t id = atoi(cmd->argv[1]);
+	int ret = disable_rule(id);
+	if (ret == 0) {
+		send_client_reply(c, NULL, 0, "application/json");
+	} else {
+		http_send_error(c, 404, "Not Found");
+	}
+	return ret;
+}
+
 static int client_get_ruleids(struct http_client *c, struct cmd *cmd)
 {
 	char *result = NULL;
@@ -686,6 +710,8 @@ static struct http_cmd_table {
 	HTTP_GET, "rules", 0, client_get_rules}, {
 	HTTP_GET, "hits", 0, client_get_hits}, {
 	HTTP_POST, "rules", 0, client_create_rule}, {
+	HTTP_POST, "enablerule", 1, client_enable_rule}, {
+	HTTP_POST, "disablerule", 1, client_disable_rule}, {
 	HTTP_PUT, "rule", 1, client_update_rule}, {
 	HTTP_DELETE, "rule", 1, client_delete_rule}, {
 	HTTP_GET, "info", 0, client_get_server_info}, {

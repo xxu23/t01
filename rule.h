@@ -84,7 +84,8 @@ struct rule {
 	uint8_t master_protocol;
 	uint8_t action:4;
 	uint8_t match:4;
-	uint8_t used:4;
+	uint8_t used:2;
+	uint8_t disabled:2;
 	uint8_t which:4;
 	uint32_t saved_hits;
 	uint32_t saddr0, saddr1;
@@ -132,6 +133,10 @@ void release_buffer(char **out);
 int get_ruleids(int type, char **out, size_t *out_len, int json);
 
 int get_rule(uint32_t id, char **out, size_t *out_len);
+
+int disable_rule(uint32_t id);
+
+int enable_rule(uint32_t id);
 
 int get_rules(uint32_t *id, size_t len, char **out, size_t *out_len);
 
