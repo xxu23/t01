@@ -803,20 +803,24 @@ static char *rule2jsonstr(struct rule *rule)
 	return cjson2string(root);
 }
 
-int get_ruleids(int type, char **out, size_t * out_len, int json)
+int get_ruleids(int type, int offset, int limit, char **out, size_t * out_len, int json)
 {
 	uint32_t *ids;
 	struct list_head *pos;
-	int n = 0, i = 0;
+	int n = 0, i = 0, j = 0;
 	if (type < 0)
 		type = 0;
-
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
 		if (rule->used == 0 || (type && rule->type != type))
 			continue;
-		n++;
+		if (limit == 0) {
+			n++;
+		} else if (j++ >= offset && n < limit) {
+			n++; 
+		}
 	}
+
 	if (n == 0) {
 		cJSON *array = cJSON_CreateIntArray(NULL, n);
 		*out = cjson2string(array);
@@ -826,13 +830,18 @@ int get_ruleids(int type, char **out, size_t * out_len, int json)
 
 	ids = (uint32_t *) zmalloc(sizeof(uint32_t) * n);
 	bzero(ids, sizeof(uint32_t) * n);
+	j = 0;
 	if (!ids)
 		return -1;
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
 		if (rule->used == 0 || (type && rule->type != type))
 			continue;
-		ids[i++] = rule->id;
+		if (limit == 0) {
+			ids[i++] = rule->id;
+		} else if(j++ >= offset && i < limit) {
+			ids[i++] = rule->id;
+		}
 	}
 	if(!json) {
 		*out = (char*)ids;

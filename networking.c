@@ -314,15 +314,19 @@ static int client_get_ruleids(struct http_client *c, struct cmd *cmd)
 {
 	char *result = NULL;
 	size_t len = 0;
-	int32_t type = -1;
+	int32_t type = -1, offset = 0, limit = 0;
 	int query_count = c->query_count, i;
 	
 	for (i = 0; i < query_count; i++) {
 		if (strcasecmp(c->queries[i].key, "type") == 0)
 			type = atoi(c->queries[i].val);
+		else if (strcasecmp(c->queries[i].key, "offset") == 0)
+			offset = atoi(c->queries[i].val);
+		else if (strcasecmp(c->queries[i].key, "limit") == 0)
+			limit = atoi(c->queries[i].val);
 	}
 
-	get_ruleids(type, &result, &len, 1);
+	get_ruleids(type, offset, limit, &result, &len, 1);
 
 	send_client_reply(c, result, len, "application/json");
 	release_buffer(&result);
@@ -880,7 +884,7 @@ int master_check_slaves()
 			"CRC not match: master %llx VS slave[%s:%d] %llx",
 			cksum, s->ip, s->port, s->cksum);
 
-		if (!ids && get_ruleids(0, (char **)&ids, &len, 0) < 0)
+		if (!ids && get_ruleids(0, 0, 0, (char **)&ids, &len, 0) < 0)
 			continue;
 		len /= sizeof(uint32_t);
 		if (!rules && get_rules(ids, len, &rules, &len2) < 0)
