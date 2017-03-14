@@ -348,8 +348,8 @@ static int load_rules_from_json(const char *data, struct list_head *head)
 {
 	cJSON *json = cJSON_Parse(data);
 	if (!json) {
-		t01_log(T01_WARNING, "Cannot parse json: %s",
-			cJSON_GetErrorPtr());
+		t01_log(T01_WARNING, "Cannot parse json %s: %s",
+			data, cJSON_GetErrorPtr());
 		return -3;
 	}
 
@@ -787,7 +787,7 @@ static char *cjson2string(cJSON * root)
 {
 	char *render, *result;
 
-	render = cJSON_Print(root);
+	render = cJSON_PrintUnformatted(root);
 	result = zmalloc(strlen(render) + 1);
 	strcpy(result, render);
 	cJSON_Delete(root);
@@ -1408,4 +1408,21 @@ uint64_t calc_totalhits()
 		total_hits += rule->hits;
 	}
 	return total_hits;
+}
+
+void calc_rules(uint64_t *total, uint64_t *enabled)
+{
+	struct list_head *pos;
+	uint64_t n1 = 0, n2 = 0;
+
+	list_for_each(pos, &rule_list) {
+		struct rule *rule = list_entry(pos, struct rule, list);
+		if (rule->used == 0)
+			continue;
+		if (rule->disabled == 0)
+			n2++;
+		n1++;
+	}
+	*total = n1;
+	*enabled = n2;
 }

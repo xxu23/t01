@@ -504,10 +504,16 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 {
 	cJSON *root = cJSON_CreateObject();
 	char *result;
+	uint64_t total_rules, enabled_rules;
 
 	cJSON_AddNumberToObject(root, "upstart", upstart);
 	cJSON_AddNumberToObject(root, "now", time(NULL));
 	cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
+
+	calc_rules(&total_rules, &enabled_rules);
+	cJSON_AddNumberToObject(root, "total_rules", total_rules);
+	cJSON_AddNumberToObject(root, "enabled_rules", enabled_rules);
+
 	if (tconfig.work_mode & NETMAP_MODE) {
 		cJSON_AddStringToObject(root, "iface", tconfig.ifname);
 		cJSON_AddStringToObject(root, "oface",
@@ -552,7 +558,7 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 		cJSON_AddNumberToObject(root, "hits", hits1);
 	}
 
-	result = cJSON_Print(root);
+	result = cJSON_PrintUnformatted(root);
 	send_client_reply(c, result, strlen(result), "application/json");
 
 	cJSON_Delete(root);

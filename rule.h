@@ -116,6 +116,10 @@ void destroy_rules();
 
 uint64_t calc_crc64_rules();
 
+uint64_t calc_totalhits();
+
+void calc_rules(uint64_t *total, uint64_t *enabled);
+
 struct ndpi_flow_info;
 struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, void *packet);
 
