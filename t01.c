@@ -286,6 +286,7 @@ static void load_config(const char *filename)
 
 	get_string_from_json(item, json, "ifname", tconfig.ifname);
 	get_string_from_json(item, json, "ofname", tconfig.ofname);
+	get_string_from_json(item, json, "mfname", tconfig.mfname);
 	get_string_from_json(item, json, "ruledb", tconfig.ruledb);
 	get_string_from_json(item, json, "logfile", tconfig.logfile);
 	get_string_from_json(item, json, "filter", tconfig.filter);

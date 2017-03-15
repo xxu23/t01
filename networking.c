@@ -519,6 +519,8 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 		cJSON_AddStringToObject(root, "oface",
 					tconfig.ofname[0] ? tconfig.
 					ofname : tconfig.ifname);
+		if (tconfig.mfname[0])
+			cJSON_AddStringToObject(root, "mface", tconfig.mfname);
 		cJSON_AddNumberToObject(root, "total_pkts_in", ip_packet_count);
 		cJSON_AddNumberToObject(root, "total_pkts_out",
 					ip_packet_count_out);

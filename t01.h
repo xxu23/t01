@@ -50,6 +50,7 @@ extern time_t upstart;
 struct t01_config {
 	char ifname[32];
 	char ofname[32];
+	char mfname[32];
 	char ruledb[256];
 	char logfile[256];
 	char filter[MAX_FILTERS * 16];
