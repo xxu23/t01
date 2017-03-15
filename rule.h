@@ -142,6 +142,8 @@ int disable_rule(uint32_t id);
 
 int enable_rule(uint32_t id);
 
+int get_summary(int type, char **out, size_t *out_len);
+
 int get_rules(uint32_t *id, size_t len, char **out, size_t *out_len);
 
 int get_hits(uint32_t rule_id, int offset, int limit, char **out,

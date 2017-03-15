@@ -877,6 +877,32 @@ int get_rule(uint32_t id, char **out, size_t * out_len)
 	return 0;
 }
 
+int get_summary(int type, char **out, size_t *out_len)
+{
+	struct list_head *pos;
+	int nrules = 0, nenabled = 0, nhits = 0;
+	cJSON *root = cJSON_CreateObject();
+	if (type < 0)
+		type = 0;
+	
+	list_for_each(pos, &rule_list) {
+		struct rule *rule = list_entry(pos, struct rule, list);
+		if (rule->used == 0 || (type && rule->type != type))
+			continue;
+		nrules++;
+		if (rule->disabled == 0) 
+			nenabled++;
+		nhits += rule->hits;
+	}
+
+	cJSON_AddNumberToObject(root, "total_rules", nrules);
+	cJSON_AddNumberToObject(root, "enabled_rules", nenabled);
+	cJSON_AddNumberToObject(root, "hits", nhits);
+
+	*out = cjson2string(root);
+	*out_len = strlen(*out);
+	return 0;
+}
 
 int disable_rule(uint32_t id)
 {

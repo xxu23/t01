@@ -352,6 +352,29 @@ static int client_get_rules(struct http_client *c, struct cmd *cmd)
 	return 0;
 }
 
+static int client_get_summary(struct http_client *c, struct cmd *cmd)
+{
+	int type = 0;
+	int query_count = c->query_count, i, ret;
+	char *result = NULL;
+	size_t len = 0;
+
+	for (i = 0; i < query_count; i++) {
+		if (strcasecmp(c->queries[i].key, "type") == 0)
+			type = atoi(c->queries[i].val);
+	}
+	
+	ret = get_summary(type, &result, &len);
+	if (ret == 0) {
+		send_client_reply(c, result, len, "application/json");
+		release_buffer(&result);
+	} else {
+		http_send_error(c, 404, "Not Found");
+	}
+
+	return ret;
+}
+
 static int client_get_hits(struct http_client *c, struct cmd *cmd)
 {
 	const int MAX_LIMIT = 100;
@@ -726,6 +749,7 @@ static struct http_cmd_table {
 	HTTP_POST, "disablerule", 1, client_disable_rule}, {
 	HTTP_PUT, "rule", 1, client_update_rule}, {
 	HTTP_DELETE, "rule", 1, client_delete_rule}, {
+	HTTP_GET, "summary", 0, client_get_summary}, {
 	HTTP_GET, "info", 0, client_get_server_info}, {
 	HTTP_GET, "sinfo", 0, client_get_slave_info}, {
 	HTTP_POST, "registry", 0, client_registry_cluster}, {
