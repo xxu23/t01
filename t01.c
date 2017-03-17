@@ -302,6 +302,9 @@ static void load_config(const char *filename)
 	get_int_from_json(item, json, "verbose", tconfig.verbose);
 	get_int_from_json(item, json, "id", tconfig.id);
 	get_string_from_json(item, json, "work_mode", wm);
+	get_string_from_json(item, json, "this_mac", tconfig.this_mac_addr);
+	get_string_from_json(item, json, "next_mac", tconfig.next_mac_addr);
+	
 	if(strcasecmp(wm, "slave") == 0)
 		tconfig.work_mode = SLAVE_MODE;
 	else if(strcasecmp(wm, "master") == 0)
@@ -432,6 +435,24 @@ static void parse_options(int argc, char **argv)
 	if (hit_address[0]) {
 		parseipandport(hit_address, tconfig.hit_ip,
 			       sizeof(tconfig.hit_ip), &tconfig.hit_port);
+	}
+	if (tconfig.this_mac_addr[0]) {
+		unsigned char *mac = tconfig.this_mac;
+		char *addr = tconfig.this_mac_addr;
+		if(sscanf(addr, "%02x:%02x:%02x:%02x:%02x:%02x",
+			&mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6) {
+			fprintf(stderr, "%s is not a valid mac address\n", addr);
+			exit(-1);
+		}
+	}
+	if (tconfig.next_mac_addr[0]) {
+		unsigned char *mac = tconfig.next_mac;
+		char *addr = tconfig.next_mac_addr;
+		if(sscanf(addr, "%02x:%02x:%02x:%02x:%02x:%02x",
+			&mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6) {
+			fprintf(stderr, "%s is not a valid mac address\n", addr);
+			exit(-1);
+		}
 	}
 	if (tconfig.work_mode & SLAVE_MODE && tconfig.work_mode & MASTER_MODE) {
 		fprintf(stderr, "Both master and slave mode is not support\n");

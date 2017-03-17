@@ -46,6 +46,7 @@
 #include "ndpi_api.h"
 #include "ndpi_protocol_ids.h"
 #include "ndpi_util.h"
+#include "t01.h"
 
 struct dns_pkt			//固定长度的12个字节
 {
@@ -221,8 +222,8 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 	    snprintf(payload, len - sizeof(*eth) - sizeof(*iph) - sizeof(*tcph),
 		     http_redirect_header, pp ? "https" : "http", target_url);
 
-	memcpy(eth->ether_shost, src_eth->ether_dhost, 6);
-	memcpy(eth->ether_dhost, src_eth->ether_shost, 6);
+	memcpy(eth->ether_shost, tconfig.this_mac_addr[0] ? tconfig.this_mac : src_eth->ether_dhost, 6);
+	memcpy(eth->ether_dhost, tconfig.next_mac_addr[0] ? tconfig.next_mac : src_eth->ether_shost, 6);
 	eth->ether_type = htons(0x0800);
 
 	//Fill in the IP Header
@@ -293,8 +294,8 @@ int make_dns_spoof_packet(const char *target, const char *hdr, char *datagram,
 	    sizeof(struct answers);
 
 	//Fill in the MAC Header 
-	memcpy(eth->ether_shost, eh->ether_dhost, 6);
-	memcpy(eth->ether_dhost, eh->ether_shost, 6);
+	memcpy(eth->ether_shost, tconfig.this_mac_addr[0] ? tconfig.this_mac : eh->ether_dhost, 6);
+	memcpy(eth->ether_dhost, tconfig.next_mac_addr[0] ? tconfig.next_mac : eh->ether_shost, 6);
 	eth->ether_type = htons(0x0800);
 
 	//Fill in the IP Header
@@ -367,8 +368,8 @@ int make_tcp_rst_packet(const char *hdr, char *datagram, int datagram_len,
 	struct iphdr *iph = (struct iphdr *)(eth + 1);
 	struct tcphdr *tcph = (struct tcphdr *)(iph + 1);
 
-	memcpy(eth->ether_shost, eh->ether_dhost, 6);
-	memcpy(eth->ether_dhost, eh->ether_shost, 6);
+	memcpy(eth->ether_shost, tconfig.this_mac_addr[0] ? tconfig.this_mac : eh->ether_dhost, 6);
+	memcpy(eth->ether_dhost, tconfig.next_mac_addr[0] ? tconfig.next_mac : eh->ether_shost, 6);
 	eth->ether_type = htons(0x0800);
 
 	//ip_header_init

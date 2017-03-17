@@ -66,6 +66,10 @@ struct t01_config {
 	int verbose;
 	int id;
 	enum t01_work_mode work_mode;
+	char this_mac_addr[32];
+	char next_mac_addr[32];
+	unsigned char this_mac[6];
+	unsigned char next_mac[6];
 };
 
 extern struct t01_config tconfig;
