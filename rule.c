@@ -1100,7 +1100,7 @@ int update_rule(uint32_t id, const char *body, int body_len)
 			else if (new_rule.version > version)
 				version = new_rule.version;
 			memcpy(rule, &new_rule, offsetof(struct rule, list));
-			t01_log(T01_NOTICE, "Update rule %d version %lld\n", 
+			t01_log(T01_NOTICE, "Update rule %d version %lld", 
 					new_rule.id, new_rule.version);
 			dirty += HITS_THRESHOLD_PER_SECOND;
 			return 0;
@@ -1183,7 +1183,7 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 	else if (new_rule->version > version)
 		version = new_rule->version;
 	new_rule->id = src_rule.id ? src_rule.id : ++max_id;
-	t01_log(T01_NOTICE, "Create rule %d version %lld\n", 
+	t01_log(T01_NOTICE, "Create rule %d version %lld", 
 			new_rule->id, new_rule->version);
 	dirty += HITS_THRESHOLD_PER_SECOND;
 
@@ -1269,7 +1269,8 @@ step1:
 			/* id match, check rule's content further */
 			if(memcmp(rule, &rules[i], offsetof(struct rule, protocol)) != 0) {
 				struct list_head *pos2, *n2, *hhead;
-				t01_log(T01_NOTICE, "Sync rules: update rule %d", rule->id);
+				t01_log(T01_NOTICE, "Sync rules: update rule %d version %lld", 
+						rules[i].id, rules[i].version);
 				memcpy(rule, &rules[i], offsetof(struct rule, protocol));
 				hhead = &rule->hit_head;
 				if (list_empty(hhead) == 0) {
@@ -1280,6 +1281,8 @@ step1:
 					}
 					rule->hits = rule->saved_hits = 0;
 				}
+				if (rule->version > version)
+					version = rule->version;
 				dirty += HITS_THRESHOLD_PER_SECOND;
 			}
 			rules[i].used = 2;
@@ -1291,7 +1294,8 @@ step1:
 		struct rule *new_rule = NULL;
 
 		if(rules[i].used == 2) continue;
-		t01_log(T01_NOTICE, "Sync rules: add rule %d", rules[i].id);
+		t01_log(T01_NOTICE, "Sync rules: add rule %d version %lld", 
+				rules[i].id, rules[i].version);
 
 		/* Find a recycled rule or malloc new rule */
 		list_for_each(pos, &rule_list) {
@@ -1314,7 +1318,10 @@ step1:
 		memcpy(new_rule, &rules[i], offsetof(struct rule, list));
 		new_rule->used = 1;
 		dirty += HITS_THRESHOLD_PER_SECOND;
-		if(new_rule->id > max_id) max_id = new_rule->id;
+		if (new_rule->id > max_id) 
+			max_id = new_rule->id;
+		if (new_rule->version > version)
+			version = new_rule->version;
 		transform_one_rule(new_rule);
 	}
 

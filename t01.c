@@ -92,7 +92,6 @@ static char conffile[256];
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
 static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
-static int tcp_sofd;
 static int udp_logfd;
 static struct nm_desc *nmr, *out_nmr;
 static uint8_t shutdown_app = 0;
@@ -1086,23 +1085,13 @@ static void *libevent_thread(void *args)
 		t01_log(T01_WARNING, "couldn't create evhttp.");
 		exit(1);
 	}
-	set_http_server_cb(http);
+	evhttp_set_gencb(http, http_server_request_cb, NULL);
 	/* Now we tell the evhttp what port to listen on */
 	handle = evhttp_bind_socket_with_handle(http, "0.0.0.0", bind_port);
 	if (!handle) {
 		t01_log(T01_WARNING, "couldn't bind to port %d.", bind_port);
 		exit(1);
 	}
-
-#if 0
-	/* start rule management server */
-	if (tcp_sofd > 0) {
-		event_set(&ev1, tcp_sofd, EV_READ | EV_PERSIST,
-			  server_can_accept, NULL);
-		event_base_set(base, &ev1);
-		event_add(&ev1, NULL);
-	}
-#endif
 
 	/* Initalize timeout event */
 	if (tconfig.work_mode & NETMAP_MODE) {
@@ -1393,24 +1382,8 @@ static void init_rulemgmt()
 		bind_port = tconfig.master_port;
 	}
 
-	/* Open the TCP listening socket for the user commands. */
+	/* Open the UDP listening socke. */
 	if (bind_port != 0) {
-		/*if (bind_ip[0] == 0) {
-			tcp_sofd = anetTcpServer(err, port, NULL, 64);
-		} else {
-			tcp_sofd = anetTcpServer(err, port, bind_ip, 64);
-		}
-
-		if (tcp_sofd == ANET_ERR) {
-			t01_log(T01_WARNING,
-				"Could not create server tcp listening socket %s:%d: %s",
-				bind_ip[0] ? bind_ip : "*", port, err);
-			exit(1);
-		}
-		t01_log(T01_NOTICE, "Succeed to bind tcp %s:%d", bind_ip, port);
-		anetNonBlock(NULL, tcp_sofd);
-		*/
-
 		if (tconfig.work_mode & MASTER_MODE) {
 			udp_logfd = anetUdpServer(err, bind_port, bind_ip);
 			if (udp_logfd == ANET_ERR) {
@@ -1425,20 +1398,11 @@ static void init_rulemgmt()
 		}
 	}
 
-	/* Abort if there are no listening sockets at all. */
-	/*if (tcp_sofd < 0) {
-		t01_log(T01_WARNING,
-			"Configured to not listen anywhere, exiting.");
-		exit(1);
-	}*/
-
 	pthread_spin_init(&hitlog_lock, 0);
 }
 
 void close_listening_sockets()
 {
-	if (tcp_sofd != -1)
-		close(tcp_sofd);
 	if (udp_logfd != -1)
 		close(udp_logfd);
 }

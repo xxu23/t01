@@ -73,6 +73,7 @@ struct http_query
 
 struct cmd {
 	struct evhttp_request *req;
+	char *url;
 	int count;
 	char **argv;
 	size_t *argv_len;
@@ -234,6 +235,7 @@ static struct cmd *cmd_init(struct evhttp_request *req,
 	cmd = cmd_new(req, param_count, body, body_len);
 	if (!cmd)
 		return NULL;
+	cmd->url = uri;
 
 	/* check if we only have one command or more. */
 	slash = memchr(uri, '/', uri_len);
@@ -724,7 +726,7 @@ static int client_get_slave_info(struct cmd *cmd)
 	return 0;
 }
 
-static int client_sync_rules(struct cmd *cmd)
+static int master_sync_rules(struct cmd *cmd)
 {
 	int ret = sync_rules(cmd->body, cmd->body_len);
 	if (ret == 0) {
@@ -735,7 +737,7 @@ static int client_sync_rules(struct cmd *cmd)
 	return ret;
 }
 
-static int client_registry_cluster(struct cmd *cmd)
+static int slave_registry_cluster(struct cmd *cmd)
 {
 	int i;
 	int slave_port = 0, id = 0;
@@ -757,7 +759,7 @@ static int client_registry_cluster(struct cmd *cmd)
 		else if (strcasecmp(cmd->queries[i].key, "version") == 0)
 			sscanf(cmd->queries[i].val, "%llx", &ver);
 	}
-
+	printf("%d\n", slave_port);
 	if (slave_port <= 0 || slave_port >= 65535) {
 		send_client_error(cmd->req, 400, "Bad Request");
 		return -1;
@@ -807,10 +809,23 @@ static struct http_cmd_table {
 	{EVHTTP_REQ_GET, "summary", 0, client_get_summary}, 
 	{EVHTTP_REQ_GET, "info", 0, client_get_server_info}, 
 	{EVHTTP_REQ_GET, "sinfo", 0, client_get_slave_info}, 
-	{EVHTTP_REQ_POST, "registry", 0, client_registry_cluster}, 
-	{EVHTTP_REQ_GET, "registry", 0, client_registry_cluster}, 
-	{EVHTTP_REQ_POST, "rulessync", 0, client_sync_rules},
+	{EVHTTP_REQ_POST, "registry", 0, slave_registry_cluster}, 
+	{EVHTTP_REQ_GET, "registry", 0, slave_registry_cluster}, 
+	{EVHTTP_REQ_POST, "rulessync", 0, master_sync_rules},
 };
+
+static char* get_method(int method)
+{
+	char *cmdtype;
+	switch (method) {
+		case EVHTTP_REQ_GET: cmdtype = "GET"; break;
+		case EVHTTP_REQ_POST: cmdtype = "POST"; break;
+		case EVHTTP_REQ_PUT: cmdtype = "PUT"; break;
+		case EVHTTP_REQ_DELETE: cmdtype = "DELETE"; break;
+		default: cmdtype = "unknown"; break;
+	}
+	return cmdtype;
+}
 
 static void cmd_dispatch(struct cmd *cmd, int method)
 {
@@ -834,12 +849,13 @@ static void cmd_dispatch(struct cmd *cmd, int method)
 	if (which == NULL) {
 		send_client_error(cmd->req, 405, "Method Not allowed");
 	} else {
-		which->action(cmd);
+		int ret = which->action(cmd);
+		t01_log(T01_NOTICE, "%s /%s %s", get_method(method), 
+				cmd->url, ret == 0 ? "OK" : "Fail");
 	}
 }
 
-
-static void generic_cb(struct evhttp_request *req, void *arg)
+void http_server_request_cb(struct evhttp_request *req, void *arg)
 {
 	struct evhttp_uri *decoded = NULL;
 	struct evbuffer *buf;
@@ -891,11 +907,8 @@ static void generic_cb(struct evhttp_request *req, void *arg)
 done:
 	if (decoded)
 		evhttp_uri_free(decoded);
-}
-
-void set_http_server_cb(struct evhttp *http)
-{
-	evhttp_set_gencb(http, generic_cb, NULL);
+	if (cmd) 
+		cmd_free(cmd);
 }
 
 static void slave_request_cb(struct evhttp_request *req, void *arg)
@@ -922,7 +935,7 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 				"Connection", "Keep-Alive");
 	snprintf(path, 1024, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx&version=%llx", 
 		self_port, cksum, tconfig.id, hits, version);
-	evhttp_make_request(conn, req, EVHTTP_REQ_GET, path);
+	evhttp_make_request(conn, req, EVHTTP_REQ_POST, path);
 
 	return 0;
 }
