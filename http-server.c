@@ -71,9 +71,10 @@ struct http_query
 	char *val;
 };
 
-struct cmd {
+struct cmd 
+{
 	struct evhttp_request *req;
-	char *url;
+	const char *url;
 	int count;
 	char **argv;
 	size_t *argv_len;
@@ -759,7 +760,6 @@ static int slave_registry_cluster(struct cmd *cmd)
 		else if (strcasecmp(cmd->queries[i].key, "version") == 0)
 			sscanf(cmd->queries[i].val, "%llx", &ver);
 	}
-	printf("%d\n", slave_port);
 	if (slave_port <= 0 || slave_port >= 65535) {
 		send_client_error(cmd->req, 400, "Bad Request");
 		return -1;
