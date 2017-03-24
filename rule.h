@@ -35,6 +35,8 @@
 
 #define HITS_THRESHOLD_PER_SECOND 3000
 
+extern uint64_t version;
+
 struct log_rz
 {	
 	uint8_t smac[6];
@@ -67,6 +69,7 @@ struct hit_record {
 	struct list_head list;
 };
 
+#pragma pack(1)
 struct rule {
 	uint32_t id;
 	char human_protocol[16];
@@ -75,7 +78,8 @@ struct rule {
 	uint16_t sport;
 	uint16_t dport;
 	char human_action[16];
-	char payload[220];
+	char payload[212];
+	uint64_t version;
 	int type;
 	char human_match[16];
 	char human_which[16];
@@ -94,6 +98,7 @@ struct rule {
 	struct list_head list;
 	struct list_head hit_head;
 };
+#pragma pack()
 
 #define T01_ACTION_REDIRECT 		1
 #define T01_ACTION_REJECT		2

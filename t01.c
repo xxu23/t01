@@ -44,9 +44,9 @@
 #include "rule.h"
 #include "anet.h"
 #include "logger.h"
-#include "networking.h"
 #include "ioengine.h"
 #include "t01.h"
+#include "http-server.h"
 #include "zmalloc.h"
 #include <cJSON.h>
 #include <net/netmap_user.h>
@@ -77,6 +77,9 @@ uint64_t bytes_per_second_out = 0;
 uint64_t pkts_per_second_in = 0;
 uint64_t pkts_per_second_out = 0;
 struct event_base *base;
+struct evhttp *http;
+struct evhttp_bound_socket *handle;
+
 struct t01_config tconfig;
 
 static struct ndpi_workflow *workflow;
@@ -102,6 +105,9 @@ static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
 static pthread_spinlock_t mirror_lock;
 static pthread_spinlock_t hitlog_lock;
+static	char *bind_ip;
+static	int bind_port;
+
 
 static struct filter_strategy {
 	uint8_t protocol;
@@ -1037,6 +1043,26 @@ leave:
 	return NULL;
 }
 
+static void udp_server_can_read(int fd, short event, void *ptr)
+{
+	struct sockaddr_in addr;
+	socklen_t len;
+	int nread;
+	struct log_rz lr;
+
+	if ((nread =
+	     recvfrom(fd, &lr, sizeof(lr), 0, (struct sockaddr *)&addr,
+		      &len)) <= 0)
+		return;
+	else if (nread != sizeof(lr))
+		return;
+
+	if (lr.local_ip == 0)
+		lr.local_ip = addr.sin_addr.s_addr;
+
+	add_log_rz(&lr);
+}
+
 static void *libevent_thread(void *args)
 {
 	struct event ev0, ev1, ev2, ev3, ev4;
@@ -1054,6 +1080,21 @@ static void *libevent_thread(void *args)
 		event_add(&ev0, NULL);
 	}
 
+	/* Create a new evhttp object to handle requests. */
+	http = evhttp_new(base);
+	if (!http) {
+		t01_log(T01_WARNING, "couldn't create evhttp.");
+		exit(1);
+	}
+	set_http_server_cb(http);
+	/* Now we tell the evhttp what port to listen on */
+	handle = evhttp_bind_socket_with_handle(http, "0.0.0.0", bind_port);
+	if (!handle) {
+		t01_log(T01_WARNING, "couldn't bind to port %d.", bind_port);
+		exit(1);
+	}
+
+#if 0
 	/* start rule management server */
 	if (tcp_sofd > 0) {
 		event_set(&ev1, tcp_sofd, EV_READ | EV_PERSIST,
@@ -1061,6 +1102,7 @@ static void *libevent_thread(void *args)
 		event_base_set(base, &ev1);
 		event_add(&ev1, NULL);
 	}
+#endif
 
 	/* Initalize timeout event */
 	if (tconfig.work_mode & NETMAP_MODE) {
@@ -1332,8 +1374,6 @@ static void init_engine()
 static void init_rulemgmt()
 {
 	char err[ANET_ERR_LEN];
-	char *bind_ip;
-	int port;
 
 	if (tconfig.ruledb[0]) {
 		int rule_num = load_rules(tconfig.ruledb);
@@ -1347,15 +1387,15 @@ static void init_rulemgmt()
 
 	if (tconfig.work_mode & NETMAP_MODE) {
 		bind_ip = tconfig.rule_ip;
-		port = tconfig.rule_port;
+		bind_port = tconfig.rule_port;
 	} else {
 		bind_ip = tconfig.master_ip;
-		port = tconfig.master_port;
+		bind_port = tconfig.master_port;
 	}
 
 	/* Open the TCP listening socket for the user commands. */
-	if (port != 0) {
-		if (bind_ip[0] == 0) {
+	if (bind_port != 0) {
+		/*if (bind_ip[0] == 0) {
 			tcp_sofd = anetTcpServer(err, port, NULL, 64);
 		} else {
 			tcp_sofd = anetTcpServer(err, port, bind_ip, 64);
@@ -1369,27 +1409,28 @@ static void init_rulemgmt()
 		}
 		t01_log(T01_NOTICE, "Succeed to bind tcp %s:%d", bind_ip, port);
 		anetNonBlock(NULL, tcp_sofd);
+		*/
 
 		if (tconfig.work_mode & MASTER_MODE) {
-			udp_logfd = anetUdpServer(err, port, bind_ip);
+			udp_logfd = anetUdpServer(err, bind_port, bind_ip);
 			if (udp_logfd == ANET_ERR) {
 				t01_log(T01_WARNING,
 					"Could not create server udp listening socket %s:%d: %s",
-					bind_ip[0] ? bind_ip : "*", port, err);
+					bind_ip[0] ? bind_ip : "*", bind_port, err);
 				exit(1);
 			}
 			t01_log(T01_NOTICE, "Succeed to bind udp %s:%d",
-				bind_ip, port);
+				bind_ip, bind_port);
 			anetNonBlock(NULL, udp_logfd);
 		}
 	}
 
 	/* Abort if there are no listening sockets at all. */
-	if (tcp_sofd < 0) {
+	/*if (tcp_sofd < 0) {
 		t01_log(T01_WARNING,
 			"Configured to not listen anywhere, exiting.");
 		exit(1);
-	}
+	}*/
 
 	pthread_spin_init(&hitlog_lock, 0);
 }

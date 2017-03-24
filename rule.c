@@ -52,6 +52,7 @@
 
 #define T01_TDB_TYPE_RULE 1
 #define T01_TDB_TYPE_HIT  2
+#define T01_TDB_TYPE_VERSION  254
 #define T01_TDB_TYPE_EOF  255
 
 #define MAX_HITS_PER_RULE 16*1024*4
@@ -59,6 +60,8 @@
 static uint32_t max_id;
 static uint8_t tdbver;
 static ZLIST_HEAD(rule_list);
+
+uint64_t version = 0;
 
 static inline uint8_t get_action(const char *action)
 {
@@ -319,6 +322,7 @@ static void parse_one_rule(cJSON * json, struct rule *rule)
 	get_int_from_json(item, json, "sport", rule->sport);
 	get_int_from_json(item, json, "dport", rule->dport);
 	get_int_from_json(item, json, "id", rule->id);
+	get_int_from_json(item, json, "version", rule->version);
 	get_int_from_json(item, json, "type", rule->type);
 	get_int_from_json(item, json, "disabled", rule->disabled);
 
@@ -471,6 +475,8 @@ int load_rules(const char *filename)
 			i++;
 			if (r->id > max_id)
 				max_id = r->id;
+			if (r->version > version)
+				version = r->version;
 		} else if (type == T01_TDB_TYPE_HIT) {
 			struct hit_record *h = zmalloc(sizeof(*h));
 			if (!h)
@@ -484,6 +490,9 @@ int load_rules(const char *filename)
 			}
 			list_add_tail(&h->list, &curr_rule->hit_head);
 			curr_rule->saved_hits++;
+		} else if (type == T01_TDB_TYPE_VERSION) {
+			tdb_load_raw(fp, &version, sizeof(version));
+			break;
 		} else if (type == T01_TDB_TYPE_EOF) {
 			break;
 		}
@@ -624,6 +633,11 @@ int save_rules(const char *filename)
 				goto werr;
 		}
 	}
+	if (tdb_save_type(fp, T01_TDB_TYPE_VERSION) < 0)
+		goto werr;
+	if (tdb_write_raw(fp, &version, sizeof(version)) < 0)
+		goto werr;
+
 	if (tdb_save_type(fp, T01_TDB_TYPE_EOF) < 0)
 		goto werr;
 
@@ -736,13 +750,14 @@ static cJSON *rule2cjson(struct rule *rule)
 	const char *strings[4] = { 
 		rule->action_params[0],
 		rule->action_params[1],
-		rule->action_params[1],
+		rule->action_params[2],
 		rule->action_params[3]
 	};
 
 	cJSON_AddNumberToObject(root, "id", rule->id);
 	cJSON_AddNumberToObject(root, "disabled", rule->disabled);
 	cJSON_AddNumberToObject(root, "type", rule->type);
+	cJSON_AddNumberToObject(root, "version", rule->version);
 	if (rule->human_protocol[0])
 		cJSON_AddStringToObject(root, "protocol", rule->human_protocol);
 	if (rule->human_saddr[0])
@@ -1080,7 +1095,13 @@ int update_rule(uint32_t id, const char *body, int body_len)
 		if (rule->id == id && rule->used == 1) {
 			new_rule.hits = rule->hits;
 			new_rule.saved_hits = rule->saved_hits;
+			if (new_rule.version == 0)
+				new_rule.version = ++version;
+			else if (new_rule.version > version)
+				version = new_rule.version;
 			memcpy(rule, &new_rule, offsetof(struct rule, list));
+			t01_log(T01_NOTICE, "Update rule %d version %lld\n", 
+					new_rule.id, new_rule.version);
 			dirty += HITS_THRESHOLD_PER_SECOND;
 			return 0;
 		}
@@ -1157,7 +1178,13 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 	memcpy(new_rule, &src_rule, offsetof(struct rule, list));
 	new_rule->used = 1;
 	new_rule->disabled = 0;
+	if (new_rule->version == 0)
+		new_rule->version = ++version;
+	else if (new_rule->version > version)
+		version = new_rule->version;
 	new_rule->id = src_rule.id ? src_rule.id : ++max_id;
+	t01_log(T01_NOTICE, "Create rule %d version %lld\n", 
+			new_rule->id, new_rule->version);
 	dirty += HITS_THRESHOLD_PER_SECOND;
 
 	get_rule(new_rule->id, out, out_len);

@@ -36,21 +36,18 @@
 #include <unistd.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
-#include <evhttp.h>
+#include <event.h>
+#include "http-server.h"
 #include "t01.h"
 #undef offsetof
 #include "list.h"
-#include "anet.h"
-#include "networking.h"
 #include "rule.h"
-#include "http.h"
-#include "client.h"
 #include "zmalloc.h"
-#include "cJSON.h"
 #include "logger.h"
-
-#define MAX_ACCEPTS_PER_CALL 1000
+#include "cJSON.h"
 
 static ZLIST_HEAD(slave_list);
 
@@ -62,7 +59,80 @@ struct slave_client {
 	int id;
 	uint64_t cksum;
 	uint64_t hits;
+	uint64_t version;
+	int first;
 };
+
+struct http_query
+{
+	size_t key_sz;
+	char *key;
+	size_t val_sz;
+	char *val;
+};
+
+struct cmd {
+	struct evhttp_request *req;
+	int count;
+	char **argv;
+	size_t *argv_len;
+	const char *body;
+	size_t body_len;
+	int query_count;
+	struct http_query *queries;
+	char *ip;
+	unsigned short port;
+};
+
+static struct http_query *get_query_param(const char *at, int *count)
+{
+	struct http_query *queries = NULL;
+	const char *p = at;
+	size_t n = *count;
+	size_t sz = at ? strlen(at) : 0; 
+
+	while(p && p < at + sz) {
+		const char *key = p, *val;
+		int key_len, val_len;
+		char *eq = memchr(key, '=', sz - (p-at));
+		if(!eq || eq > at + sz) { /* last argument */
+			break;
+		} else { /* found an '=' */
+			char *amp;
+			val = eq + 1;
+			key_len = eq - key;
+			p = eq + 1;
+
+			amp = memchr(p, '&', sz - (p-at));
+			if(!amp || amp > at + sz) {
+				val_len = at + sz - p; /* last arg */
+			} else {
+				val_len = amp - val; /* cur arg */
+				p = amp + 1;
+			}
+
+			/* Add data to the current query value. */
+			n = ++(*count);
+			queries = zrealloc(queries, n * sizeof(struct http_query));
+			memset(&queries[n-1], 0, sizeof(struct http_query));
+
+			queries[n-1].key = zcalloc(key_len + 1, 1);
+			memcpy(queries[n-1].key + queries[n-1].key_sz, key, key_len);
+			queries[n-1].key_sz = key_len + 1;
+			queries[n-1].key[queries[n-1].key_sz] = 0;
+
+			queries[n-1].val = zcalloc(val_len + 1, 1);
+			memcpy(queries[n-1].val + queries[n-1].val_sz, val, val_len);
+			queries[n-1].val_sz = val_len + 1;
+			queries[n-1].val[queries[n-1].val_sz] = 0;
+
+			if(!amp) {
+				break;
+			}
+		}
+	}
+	return queries;
+}
 
 static void mark_slave_offline(const char *ip, int port)
 {
@@ -77,72 +147,27 @@ static void mark_slave_offline(const char *ip, int port)
 	}
 }
 
-void udp_server_can_read(int fd, short event, void *ptr)
-{
-	struct sockaddr_in addr;
-	socklen_t len;
-	int nread;
-	struct log_rz lr;
-
-	if ((nread =
-	     recvfrom(fd, &lr, sizeof(lr), 0, (struct sockaddr *)&addr,
-		      &len)) <= 0)
-		return;
-	else if (nread != sizeof(lr))
-		return;
-
-	if (lr.local_ip == 0)
-		lr.local_ip = addr.sin_addr.s_addr;
-
-	add_log_rz(&lr);
-}
-
-void server_can_accept(int fd, short event, void *ptr)
-{
-	int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
-	char cip[16];
-	char err[ANET_ERR_LEN];
-
-	while (max--) {
-		cfd = anetTcpAccept(err, fd, cip, sizeof(cip), &cport);
-		if (cfd == ANET_ERR) {
-			if (errno != EWOULDBLOCK)
-				t01_log(T01_WARNING,
-					"Accepting client connection: %s", err);
-			return;
-		}
-		t01_log(T01_DEBUG, "Accepted %s:%d [fd=%d]", cip, cport, cfd);
-		http_client_new(base, cfd, cip, cport);
-	}
-}
-
-struct cmd {
-	struct http_client *client;
-	int count;
-	char **argv;
-	size_t *argv_len;
-	const char *body;
-	size_t body_len;
-};
-
-static struct cmd *cmd_new(struct http_client *client, int count,
+static struct cmd *cmd_new(struct evhttp_request *req, int count,
 			   const char *body, size_t body_len)
 {
 	struct cmd *c = zcalloc(1, sizeof(struct cmd));
 	if (!c)
 		return NULL;
 
-	c->client = client;
+	c->req = req;
 	c->count = count;
 	c->argv = zcalloc(count, sizeof(char *));
 	c->argv_len = zcalloc(count, sizeof(size_t));
 	c->body = body;
 	c->body_len = body_len;
+	c->query_count = 0;
+	c->queries = NULL;
+	c->ip = NULL;
 
 	return c;
 }
 
-void cmd_free(struct cmd *c)
+static void cmd_free(struct cmd *c)
 {
 	int i;
 	if (!c)
@@ -150,6 +175,11 @@ void cmd_free(struct cmd *c)
 
 	for (i = 0; i < c->count; ++i) {
 		zfree((char *)c->argv[i]);
+	}
+
+	if (c->queries) {
+		zfree(c->queries);
+		c->queries = NULL;
 	}
 }
 
@@ -181,14 +211,17 @@ static char *decode_uri(const char *uri, size_t length, size_t * out_len,
 	return ret;
 }
 
-static struct cmd *cmd_init(struct http_client *c, const char *uri,
-			    size_t uri_len, const char *body, size_t body_len)
+static struct cmd *cmd_init(struct evhttp_request *req, 
+				const char *uri, size_t uri_len, 
+				const char *query, size_t query_len,
+				const char *body, size_t body_len)
 {
 	char *slash;
 	const char *p, *cmd_name = uri;
 	int cmd_len;
-	int param_count = 0, cur_param = 1, i;
+	int param_count = 0, cur_param = 1, query_count = 0, i;
 	struct cmd *cmd = NULL;
+	struct evhttp_connection *conn;
 
 	for (p = uri; p && p < uri + uri_len; param_count++) {
 		p = memchr(p + 1, '/', uri_len - (p + 1 - uri));
@@ -198,7 +231,7 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 		return NULL;
 	}
 
-	cmd = cmd_new(c, param_count, body, body_len);
+	cmd = cmd_new(req, param_count, body, body_len);
 	if (!cmd)
 		return NULL;
 
@@ -255,143 +288,158 @@ static struct cmd *cmd_init(struct http_client *c, const char *uri,
 	}
 	cmd->count = cur_param;
 
+	cmd->queries = get_query_param(query, &query_count);
+	cmd->query_count = query_count;
+
+	conn = evhttp_request_get_connection(req);
+	evhttp_connection_get_peer(conn, &cmd->ip, &cmd->port);
+
 	return cmd;
 }
 
-static void send_client_reply(struct http_client *c, const char *p,
+static void send_client_reply(struct evhttp_request *req, const char *p,
 			      size_t sz, const char *content_type)
 {
 	const char *ct = content_type;
-	struct http_response *resp;
+	struct evbuffer *evb = evbuffer_new();
+	
+	evhttp_add_header(evhttp_request_get_output_headers(req),
+		    "Content-Type", ct);
 
-	resp = http_response_init(c->base, 200, "OK");
-	http_response_set_header(resp, "Content-Type", ct);
-	http_response_set_body(resp, p, sz);
-	http_response_set_keep_alive(resp, 1);
-	http_response_write(resp, c->fd);
+	evbuffer_add(evb, p, sz);
+
+	evhttp_send_reply(req, 200, "OK", evb);
+
+	evbuffer_free(evb);
 }
 
-static int client_get_rule(struct http_client *c, struct cmd *cmd)
+static void send_client_error(struct evhttp_request *req, int code, 
+				const char *reason)
+{
+	evhttp_send_error(req, code, reason);
+}
+
+static int client_get_rule(struct cmd *cmd)
 {
 	uint32_t id = atoi(cmd->argv[1]);
 	char *result = NULL;
 	size_t len = 0;
 	int ret = get_rule(id, &result, &len);
 	if (ret == 0) {
-		send_client_reply(c, result, len, "application/json");
+		send_client_reply(cmd->req, result, len, "application/json");
 		release_buffer(&result);
 	} else {
-		http_send_error(c, 404, "Not Found");
+		send_client_error(cmd->req, 404, "Not Found");
 	}
 	return ret;
 }
 
-static int client_enable_rule(struct http_client *c, struct cmd *cmd)
+static int client_enable_rule(struct cmd *cmd)
 {
 	uint32_t id = atoi(cmd->argv[1]);
 	int ret = enable_rule(id);
 	if (ret == 0) {
-		send_client_reply(c, NULL, 0, "application/json");
+		send_client_reply(cmd->req, NULL, 0, "application/json");
 	} else {
-		http_send_error(c, 404, "Not Found");
+		send_client_error(cmd->req, 404, "Not Found");
 	}
 	return ret;
 }
 
-static int client_disable_rule(struct http_client *c, struct cmd *cmd)
+static int client_disable_rule(struct cmd *cmd)
 {
 	uint32_t id = atoi(cmd->argv[1]);
 	int ret = disable_rule(id);
 	if (ret == 0) {
-		send_client_reply(c, NULL, 0, "application/json");
+		send_client_reply(cmd->req, NULL, 0, "application/json");
 	} else {
-		http_send_error(c, 404, "Not Found");
+		send_client_error(cmd->req, 404, "Not Found");
 	}
 	return ret;
 }
 
-static int client_get_ruleids(struct http_client *c, struct cmd *cmd)
+static int client_get_ruleids(struct cmd *cmd)
 {
 	char *result = NULL;
 	size_t len = 0;
 	int32_t type = -1, offset = 0, limit = 0;
-	int query_count = c->query_count, i;
+	int query_count = cmd->query_count, i;
 	
 	for (i = 0; i < query_count; i++) {
-		if (strcasecmp(c->queries[i].key, "type") == 0)
-			type = atoi(c->queries[i].val);
-		else if (strcasecmp(c->queries[i].key, "offset") == 0)
-			offset = atoi(c->queries[i].val);
-		else if (strcasecmp(c->queries[i].key, "limit") == 0)
-			limit = atoi(c->queries[i].val);
+		if (strcasecmp(cmd->queries[i].key, "type") == 0)
+			type = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "offset") == 0)
+			offset = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "limit") == 0)
+			limit = atoi(cmd->queries[i].val);
 	}
 
 	get_ruleids(type, offset, limit, &result, &len, 1);
 
-	send_client_reply(c, result, len, "application/json");
+	send_client_reply(cmd->req, result, len, "application/json");
 	release_buffer(&result);
 
 	return 0;
 }
 
-static int client_get_rules(struct http_client *c, struct cmd *cmd)
+static int client_get_rules(struct cmd *cmd)
 {
-	int n = c->query_count, i, j = 0;
+	int n = cmd->query_count, i, j = 0;
 	uint32_t *ids = zmalloc(n * sizeof(uint32_t));
 	char *result = NULL;
 	size_t len = 0;
 
 	for (i = 0; i < n; i++) {
-		if (strcasecmp(c->queries[i].key, "id") == 0)
-			ids[j++] = atoi(c->queries[i].val);
+		if (strcasecmp(cmd->queries[i].key, "id") == 0)
+			ids[j++] = atoi(cmd->queries[i].val);
 	}
 	get_rules(ids, j, &result, &len);
-	send_client_reply(c, result, len, "application/json");
+	send_client_reply(cmd->req, result, len, "application/json");
 	release_buffer(&result);
 
 	return 0;
 }
 
-static int client_get_summary(struct http_client *c, struct cmd *cmd)
+static int client_get_summary(struct cmd *cmd)
 {
 	int type = 0;
-	int query_count = c->query_count, i, ret;
+	int query_count = cmd->query_count, i, ret;
 	char *result = NULL;
 	size_t len = 0;
 
 	for (i = 0; i < query_count; i++) {
-		if (strcasecmp(c->queries[i].key, "type") == 0)
-			type = atoi(c->queries[i].val);
+		if (strcasecmp(cmd->queries[i].key, "type") == 0)
+			type = atoi(cmd->queries[i].val);
 	}
 	
 	ret = get_summary(type, &result, &len);
 	if (ret == 0) {
-		send_client_reply(c, result, len, "application/json");
+		send_client_reply(cmd->req, result, len, "application/json");
 		release_buffer(&result);
 	} else {
-		http_send_error(c, 404, "Not Found");
+		send_client_error(cmd->req, 404, "Not Found");
 	}
 
 	return ret;
 }
 
-static int client_get_hits(struct http_client *c, struct cmd *cmd)
+static int client_get_hits(struct cmd *cmd)
 {
 	const int MAX_LIMIT = 100;
 	int offset = 0, limit = MAX_LIMIT;
 	uint32_t rule_id = 0;
-	int query_count = c->query_count, i, j = 0;
+	int query_count = cmd->query_count, i, j = 0;
 	char *result = NULL;
 	size_t len = 0;
 	int ret;
 
 	for (i = 0; i < query_count; i++) {
-		if (strcasecmp(c->queries[i].key, "rule_id") == 0)
-			rule_id = atoi(c->queries[i].val);
-		else if (strcasecmp(c->queries[i].key, "offset") == 0)
-			offset = atoi(c->queries[i].val);
-		else if (strcasecmp(c->queries[i].key, "limit") == 0)
-			limit = atoi(c->queries[i].val);
+		if (strcasecmp(cmd->queries[i].key, "rule_id") == 0)
+			rule_id = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "offset") == 0)
+			offset = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "limit") == 0)
+			limit = atoi(cmd->queries[i].val);
 	}
 	if (offset < 0)
 		offset = 0;
@@ -400,16 +448,16 @@ static int client_get_hits(struct http_client *c, struct cmd *cmd)
 
 	ret = get_hits(rule_id, offset, limit, &result, &len);
 	if (ret == 0) {
-		send_client_reply(c, result, len, "application/json");
+		send_client_reply(cmd->req, result, len, "application/json");
 		release_buffer(&result);
 	} else {
-		http_send_error(c, 404, "Not Found");
+		send_client_error(cmd->req, 404, "Not Found");
 	}
 
 	return ret;
 }
 
-void master_sync_rule_cb(struct evhttp_request *req, void *arg)
+static void master_sync_rule_cb(struct evhttp_request *req, void *arg)
 {
 	struct evhttp_connection *conn = arg;
 	char *address;
@@ -460,22 +508,22 @@ static void sync_slaves_rules(const char *path, int method,
 
 		evhttp_connection_free_on_completion(conn);
 		evhttp_connection_set_timeout(conn, 5);
-		evhttp_add_header(req->output_headers, "Connection",
-				  "Keep-Alive");
+		evhttp_add_header(evhttp_request_get_output_headers(req), 
+					"Connection", "Keep-Alive");
 
 		if (body && len) {
 			evbuffer_add(buffer, body, len);
 			evutil_snprintf(buf, sizeof(buf) - 1, "%lu",
 					(unsigned long)len);
-			evhttp_add_header(req->output_headers, "Content-Length",
-					  buf);
+			evhttp_add_header(evhttp_request_get_output_headers(req), 
+					"Content-Length", buf);
 		}
 
 		evhttp_make_request(conn, req, method, path);
 	}
 }
 
-static int client_create_rule(struct http_client *c, struct cmd *cmd)
+static int client_create_rule(struct cmd *cmd)
 {
 	char *result = NULL;
 	size_t len = 0;
@@ -484,15 +532,15 @@ static int client_create_rule(struct http_client *c, struct cmd *cmd)
 		if (tconfig.work_mode & MASTER_MODE)
 			sync_slaves_rules("/rules", EVHTTP_REQ_POST, result,
 					  len);
-		send_client_reply(c, result, len, "application/json");
+		send_client_reply(cmd->req, result, len, "application/json");
 		release_buffer(&result);
 	} else {
-		http_send_error(c, 400, "Bad Request");
+		send_client_error(cmd->req, 400, "Bad Request");
 	}
 	return ret;
 }
 
-static int client_update_rule(struct http_client *c, struct cmd *cmd)
+static int client_update_rule(struct cmd *cmd)
 {
 	uint32_t id = atoi(cmd->argv[1]);
 	int ret = update_rule(id, cmd->body, cmd->body_len);
@@ -503,14 +551,14 @@ static int client_update_rule(struct http_client *c, struct cmd *cmd)
 			sync_slaves_rules(path, EVHTTP_REQ_PUT, cmd->body,
 					  cmd->body_len);
 		}
-		send_client_reply(c, NULL, 0, "application/json");
+		send_client_reply(cmd->req, NULL, 0, "application/json");
 	} else {
-		http_send_error(c, 400, "Bad Request");
+		send_client_error(cmd->req, 400, "Bad Request");
 	}
 	return ret;
 }
 
-static int client_delete_rule(struct http_client *c, struct cmd *cmd)
+static int client_delete_rule(struct cmd *cmd)
 {
 	uint32_t id = atoi(cmd->argv[1]);
 	int ret = delete_rule(id);
@@ -520,14 +568,14 @@ static int client_delete_rule(struct http_client *c, struct cmd *cmd)
 			snprintf(path, sizeof(path), "/rule/%u", id);
 			sync_slaves_rules(path, EVHTTP_REQ_DELETE, NULL, 0);
 		}
-		send_client_reply(c, NULL, 0, "application/json");
+		send_client_reply(cmd->req, NULL, 0, "application/json");
 	} else {
-		http_send_error(c, 400, "Bad Request");
+		send_client_error(cmd->req, 400, "Bad Request");
 	}
 	return ret;
 }
 
-static int client_get_server_info(struct http_client *c, struct cmd *cmd)
+static int client_get_server_info(struct cmd *cmd)
 {
 	cJSON *root = cJSON_CreateObject();
 	char *result;
@@ -536,6 +584,8 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 	cJSON_AddNumberToObject(root, "upstart", upstart);
 	cJSON_AddNumberToObject(root, "now", time(NULL));
 	cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
+	cJSON_AddNumberToObject(root, "version", version);
+	cJSON_AddNumberToObject(root, "crc64", calc_crc64_rules());
 
 	calc_rules(&total_rules, &enabled_rules);
 	cJSON_AddNumberToObject(root, "total_rules", total_rules);
@@ -588,7 +638,7 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 	}
 
 	result = cJSON_PrintUnformatted(root);
-	send_client_reply(c, result, strlen(result), "application/json");
+	send_client_reply(cmd->req, result, strlen(result), "application/json");
 
 	cJSON_Delete(root);
 	cJSON_FreePrint(result);
@@ -597,14 +647,14 @@ static int client_get_server_info(struct http_client *c, struct cmd *cmd)
 
 struct master_ev_args {
 	struct evhttp_connection *conn;
-	struct http_client *client;
+	struct evhttp_request *req;
 };
 
-void master_get_sinfo_cb(struct evhttp_request *req, void *arg)
+static void master_get_sinfo_cb(struct evhttp_request *req, void *arg)
 {
 	struct master_ev_args *ev_arg = arg;
 	struct evhttp_connection *conn = ev_arg->conn;
-	struct http_client *client = ev_arg->client;
+	//struct evhttp_request *req = ev_arg->req;
 	char *address;
 	uint16_t port;
 	int code;
@@ -621,9 +671,10 @@ void master_get_sinfo_cb(struct evhttp_request *req, void *arg)
 
 	code = evhttp_request_get_response_code(req);
 	if (code == 200) {
-		size_t len = evbuffer_get_length(req->input_buffer);
-		unsigned char *str = evbuffer_pullup(req->input_buffer, len);
-		send_client_reply(client, str, len, "application/json");
+		struct evbuffer *evb = evhttp_request_get_input_buffer(req);
+		size_t len = evbuffer_get_length(evb);
+		unsigned char *str = evbuffer_pullup(evb, len);
+		send_client_reply(req, str, len, "application/json");
 	} else {
 		if (code == 0)
 			mark_slave_offline(address, port);
@@ -633,29 +684,29 @@ void master_get_sinfo_cb(struct evhttp_request *req, void *arg)
 	zfree(ev_arg);
 }
 
-static int client_get_slave_info(struct http_client *c, struct cmd *cmd)
+static int client_get_slave_info(struct cmd *cmd)
 {
 	char ip[48] = { 0 };
 	int port = 0;
-	int query_count = c->query_count, i, j = 0;
+	int query_count = cmd->query_count, i, j = 0;
 	struct evhttp_connection *conn;
 	struct evhttp_request *req;
 	struct evbuffer *buffer;
 	struct master_ev_args *arg;
 
 	if (tconfig.work_mode & NETMAP_MODE) {
-		http_send_error(c, 400, "Bad Request");
+		send_client_error(cmd->req, 400, "Bad Request");
 		return 0;
 	}
 
 	for (i = 0; i < query_count; i++) {
-		if (strcasecmp(c->queries[i].key, "ip") == 0)
-			strncpy(ip, c->queries[i].val, sizeof(ip));
-		else if (strcasecmp(c->queries[i].key, "port") == 0)
-			port = atoi(c->queries[i].val);
+		if (strcasecmp(cmd->queries[i].key, "ip") == 0)
+			strncpy(ip, cmd->queries[i].val, sizeof(ip));
+		else if (strcasecmp(cmd->queries[i].key, "port") == 0)
+			port = atoi(cmd->queries[i].val);
 	}
 	if (port <= 0 || port >= 65535 || ip[0] == 0 || inet_addr(ip) == -1) {
-		http_send_error(c, 400, "Bad Request");
+		send_client_error(cmd->req, 400, "Bad Request");
 		return 0;
 	}
 
@@ -663,73 +714,78 @@ static int client_get_slave_info(struct http_client *c, struct cmd *cmd)
 	conn = evhttp_connection_base_new(base, NULL, ip, port);
 	req = evhttp_request_new(master_get_sinfo_cb, arg);
 	arg->conn = conn;
-	arg->client = c;
+	arg->req = req;
 	evhttp_connection_free_on_completion(conn);
 	evhttp_connection_set_timeout(conn, 5);
-	evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
+	evhttp_add_header(evhttp_request_get_output_headers(req), 
+				"Connection", "Keep-Alive");
 	evhttp_make_request(conn, req, EVHTTP_REQ_GET, "/info");
 
 	return 0;
 }
 
-static int client_sync_rules(struct http_client *c, struct cmd *cmd)
+static int client_sync_rules(struct cmd *cmd)
 {
 	int ret = sync_rules(cmd->body, cmd->body_len);
 	if (ret == 0) {
-		send_client_reply(c, NULL, 0, "application/json");
+		send_client_reply(cmd->req, NULL, 0, "application/json");
 	} else {
-		http_send_error(c, 400, "Bad Request");
+		send_client_error(cmd->req, 400, "Bad Request");
 	}
 	return ret;
 }
 
-static int client_registry_cluster(struct http_client *c, struct cmd *cmd)
+static int client_registry_cluster(struct cmd *cmd)
 {
 	int i;
 	int slave_port = 0, id = 0;
 	uint64_t cksum = 0;
 	uint64_t shits = 0;
+	uint64_t ver = 0;
 	struct list_head *pos;
 	struct slave_client *slave = NULL;
 
-	for (i = 0; i < c->query_count; i++) {
-		if (strcasecmp(c->queries[i].key, "port") == 0)
-			slave_port = atoi(c->queries[i].val);
-		else if (strcasecmp(c->queries[i].key, "id") == 0)
-                        id = atoi(c->queries[i].val);
-		else if (strcasecmp(c->queries[i].key, "crc64") == 0)
-			sscanf(c->queries[i].val, "%llx", &cksum);
-		else if (strcasecmp(c->queries[i].key, "hits") == 0)
-                        sscanf(c->queries[i].val, "%llx", &shits);
+	for (i = 0; i < cmd->query_count; i++) {
+		if (strcasecmp(cmd->queries[i].key, "port") == 0)
+			slave_port = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "id") == 0)
+            	id = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "crc64") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &cksum);
+		else if (strcasecmp(cmd->queries[i].key, "hits") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &shits);
+		else if (strcasecmp(cmd->queries[i].key, "version") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &ver);
 	}
 
 	if (slave_port <= 0 || slave_port >= 65535) {
-		http_send_error(c, 400, "Bad Request");
+		send_client_error(cmd->req, 400, "Bad Request");
 		return -1;
 	}
 
 	list_for_each(pos, &slave_list) {
 		struct slave_client *s =
 		    list_entry(pos, struct slave_client, list);
-		if (strcmp(s->ip, c->ip) == 0 && s->port == slave_port) {
+		if (strcmp(s->ip, cmd->ip) == 0 && s->port == slave_port) {
 			slave = s;
 			break;
 		}
 	}
 	if (!slave) {
 		slave = zcalloc(1, sizeof(*slave));
-		strncpy(slave->ip, c->ip, sizeof(slave->ip));
+		strncpy(slave->ip, cmd->ip, sizeof(slave->ip));
 		slave->port = slave_port;
 		list_add_tail(&slave->list, &slave_list);
-		t01_log(T01_NOTICE, "Slave client %s:%d join", c->ip,
+		t01_log(T01_NOTICE, "Slave %s:%d join master", cmd->ip,
 			slave_port);
 	}
+	slave->version = ver;
 	slave->cksum = cksum;
 	slave->id = id;
 	slave->hits = shits;
 	slave->online = 1;
 
-	send_client_reply(c, NULL, 0, "application/json");
+	send_client_reply(cmd->req, NULL, 0, "application/json");
 	return 0;
 }
 
@@ -737,31 +793,32 @@ static struct http_cmd_table {
 	int method;
 	const char *command;
 	size_t params;
-	int (*action) (struct http_client * client, struct cmd * cmd);
+	int (*action) (struct cmd * cmd);
 } tables[] = {
-	{
-	HTTP_GET, "rule", 1, client_get_rule}, {
-	HTTP_GET, "ruleids", 0, client_get_ruleids}, {
-	HTTP_GET, "rules", 0, client_get_rules}, {
-	HTTP_GET, "hits", 0, client_get_hits}, {
-	HTTP_POST, "rules", 0, client_create_rule}, {
-	HTTP_POST, "enablerule", 1, client_enable_rule}, {
-	HTTP_POST, "disablerule", 1, client_disable_rule}, {
-	HTTP_PUT, "rule", 1, client_update_rule}, {
-	HTTP_DELETE, "rule", 1, client_delete_rule}, {
-	HTTP_GET, "summary", 0, client_get_summary}, {
-	HTTP_GET, "info", 0, client_get_server_info}, {
-	HTTP_GET, "sinfo", 0, client_get_slave_info}, {
-	HTTP_POST, "registry", 0, client_registry_cluster}, {
-	HTTP_GET, "registry", 0, client_registry_cluster}, {
-HTTP_POST, "rulessync", 0, client_sync_rules},};
+	{EVHTTP_REQ_GET, "rule", 1, client_get_rule}, 
+	{EVHTTP_REQ_GET, "ruleids", 0, client_get_ruleids}, 
+	{EVHTTP_REQ_GET, "rules", 0, client_get_rules}, 
+	{EVHTTP_REQ_GET, "hits", 0, client_get_hits}, 
+	{EVHTTP_REQ_POST, "rules", 0, client_create_rule}, 
+	{EVHTTP_REQ_POST, "enablerule", 1, client_enable_rule}, 
+	{EVHTTP_REQ_POST, "disablerule", 1, client_disable_rule},
+	{EVHTTP_REQ_PUT, "rule", 1, client_update_rule}, 
+	{EVHTTP_REQ_DELETE, "rule", 1, client_delete_rule}, 
+	{EVHTTP_REQ_GET, "summary", 0, client_get_summary}, 
+	{EVHTTP_REQ_GET, "info", 0, client_get_server_info}, 
+	{EVHTTP_REQ_GET, "sinfo", 0, client_get_slave_info}, 
+	{EVHTTP_REQ_POST, "registry", 0, client_registry_cluster}, 
+	{EVHTTP_REQ_GET, "registry", 0, client_registry_cluster}, 
+	{EVHTTP_REQ_POST, "rulessync", 0, client_sync_rules},
+};
 
-static void cmd_dispatch(struct http_client *c, struct cmd *cmd, int method)
+static void cmd_dispatch(struct cmd *cmd, int method)
 {
 	int i;
 	struct http_cmd_table *which = NULL;
+	
 	if (!cmd) {
-		http_send_error(c, 404, "Not Found");
+		send_client_error(cmd->req, 400, "Bad Request");
 		return;
 	}
 
@@ -775,63 +832,73 @@ static void cmd_dispatch(struct http_client *c, struct cmd *cmd, int method)
 	}
 
 	if (which == NULL) {
-		http_send_error(c, 404, "Not Found");
+		send_client_error(cmd->req, 405, "Method Not allowed");
 	} else {
-		int ret = which->action(c, cmd);
+		which->action(cmd);
 	}
 }
 
-int cmd_run_get(struct http_client *c, const char *uri, size_t uri_len)
+
+static void generic_cb(struct evhttp_request *req, void *arg)
 {
-	struct cmd *cmd = cmd_init(c, uri, uri_len, NULL, 0);
-	if (!cmd)
-		return -1;
+	struct evhttp_uri *decoded = NULL;
+	struct evbuffer *buf;
+	const char *docroot = arg;
+	const char *uri = evhttp_request_get_uri(req);
+	const char *path = NULL;
+	const char *query = NULL;
+	char *body = NULL;
+	size_t path_sz = 0, query_sz = 0, body_sz = 0;	
+	size_t len;
+	int method;
+	struct cmd *cmd = NULL;
 
-	cmd_dispatch(c, cmd, HTTP_GET);
-	cmd_free(cmd);
+	method = evhttp_request_get_command(req);
 
-	return 0;
+	/* Decode the URI */
+	decoded = evhttp_uri_parse(uri);
+	if (!decoded) {
+		evhttp_send_error(req, HTTP_BADREQUEST, 0);
+		return;
+	}
+
+	/* Let's see what path the user asked for. */
+	path = evhttp_uri_get_path(decoded);
+	if (!path) path = "/";
+	path_sz = strlen(path);
+
+	query = evhttp_uri_get_query(decoded);
+	if (query) 
+		query_sz = strlen(query);
+
+	buf = evhttp_request_get_input_buffer(req);
+	while (evbuffer_get_length(buf)) {
+		char buffer[4096] = {0};
+		int n;
+		n = evbuffer_remove(buf, buffer, sizeof(buffer));
+		if (n > 0) {
+			body = zrealloc(body, body_sz + n + 1);
+			memcpy(body + body_sz, buffer, n);
+			body_sz += n;
+			body[body_sz] = 0;
+		}
+	}
+
+	cmd = cmd_init(req, path+1, path_sz-1, query, query_sz, 
+			body, body_sz); 
+
+	cmd_dispatch(cmd, method);
+done:
+	if (decoded)
+		evhttp_uri_free(decoded);
 }
 
-int cmd_run_post(struct http_client *c, const char *uri, size_t uri_len,
-		 const char *body, size_t body_len)
+void set_http_server_cb(struct evhttp *http)
 {
-	struct cmd *cmd = cmd_init(c, uri, uri_len, body, body_len);
-	if (!cmd)
-		return -1;
-
-	cmd_dispatch(c, cmd, HTTP_POST);
-	cmd_free(cmd);
-
-	return 0;
+	evhttp_set_gencb(http, generic_cb, NULL);
 }
 
-int cmd_run_put(struct http_client *c, const char *uri, size_t uri_len,
-		const char *body, size_t body_len)
-{
-	struct cmd *cmd = cmd_init(c, uri, uri_len, body, body_len);
-	if (!cmd)
-		return -1;
-
-	cmd_dispatch(c, cmd, HTTP_PUT);
-	cmd_free(cmd);
-
-	return 0;
-}
-
-int cmd_run_delete(struct http_client *c, const char *uri, size_t uri_len)
-{
-	struct cmd *cmd = cmd_init(c, uri, uri_len, NULL, 0);
-	if (!cmd)
-		return -1;
-
-	cmd_dispatch(c, cmd, HTTP_DELETE);
-	cmd_free(cmd);
-
-	return 0;
-}
-
-void slave_request_cb(struct evhttp_request *req, void *arg)
+static void slave_request_cb(struct evhttp_request *req, void *arg)
 {
 	struct evhttp_connection *conn = arg;
 	if (!req) {
@@ -851,14 +918,16 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 	req = evhttp_request_new(slave_request_cb, conn);
 	evhttp_connection_free_on_completion(conn);
 	evhttp_connection_set_timeout(conn, 5);
-	evhttp_add_header(req->output_headers, "Connection", "Keep-Alive");
-	snprintf(path, 1024, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx", self_port, cksum, tconfig.id, hits);
+	evhttp_add_header(evhttp_request_get_output_headers(req), 
+				"Connection", "Keep-Alive");
+	snprintf(path, 1024, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx&version=%llx", 
+		self_port, cksum, tconfig.id, hits, version);
 	evhttp_make_request(conn, req, EVHTTP_REQ_GET, path);
 
 	return 0;
 }
 
-void master_request_syncrules_cb(struct evhttp_request *req, void *arg)
+static void master_request_syncrules_cb(struct evhttp_request *req, void *arg)
 {
 	struct evhttp_connection *conn = arg;
 	char *address;
@@ -905,8 +974,8 @@ int master_check_slaves()
 			continue;
 
 		t01_log(T01_NOTICE,
-			"CRC not match: master %llx VS slave[%s:%d] %llx",
-			cksum, s->ip, s->port, s->cksum);
+			"Rule not match: master [crc=%llx,version=%lld] VS slave [address=%s:%d, crc=%llx,version=%lld]",
+			cksum, version, s->ip, s->port, s->cksum, s->version);
 
 		if (!ids && get_ruleids(0, 0, 0, (char **)&ids, &len, 0) < 0)
 			continue;
@@ -920,13 +989,14 @@ int master_check_slaves()
 
 		evhttp_connection_free_on_completion(conn);
 		evhttp_connection_set_timeout(conn, 5);
-		evhttp_add_header(req->output_headers, "Connection",
-				  "Keep-Alive");
+		evhttp_add_header(evhttp_request_get_output_headers(req), 
+					"Connection", "Keep-Alive");
 
 		evbuffer_add(buffer, rules, len2);
 		evutil_snprintf(buf, sizeof(buf) - 1, "%lu",
 				(unsigned long)len2);
-		evhttp_add_header(req->output_headers, "Content-Length", buf);
+		evhttp_add_header(evhttp_request_get_output_headers(req), 
+					"Content-Length", buf);
 
 		evhttp_make_request(conn, req, EVHTTP_REQ_POST, "/rulessync");
 	}
