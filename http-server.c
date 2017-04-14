@@ -246,7 +246,6 @@ static struct cmd *cmd_init(struct evhttp_request *req,
 		cmd_len = uri_len;
 	}
 
-	/* there is always a first parameter, it's the command name */
 	cmd->argv[0] = zmalloc(cmd_len + 1);
 	if (cmd->argv[0] == NULL) {
 		zfree(cmd);
@@ -650,20 +649,22 @@ static int client_get_server_info(struct cmd *cmd)
 
 struct master_ev_args {
 	struct evhttp_connection *conn;
-	struct evhttp_request *req;
+	struct evhttp_request *req_server;
+	struct evhttp_request *req_client;
 };
 
 static void master_get_sinfo_cb(struct evhttp_request *req, void *arg)
 {
 	struct master_ev_args *ev_arg = arg;
 	struct evhttp_connection *conn = ev_arg->conn;
-	//struct evhttp_request *req = ev_arg->req;
+	struct evhttp_request *req_serv = ev_arg->req_server;
+	struct evhttp_request *req_cli = ev_arg->req_client;
 	char *address;
 	uint16_t port;
 	int code;
 
 	evhttp_connection_get_peer(conn, &address, &port);
-	if (!req) {
+	if (!req_serv) {
 		t01_log(T01_WARNING, "Failed to connect to slave %s:%d",
 			address, port);
 		evhttp_connection_free(conn);
@@ -672,12 +673,12 @@ static void master_get_sinfo_cb(struct evhttp_request *req, void *arg)
 		return;
 	}
 
-	code = evhttp_request_get_response_code(req);
+	code = evhttp_request_get_response_code(req_serv);
 	if (code == 200) {
 		struct evbuffer *evb = evhttp_request_get_input_buffer(req);
 		size_t len = evbuffer_get_length(evb);
 		unsigned char *str = evbuffer_pullup(evb, len);
-		send_client_reply(req, str, len, "application/json");
+		send_client_reply(req_cli, str, len, "application/json");
 	} else {
 		if (code == 0)
 			mark_slave_offline(address, port);
@@ -717,7 +718,8 @@ static int client_get_slave_info(struct cmd *cmd)
 	conn = evhttp_connection_base_new(base, NULL, ip, port);
 	req = evhttp_request_new(master_get_sinfo_cb, arg);
 	arg->conn = conn;
-	arg->req = req;
+	arg->req_server = req;
+	arg->req_client = cmd->req;
 	evhttp_connection_free_on_completion(conn);
 	evhttp_connection_set_timeout(conn, 5);
 	evhttp_add_header(evhttp_request_get_output_headers(req), 
@@ -880,7 +882,8 @@ void http_server_request_cb(struct evhttp_request *req, void *arg)
 
 	/* Let's see what path the user asked for. */
 	path = evhttp_uri_get_path(decoded);
-	if (!path) path = "/";
+	if (!path) 
+		path = "/";
 	path_sz = strlen(path);
 
 	query = evhttp_uri_get_query(decoded);
