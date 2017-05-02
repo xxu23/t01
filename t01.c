@@ -40,6 +40,7 @@
 
 #include <ndpi_api.h>
 #include "ndpi_util.h"
+#include "ndpi_protocol_ids.h"
 #include "pktgen.h"
 #include "rule.h"
 #include "anet.h"
@@ -309,6 +310,7 @@ static void load_config(const char *filename)
 	get_string_from_json(item, json, "work_mode", wm);
 	get_string_from_json(item, json, "this_mac", tconfig.this_mac_addr);
 	get_string_from_json(item, json, "next_mac", tconfig.next_mac_addr);
+	get_string_from_json(item, json, "detected_protocol", tconfig.detected_protocol);
 	
 	if(strcasecmp(wm, "slave") == 0)
 		tconfig.work_mode = SLAVE_MODE;
@@ -738,6 +740,44 @@ next:
 	}
 }
 
+static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow)
+{
+	char *protocols = zstrdup(tconfig.detected_protocol);
+	if (strstr(protocols, "all")) {
+		// enable all protocols
+		NDPI_BITMASK_SET_ALL(ndpi_mask);
+		ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
+		zfree(protocols);
+		return;
+	}
+
+	char *p, *q;
+	uint8_t prot = 0;
+	p = strtok_r(protocols, ",", &q);
+	while (p != NULL) {
+		if (strcasecmp(p, "http"))
+			prot = NDPI_PROTOCOL_HTTP;
+		else if (strcasecmp(p, "dns"))
+			prot = NDPI_PROTOCOL_DNS;
+		else if (strcasecmp(p, "pptp"))
+			prot = NDPI_PROTOCOL_PPTP;
+		else if (strcasecmp(p, "ssh"))
+			prot = NDPI_PROTOCOL_SSH;
+		else if (strcasecmp(p, "https"))
+			prot = NDPI_PROTOCOL_SSL;
+		else if (strcasecmp(p, "socks"))
+			prot = NDPI_PROTOCOL_SOCKS;
+		else if (strcasecmp(p, "ipsec"))
+			prot = NDPI_PROTOCOL_IP_IPSEC;
+
+		if (prot > 0)
+			NDPI_BITMASK_ADD(ndpi_mask, prot);
+
+		p = strtok_r(NULL, ",", &q);
+	}
+	zfree(protocols);
+}
+
 struct ndpi_workflow *setup_detection()
 {
 	struct ndpi_workflow *workflow;
@@ -766,9 +806,9 @@ struct ndpi_workflow *setup_detection()
 				      mirror ? netflow_data_clone : NULL,
 				      mirror ? netflow_data_filter : NULL);
 
-	// enable all protocols
-	NDPI_BITMASK_SET_ALL(ndpi_mask);
-	ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
+	setup_ndpi_protocol_mask(workflow);
+	//NDPI_BITMASK_SET_ALL(ndpi_mask);
+	//ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
 
 	// clear memory for results
 	memset(workflow->stats.protocol_counter, 0,

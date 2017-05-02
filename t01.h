@@ -70,6 +70,7 @@ struct t01_config {
 	char next_mac_addr[32];
 	unsigned char this_mac[6];
 	unsigned char next_mac[6];
+	char detected_protocol[1024];
 };
 
 extern struct t01_config tconfig;
