@@ -743,7 +743,7 @@ next:
 static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow)
 {
 	char *protocols = zstrdup(tconfig.detected_protocol);
-	if (strstr(protocols, "all")) {
+	if (protocols[0] == 0 || strstr(protocols, "all")) {
 		// enable all protocols
 		NDPI_BITMASK_SET_ALL(ndpi_mask);
 		ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
@@ -755,26 +755,29 @@ static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow)
 	uint8_t prot = 0;
 	p = strtok_r(protocols, ",", &q);
 	while (p != NULL) {
-		if (strcasecmp(p, "http"))
+		if (strcasecmp(p, "http") == 0)
 			prot = NDPI_PROTOCOL_HTTP;
-		else if (strcasecmp(p, "dns"))
+		else if (strcasecmp(p, "dns") == 0)
 			prot = NDPI_PROTOCOL_DNS;
-		else if (strcasecmp(p, "pptp"))
+		else if (strcasecmp(p, "pptp") == 0)
 			prot = NDPI_PROTOCOL_PPTP;
-		else if (strcasecmp(p, "ssh"))
+		else if (strcasecmp(p, "ssh") == 0)
 			prot = NDPI_PROTOCOL_SSH;
-		else if (strcasecmp(p, "https"))
+		else if (strcasecmp(p, "https") == 0)
 			prot = NDPI_PROTOCOL_SSL;
-		else if (strcasecmp(p, "socks"))
+		else if (strcasecmp(p, "socks") == 0)
 			prot = NDPI_PROTOCOL_SOCKS;
-		else if (strcasecmp(p, "ipsec"))
+		else if (strcasecmp(p, "ipsec") == 0)
 			prot = NDPI_PROTOCOL_IP_IPSEC;
 
-		if (prot > 0)
+		if (prot > 0) {
+			t01_log(T01_NOTICE, "Add procotol %s into ndpi mask", p);
 			NDPI_BITMASK_ADD(ndpi_mask, prot);
+		}
 
 		p = strtok_r(NULL, ",", &q);
 	}
+	ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
 	zfree(protocols);
 }
 
