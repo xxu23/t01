@@ -27,7 +27,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define NETMAP_WITH_LIBS 1
+#define _GNU_SOURCE                                                                                                                                           #define NETMAP_WITH_LIBS 1
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +37,7 @@
 #include <net/if.h>
 #include <sys/sysinfo.h>
 #include <sys/socket.h>
+#include <sched.h> 
 
 #include <ndpi_api.h>
 #include "ndpi_util.h"
@@ -307,6 +308,7 @@ static void load_config(const char *filename)
 	get_int_from_json(item, json, "hit_port", tconfig.hit_port);
 	get_int_from_json(item, json, "verbose", tconfig.verbose);
 	get_int_from_json(item, json, "id", tconfig.id);
+	get_int_from_json(item, json, "cpu_thread", tconfig.cpu_thread);
 	get_string_from_json(item, json, "work_mode", wm);
 	get_string_from_json(item, json, "this_mac", tconfig.this_mac_addr);
 	get_string_from_json(item, json, "next_mac", tconfig.next_mac_addr);
@@ -334,6 +336,7 @@ static void usage()
 		"\t-r ruledb                 rule db file that saving rule and hit record\n"
 		"\t-b ip                     ip address binded for rule management\n"
 		"\t-p port                   port listening for rule management (default 9899)\n"
+		"\t-C cpu_thread             which core do you want to bind to receiveing thread\n"
 		"\t-S | -M                   slave or master mode for rule management\n"
 		"\t-d                        run in daemon mode or not\n"
 		"\t-j ip:port                master address for rule management cluster (eg 192.168.1.2:9898)\n"
@@ -353,7 +356,7 @@ static void parse_options(int argc, char **argv)
 	int opt;
 
 	while ((opt =
-		getopt(argc, argv, "SMdhc:i:o:r:e:b:p:E:v:l:F:j:H:")) != EOF) {
+		getopt(argc, argv, "SMdhc:i:o:r:e:b:p:C:E:v:l:F:j:H:")) != EOF) {
 		switch (opt) {
 		case 'S':
 			tconfig.work_mode |= SLAVE_MODE;
@@ -385,6 +388,10 @@ static void parse_options(int argc, char **argv)
 
 		case 'p':
 			tconfig.rule_port = atoi(optarg);
+			break;
+
+		case 'C':
+			tconfig.cpu_thread = atoi(optarg);
 			break;
 
 		case 'b':
@@ -433,6 +440,12 @@ static void parse_options(int argc, char **argv)
 
 	if(conffile[0])
 		load_config(conffile);
+
+	if (tconfig.cpu_thread > 0) {
+		int core = get_nprocs();
+		if (tconfig.cpu_thread > core)
+			tconfig.cpu_thread = 1;
+	}
 
 	// check parameters
 	if (master_address[0]) {
@@ -810,8 +823,6 @@ struct ndpi_workflow *setup_detection()
 				      mirror ? netflow_data_filter : NULL);
 
 	setup_ndpi_protocol_mask(workflow);
-	//NDPI_BITMASK_SET_ALL(ndpi_mask);
-	//ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
 
 	// clear memory for results
 	memset(workflow->stats.protocol_counter, 0,
@@ -824,8 +835,28 @@ struct ndpi_workflow *setup_detection()
 	return workflow;
 }
 
+static void setup_cpuaffinity(int index, const char *name)
+{
+	cpu_set_t m;  
+	CPU_ZERO(&m);  
+	CPU_SET(index-1, &m);  
+  
+    	if(-1 == pthread_setaffinity_np(pthread_self(), sizeof(m), &m)) {
+	 	t01_log(T01_WARNING, "failed to bind cpu %d to thread %s: %s",
+			index, name, strerror(errno));  
+		return;  
+	}
+    	t01_log(T01_NOTICE, "succeed to bind cpu %d to thread %s", 
+		index, name);  
+}
+
 static void *mirror_thread(void *args)
 {
+	int core = *((int*)args);
+
+	if (core > 0) 
+		setup_cpuaffinity(core, __FUNCTION__);
+
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
 	while (!shutdown_app) {
@@ -853,6 +884,11 @@ static void *backup_thread(void *args)
 {
 	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
 	char protocol[64];
+	int core = *((int*)args);
+
+	if (core > 0) 
+		setup_cpuaffinity(core, __FUNCTION__);
+
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
 	while (!shutdown_app) {
@@ -1042,6 +1078,10 @@ static void *hitslog_thread(void *args)
 	int udp_port;
 	size_t offset = 0;
 	int log_len;
+	int core = *((int*)args);
+
+	if (core > 0) 
+		setup_cpuaffinity(core, __FUNCTION__);
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 	if(tconfig.hit_ip[0] && tconfig.hit_port) {
@@ -1109,6 +1149,10 @@ static void *libevent_thread(void *args)
 {
 	struct event ev0, ev1, ev2, ev3, ev4;
 	struct timeval tv2, tv3, tv4;
+	int core = *((int*)args);
+
+	if (core > 0) 
+		setup_cpuaffinity(core, __FUNCTION__);
 
 	/* initialize libevent */
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
@@ -1199,6 +1243,10 @@ static void *netmap_thread(void *args)
 	int nfds = 1;
 	struct netmap_ring *rxring = NULL;
 	struct netmap_if *nifp = nmr->nifp;
+	int core = *((int*)args);
+
+	if (core > 0) 
+		setup_cpuaffinity(core, __FUNCTION__);
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 	memset(pfd, 0, sizeof(pfd));
@@ -1233,14 +1281,20 @@ static void *netmap_thread(void *args)
 
 static void main_thread()
 {
-	int err, i, nthreads = 0;
+	int err, i, nthreads = 0, j = 0;
 	pthread_t threads[5];
+	int affinity[5] = {0};
+	
+	for (i = 0; i < 5; i++) {
+		if (tconfig.cpu_thread > 0)
+			affinity[i] = tconfig.cpu_thread + i;
+	}
 
 	gettimeofday(&last_report_ts, NULL);
 
-	if (tconfig.work_mode & NETMAP_MODE &&
+	if (tconfig.work_mode & NETMAP_MODE && 
 	    pthread_create(&threads[nthreads++], NULL, netmap_thread,
-			   NULL) != 0) {
+			   &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create netmap thread: %s",
 			strerror(errno));
 		exit(1);
@@ -1251,7 +1305,7 @@ static void main_thread()
 	if ((tconfig.work_mode & SLAVE_MODE || 
 	     (tconfig.hit_ip[0] && tconfig.hit_port)) &&
 	    pthread_create(&threads[nthreads++], NULL, hitslog_thread,
-			   NULL) != 0) {
+			   &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create hitslog thread: %s",
 			strerror(errno));
 		exit(1);
@@ -1259,7 +1313,7 @@ static void main_thread()
 
 	if ((tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE)
 	    && pthread_create(&threads[nthreads++], NULL, libevent_thread,
-			      NULL) != 0) {
+			      &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create libevent thread: %s",
 			strerror(errno));
 		exit(1);
@@ -1267,7 +1321,7 @@ static void main_thread()
 
 	if (backup
 	    && pthread_create(&threads[nthreads++], NULL, backup_thread,
-			      NULL) != 0) {
+			      &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create backup thread: %s",
 			strerror(errno));
 		backup = 0;
@@ -1276,7 +1330,7 @@ static void main_thread()
 
 	if (mirror
 	    && pthread_create(&threads[nthreads++], NULL, mirror_thread,
-			      NULL) != 0) {
+			      &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create mirror thread: %s",
 			strerror(errno));
 		mirror = 0;
