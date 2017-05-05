@@ -27,7 +27,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define _GNU_SOURCE                                                                                                                                           #define NETMAP_WITH_LIBS 1
+#define _GNU_SOURCE
+#define NETMAP_WITH_LIBS 1
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,9 @@
 #include <sys/sysinfo.h>
 #include <sys/socket.h>
 #include <sched.h> 
+#include <net/if.h>
+#include <netpacket/packet.h>
+#include <net/ethernet.h>
 
 #include <ndpi_api.h>
 #include "ndpi_util.h"
@@ -96,6 +100,7 @@ static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
 static int udp_logfd;
 static struct nm_desc *nmr, *out_nmr;
+static int sendfd;
 static uint8_t shutdown_app = 0;
 static struct ioengine_data backup_engine;
 static struct ioengine_data mirror_engine;
@@ -263,7 +268,7 @@ static void load_config(const char *filename)
 	long size;
 	char *data;
 	cJSON *json, *item;
-	char wm[64];
+	char wm[64], sm[64] = {0};
 
 	/* Read content from file */
 	fp = fopen(filename, "r");
@@ -310,6 +315,7 @@ static void load_config(const char *filename)
 	get_int_from_json(item, json, "id", tconfig.id);
 	get_int_from_json(item, json, "cpu_thread", tconfig.cpu_thread);
 	get_string_from_json(item, json, "work_mode", wm);
+	get_string_from_json(item, json, "send_mode", sm);
 	get_string_from_json(item, json, "this_mac", tconfig.this_mac_addr);
 	get_string_from_json(item, json, "next_mac", tconfig.next_mac_addr);
 	get_string_from_json(item, json, "detected_protocol", tconfig.detected_protocol);
@@ -320,6 +326,12 @@ static void load_config(const char *filename)
 		tconfig.work_mode = MASTER_MODE;
 	else if(strcasecmp(wm, "netmap") == 0)
 		tconfig.work_mode =NETMAP_MODE;
+
+	if (sm[0] == 0 || strcasecmp(sm, "netmap") == 0)
+		tconfig.raw_socket = 0;
+	else if (strcasecmp(sm, "socket") == 0)
+		tconfig.raw_socket = 1;
+
 
 	cJSON_Delete(json);
 }
@@ -642,6 +654,49 @@ static int manage_interface_promisc_mode(const char *interface, int on)
 	}
 }
 
+static int get_if_idx(const char *if_name)
+{
+	struct ifreq ifr;
+	int ret, sockfd;
+ 
+ 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	memset((void*)&ifr, 0, sizeof(ifr));
+	snprintf (ifr.ifr_name, sizeof (ifr.ifr_name), if_name);
+	ret = ioctl(sockfd, SIOCGIFINDEX, &ifr);
+	if (ret < 0) {     
+		t01_log(T01_WARNING, "failed to get idx of if %s", if_name);
+		exit(1);
+	}
+
+	ret = ifr.ifr_ifindex;
+	close(sockfd);
+	return ret;
+}
+
+static int create_l2_raw_socket(const char *if_name)
+{
+	int ret;
+	struct sockaddr_ll sock_addr = {
+		.sll_family = AF_PACKET,
+		.sll_protocol = 0,
+		.sll_ifindex = get_if_idx(if_name)
+	};
+
+	int fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+    	if (fd < 0) {
+		t01_log(T01_WARNING, "failed to create L2 socket");
+		exit(1);
+	}
+
+	ret = bind(fd, (struct sockaddr *)&sock_addr, sizeof(struct sockaddr_ll));
+	if (ret < 0) {
+		t01_log(T01_WARNING, "failed to bind socket");
+		exit(1);
+	}
+
+	return fd;
+}
+
 static void on_protocol_discovered(struct ndpi_workflow *workflow,
 				   struct ndpi_flow_info *flow, void *header,
 				   void *packet)
@@ -687,7 +742,10 @@ next:
 	char result[1500] = { 0 };
 	int len = make_packet(rule, packet, result, sizeof(result), flow);
 	if (len) {
-		nm_inject(out_nmr, result, len);
+		if (out_nmr)
+			nm_inject(out_nmr, result, len);
+		else
+			write(sendfd, result, len);
 		total_ip_bytes_out += len;
 		ip_packet_count_out++;
 
@@ -1252,7 +1310,7 @@ static void *netmap_thread(void *args)
 	memset(pfd, 0, sizeof(pfd));
 	pfd[0].fd = nmr->fd;
 	pfd[0].events = POLLIN;
-	if (out_nmr != nmr) {
+	if (out_nmr && out_nmr != nmr) {
 		pfd[1].fd = out_nmr->fd;
 		pfd[1].events = POLLOUT;
 		nfds++;
@@ -1379,6 +1437,8 @@ static void init_netmap()
 	if (tconfig.ofname[0] == 0
 	    || strcmp(tconfig.ifname, tconfig.ofname) == 0) {
 		out_nmr = nmr;
+	} else if (tconfig.raw_socket) {
+		sendfd = create_l2_raw_socket(tconfig.ofname);
 	} else {
 		manage_interface_promisc_mode(tconfig.ofname, 1);
 		t01_log(T01_DEBUG,
@@ -1506,8 +1566,10 @@ void close_listening_sockets()
 
 static void exit_netmap()
 {
-	if (out_nmr != nmr)
+	if (out_nmr && out_nmr != nmr)
 		nm_close(out_nmr);
+	if (sendfd > 0)
+		close(sendfd);
 	nm_close(nmr);
 }
 

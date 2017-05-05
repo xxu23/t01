@@ -66,6 +66,7 @@ struct t01_config {
 	int verbose;
 	int id;
 	int cpu_thread;
+	int raw_socket;
 	enum t01_work_mode work_mode;
 	char this_mac_addr[32];
 	char next_mac_addr[32];
