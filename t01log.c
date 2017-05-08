@@ -93,6 +93,7 @@ static void *mysql_thread(void *args)
 	MYSQL mysql;
 	int st;
 	my_bool reconnect = 1;
+	time_t t0 = time(NULL);
 
 	t01_log(T01_NOTICE, "Enter thread %s:%d", __FUNCTION__, tid);	
 	
@@ -111,7 +112,8 @@ static void *mysql_thread(void *args)
 	}
 
 	while (!shutdown_app) {
-		struct log_rz_2 *log;
+		struct log_rz_2 *log = NULL;
+		time_t t1;
 
 		queue_get(queues[tid], (void **)&log);
 		if (!log) continue;
@@ -136,19 +138,22 @@ static void *mysql_thread(void *args)
 		}			
 		zfree(log);
 		consumed_pkts[tid]++;
+		t1 = time(NULL);
 
-		if (++cur_pkt % BATCH_INSERT != 0) 
+		if (!(++cur_pkt % BATCH_INSERT == 0 || t1 - t0 >= 5))
 			continue;
 
 		st = mysql_query(&mysql, cmd);
 		if (st != 0) {
 			t01_log(T01_WARNING, "Failed to insert %s", mysql_error(&mysql));
 			cur_pkt = 0;
+			t0 = t1;
 			continue;
 		}
 
-		if(cur_pkt == 1024*12) {				
+		if(cur_pkt == 1024*12 || t1 - t0 >= 5) {				
 			cur_pkt = 0;
+			t0 = t1;
 			st = mysql_query(&mysql,"COMMIT"); 
 			if(st != 0) {
 				t01_log(T01_WARNING, "Failed to commit %s", mysql_error(&mysql));
