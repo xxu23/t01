@@ -1267,11 +1267,12 @@ step1:
 			dirty += HITS_THRESHOLD_PER_SECOND;
 		} else {
 			/* id match, check rule's content further */
-			if(memcmp(rule, &rules[i], offsetof(struct rule, protocol)) != 0) {
+			if(memcmp(rule, &rules[i], offsetof(struct rule, protocol)) != 0 || rule->disabled != rules[i].disabled) {
 				struct list_head *pos2, *n2, *hhead;
 				t01_log(T01_NOTICE, "Sync rules: update rule %d version %lld", 
 						rules[i].id, rules[i].version);
 				memcpy(rule, &rules[i], offsetof(struct rule, protocol));
+				rule->disabled = rules[i].disabled;
 				hhead = &rule->hit_head;
 				if (list_empty(hhead) == 0) {
 					list_for_each_safe(pos2, n2, hhead) {
@@ -1458,6 +1459,7 @@ uint64_t calc_crc64_rules()
 		struct rule *rule = rules + i;
 		len = (char*)&rule->protocol - (char*)rule;
 		cksum = crc64(cksum, (unsigned char*)rule, len);
+		cksum = crc64_2(cksum, rule->disabled);
 	}
 	
 	zfree(rules);
