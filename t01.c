@@ -1128,8 +1128,8 @@ static void master_cb(evutil_socket_t fd, short event, void *arg)
 
 static void *hitslog_thread(void *args)
 {
-	struct sockaddr_in addr;
-	socklen_t addr_len = sizeof(addr);
+	struct sockaddr_in addr[2];
+	socklen_t addr_len[2] = {sizeof(addr[0]), sizeof(addr[1])};
 	int fd[2];
 	char err[ANET_ERR_LEN];
 	char *udp_ip[2];
@@ -1159,7 +1159,7 @@ static void *hitslog_thread(void *args)
 	}
 	for(i = 0;  i < count; i++) {
 		fd[i] = anetCreateUdpSocket(err, udp_ip[i], udp_port[i],
-				 (struct sockaddr *)&addr, addr_len);
+				 (struct sockaddr *)&addr[i], addr_len[i]);
 		if (fd[i] < 0) {
 			t01_log(T01_WARNING, "Cannot create socket: %s", err);
 			goto leave;
@@ -1178,7 +1178,7 @@ static void *hitslog_thread(void *args)
 
 			for(i = 0; i < count; i++) 
 				anetUdpWrite(fd[i], (char *)&hlr->hit+offset[i], log_len[i],
-				     (struct sockaddr *)&addr, addr_len);
+				     (struct sockaddr *)&addr[i], addr_len[i]);
 			zfree(hlr);
 		}
 	}
