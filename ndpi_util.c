@@ -137,6 +137,12 @@ struct ndpi_workflow * ndpi_workflow_init(const struct ndpi_workflow_prefs * pre
 
 /* ***************************************************** */
 
+int is_ndpi_flow_info_used(struct ndpi_flow_info * flow) {
+  return flow && flow->magic == NDPI_FLOW_MAGIC;
+}
+
+/* ***************************************************** */
+
 static void ndpi_flow_info_freer(void *node) {
   struct ndpi_flow_info *flow = (struct ndpi_flow_info*)node;
 

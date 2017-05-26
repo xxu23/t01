@@ -150,6 +150,9 @@ void ndpi_workflow_process_packet (struct ndpi_workflow * workflow, struct nm_pk
 /* Idle flows cleanup periodly */
 void ndpi_workflow_clean_idle_flows(struct ndpi_workflow * workflow, int mandatory);
 
+/* Whether struct ndpi_flow_info used? */
+int is_ndpi_flow_info_used(struct ndpi_flow_info * flow);
+
 /* flow callbacks: ndpi_flow_info will be freed right after */
 static inline void ndpi_workflow_set_flow_detected_callback(struct ndpi_workflow * workflow,
 							    ndpi_workflow_callback_ptr callback,

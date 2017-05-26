@@ -54,6 +54,7 @@
 #include "t01.h"
 #include "http-server.h"
 #include "zmalloc.h"
+#include "lfq.h"
 #include <cJSON.h>
 #include <net/netmap_user.h>
 #include <event.h>
@@ -62,6 +63,15 @@ struct backup_data {
 	char *buffer;
 	int len;
 	struct ndpi_flow_info *flow;
+};
+
+struct attack_data {
+	struct ndpi_flow_info *flow;
+	struct rule *rule;
+	char buffer[1560];
+	int len;
+	uint8_t smac[6];
+	uint8_t dmac[6];
 };
 
 int dirty = 0;
@@ -89,6 +99,7 @@ struct evhttp_bound_socket *handle;
 struct t01_config tconfig;
 
 static struct ndpi_workflow *workflow;
+static Queue *queue;
 static ZLIST_HEAD(filter_buffer_list);
 static ZLIST_HEAD(hitslog_list);
 static struct timeval upstart_tv;
@@ -139,7 +150,7 @@ struct hits_log_rz {
 };
 
 static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
-			    uint8_t * packet)
+			    uint8_t *smac, uint8_t *dmac)
 {
 	if (tconfig.work_mode & SLAVE_MODE ||
 		(tconfig.hit_ip[0] && tconfig.hit_port)) {
@@ -157,8 +168,8 @@ static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
 		hl->hit.dst_ip = flow->dst_ip;
 		hl->hit.src_port = flow->src_port;
 		hl->hit.dst_port = flow->dst_port;
-		memcpy(hl->hit.smac, packet + 6, 6);
-		memcpy(hl->hit.dmac, packet, 6);
+		memcpy(hl->hit.smac, smac, 6);
+		memcpy(hl->hit.dmac, dmac, 6);
 
 		pthread_spin_lock(&hitlog_lock);
 		list_add_tail(&hl->list, &hitslog_list);
@@ -168,7 +179,7 @@ static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
 		add_hit_record(rule, flow->last_seen / 1000,
 			       flow->src_ip, flow->dst_ip,
 			       flow->src_port, flow->dst_port,
-			       (uint8_t *) packet + 6, (uint8_t *) packet,
+			       smac, dmac,
 			       0, flow->protocol, flow->pktlen);
 	}
 }
@@ -179,7 +190,7 @@ static int mirror_filter_from_rule(struct ndpi_flow_info *flow, void *packet)
 	if (!rule)
 		return 0;
 
-	process_hitslog(rule, flow, (uint8_t *) packet);
+	process_hitslog(rule, flow, (uint8_t *)packet + 6, (uint8_t *)packet);
 
 	return 1;
 }
@@ -737,78 +748,28 @@ next:
 	struct rule *rule = match_rule_after_detected(flow, packet);
 	if (!rule)
 		return;
-	process_hitslog(rule, flow, packet);
-
-	char result[1500] = { 0 };
-	int len = make_packet(rule, packet, result, sizeof(result), flow);
-	if (len) {
-		if (out_nmr)
-			nm_inject(out_nmr, result, len);
-		else
-			write(sendfd, result, len);
-		total_ip_bytes_out += len;
-		ip_packet_count_out++;
-
-		if (tconfig.verbose) {
-			char l[48], u[48];
-			char msg[4096];
-			int offset = 0;
-			inet_ntop(AF_INET, &flow->src_ip, l, sizeof(l));
-			inet_ntop(AF_INET, &flow->dst_ip, u, sizeof(u));
-			offset +=
-			    snprintf(msg, sizeof(msg) - offset,
-				     "Rule %d Hits: %s %s:%u <-> %s:%u ",
-				     rule->id, ipproto_name(flow->protocol), l,
-				     flow->src_port, u, flow->dst_port);
-
-			if (flow->detected_protocol.master_protocol) {
-				char buf[64];
-				offset +=
-				    snprintf(msg + offset, sizeof(msg) - offset,
-					     "[proto: %u.%u/%s]",
-					     flow->detected_protocol.
-					     master_protocol,
-					     flow->detected_protocol.protocol,
-					     ndpi_protocol2name(workflow->
-								ndpi_struct,
-								flow->
-								detected_protocol,
-								buf,
-								sizeof(buf)));
-			} else
-				offset +=
-				    snprintf(msg + offset, sizeof(msg) - offset,
-					     "[proto: %u/%s]",
-					     flow->detected_protocol.protocol,
-					     ndpi_get_proto_name
-					     (workflow->ndpi_struct,
-					      flow->detected_protocol.
-					      protocol));
-
-			offset +=
-			    snprintf(msg + offset, sizeof(msg) - offset,
-				     "[%u pkts/%llu bytes]", flow->packets,
-				     flow->bytes);
-
-			if (flow->host_server_name[0] != '\0')
-				offset +=
-				    snprintf(msg + offset, sizeof(msg) - offset,
-					     "[Host: %s]",
-					     flow->host_server_name);
-			if (flow->ssl.client_certificate[0] != '\0')
-				offset +=
-				    snprintf(msg + offset, sizeof(msg) - offset,
-					     "[SSL client: %s]",
-					     flow->ssl.client_certificate);
-			if (flow->ssl.server_certificate[0] != '\0')
-				offset +=
-				    snprintf(msg + offset, sizeof(msg) - offset,
-					     "[SSL server: %s]",
-					     flow->ssl.server_certificate);
-
-			t01_log(T01_NOTICE, msg);
-		}
+	
+	struct attack_data *attack = zmalloc(sizeof(*attack));
+	Value *value = zmalloc(sizeof(Value));
+	if (!attack)
+		return;
+	char *result = attack->buffer;
+	int len = sizeof(attack->buffer); 
+	len = make_packet(rule, packet, result, len, flow);
+	if (len == 0) {
+		zfree(attack);
+		return;	
 	}
+	attack->len = len;
+	attack->rule = rule;
+	attack->flow = flow;
+	memcpy(attack->smac, (uint8_t*)packet+6, 6);
+	memcpy(attack->dmac, (uint8_t*)packet, 6);
+	value->data = attack;
+	qpush(queue, value);
+
+	total_ip_bytes_out += len;
+	ip_packet_count_out++;	
 }
 
 static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow)
@@ -906,6 +867,113 @@ static void setup_cpuaffinity(int index, const char *name)
 	}
     	t01_log(T01_NOTICE, "succeed to bind cpu %d to thread %s", 
 		index, name);  
+}
+
+static void *attack_thread(void *args)
+{
+	int core = *((int*)args);
+
+	if (core > 0) 
+		setup_cpuaffinity(core, __FUNCTION__);
+
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+
+	while (!shutdown_app) {
+		Value *value = NULL;
+		struct attack_data *attack;
+    		value = qpop(queue, 0);
+		if (value == NULL || 
+			(attack = (struct attack_data *)value->data) == NULL)
+			continue;
+
+		struct ndpi_flow_info *flow = attack->flow;
+		struct rule *rule = attack->rule;
+		if (is_ndpi_flow_info_used(flow) == 0) {
+			zfree(attack);
+			zfree(value);
+			continue;
+		}
+		process_hitslog(rule, flow, attack->smac, attack->dmac);
+
+		int len = attack->len;
+		char *result = attack->buffer;
+		if (len == 0) {
+			zfree(attack);
+			zfree(value);
+			continue;
+		}
+
+		if (out_nmr)
+			nm_inject(out_nmr, result, len);
+		else
+			write(sendfd, result, len);
+		
+		if (tconfig.verbose) {
+			char l[48], u[48];
+			char msg[4096];
+			int offset = 0;
+			inet_ntop(AF_INET, &flow->src_ip, l, sizeof(l));
+			inet_ntop(AF_INET, &flow->dst_ip, u, sizeof(u));
+			offset +=
+			    snprintf(msg, sizeof(msg) - offset,
+				     "Rule %d Hits: %s %s:%u <-> %s:%u ",
+				     rule->id, ipproto_name(flow->protocol), l,
+				     flow->src_port, u, flow->dst_port);
+
+			if (flow->detected_protocol.master_protocol) {
+				char buf[64];
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[proto: %u.%u/%s]",
+					     flow->detected_protocol.
+					     master_protocol,
+					     flow->detected_protocol.protocol,
+					     ndpi_protocol2name(workflow->
+								ndpi_struct,
+								flow->
+								detected_protocol,
+								buf,
+								sizeof(buf)));
+			} else
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[proto: %u/%s]",
+					     flow->detected_protocol.protocol,
+					     ndpi_get_proto_name
+					     (workflow->ndpi_struct,
+					      flow->detected_protocol.
+					      protocol));
+
+			offset +=
+			    snprintf(msg + offset, sizeof(msg) - offset,
+				     "[%u pkts/%llu bytes]", flow->packets,
+				     flow->bytes);
+
+			if (flow->host_server_name[0] != '\0')
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[Host: %s]",
+					     flow->host_server_name);
+			if (flow->ssl.client_certificate[0] != '\0')
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[SSL client: %s]",
+					     flow->ssl.client_certificate);
+			if (flow->ssl.server_certificate[0] != '\0')
+				offset +=
+				    snprintf(msg + offset, sizeof(msg) - offset,
+					     "[SSL server: %s]",
+					     flow->ssl.server_certificate);
+
+			t01_log(T01_NOTICE, msg);
+		}
+		zfree(attack);
+		zfree(value);
+
+	}
+
+	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
+	return NULL;
 }
 
 static void *mirror_thread(void *args)
@@ -1340,8 +1408,8 @@ static void *netmap_thread(void *args)
 static void main_thread()
 {
 	int err, i, nthreads = 0, j = 0;
-	pthread_t threads[5];
-	int affinity[5] = {0};
+	pthread_t threads[6];
+	int affinity[6] = {0};
 	
 	for (i = 0; i < 5; i++) {
 		if (tconfig.cpu_thread > 0)
@@ -1359,6 +1427,13 @@ static void main_thread()
 	} else {
 		sleep(1);
 	}
+
+	if (pthread_create(&threads[nthreads++], NULL, attack_thread,
+			   &affinity[j++]) != 0) {
+		t01_log(T01_WARNING, "Can't create attack thread: %s",
+			strerror(errno));
+		exit(1);
+	} 
 
 	if ((tconfig.work_mode & SLAVE_MODE || 
 	     (tconfig.hit_ip[0] && tconfig.hit_port)) &&
@@ -1409,6 +1484,12 @@ static void init_system()
 
 	zmalloc_enable_thread_safeness();
 	event_set_mem_functions(zmalloc, zrealloc, zfree);
+
+	queue = q_initialize();
+	if (!queue) {
+		t01_log(T01_WARNING, "failed to initialize queue");
+		exit(0);
+	}
 
 	init_log(tconfig.verbose, tconfig.logfile);
 	lastsave = upstart = time(NULL);
