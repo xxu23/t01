@@ -381,6 +381,7 @@ static int client_get_ruleids(struct cmd *cmd)
 	size_t len = 0;
 	int32_t type = -1, offset = 0, limit = 0;
 	int query_count = cmd->query_count, i;
+	char *keyword = NULL;
 	
 	for (i = 0; i < query_count; i++) {
 		if (strcasecmp(cmd->queries[i].key, "type") == 0)
@@ -389,9 +390,11 @@ static int client_get_ruleids(struct cmd *cmd)
 			offset = atoi(cmd->queries[i].val);
 		else if (strcasecmp(cmd->queries[i].key, "limit") == 0)
 			limit = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "keyword") == 0)
+			keyword = cmd->queries[i].val;
 	}
 
-	get_ruleids(type, offset, limit, &result, &len, 1);
+	get_ruleids(type, keyword, offset, limit, &result, &len, 1);
 
 	send_client_reply(cmd->req, result, len, "application/json");
 	release_buffer(&result);
@@ -1008,7 +1011,7 @@ int master_check_slaves()
 			"Rule not match: master [crc=%llx,version=%lld] VS slave [address=%s:%d, crc=%llx,version=%lld]",
 			cksum, version, s->ip, s->port, s->cksum, s->version);
 
-		if (!ids && get_ruleids(0, 0, 0, (char **)&ids, &len, 0) < 0)
+		if (!ids && get_ruleids(0, NULL, 0, 0, (char **)&ids, &len, 0) < 0)
 			continue;
 		len /= sizeof(uint32_t);
 		if (!rules && get_rules(ids, len, &rules, &len2) < 0)

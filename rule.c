@@ -818,7 +818,8 @@ static char *rule2jsonstr(struct rule *rule)
 	return cjson2string(root);
 }
 
-int get_ruleids(int type, int offset, int limit, char **out, size_t * out_len, int json)
+int get_ruleids(int type, const char *kw, int offset, int limit, 
+		char **out, size_t * out_len, int json)
 {
 	uint32_t *ids;
 	struct list_head *pos;
@@ -828,6 +829,12 @@ int get_ruleids(int type, int offset, int limit, char **out, size_t * out_len, i
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);
 		if (rule->used == 0 || (type && rule->type != type))
+			continue;
+		if (kw && kw[0] && 
+			(  strstr(rule->payload, kw) == NULL
+			&& strstr(rule->action_params[0], kw) == NULL
+			&& strstr(rule->human_saddr, kw) == NULL
+			&& strstr(rule->human_daddr, kw) == NULL))
 			continue;
 		if (limit == 0) {
 			n++;
@@ -852,6 +859,12 @@ int get_ruleids(int type, int offset, int limit, char **out, size_t * out_len, i
 		struct rule *rule = list_entry(pos, struct rule, list);
 		if (rule->used == 0 || (type && rule->type != type))
 			continue;
+ 		if (kw && kw[0] &&
+                        (  strstr(rule->payload, kw) == NULL
+                        && strstr(rule->action_params[0], kw) == NULL
+                        && strstr(rule->human_saddr, kw) == NULL
+                        && strstr(rule->human_daddr, kw) == NULL))
+                        continue;
 		if (limit == 0) {
 			ids[i++] = rule->id;
 		} else if(j++ >= offset && i < limit) {

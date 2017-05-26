@@ -139,7 +139,8 @@ int add_log_rz(struct log_rz *lr);
 
 void release_buffer(char **out);
 
-int get_ruleids(int type, int offset, int limit, char **out, size_t *out_len, int json);
+int get_ruleids(int type, const char *kw, int offset, int limit, 
+		char **out, size_t *out_len, int json);
 
 int get_rule(uint32_t id, char **out, size_t *out_len);
 
