@@ -49,6 +49,9 @@
 #include "logger.h"
 #include "cJSON.h"
 
+static void sync_slaves_rules(const char *path, int method,
+			      const char *body, size_t len);
+
 static ZLIST_HEAD(slave_list);
 
 struct slave_client {
@@ -341,6 +344,12 @@ static int client_enable_rule(struct cmd *cmd)
 	uint32_t id = atoi(cmd->argv[1]);
 	int ret = enable_rule(id);
 	if (ret == 0) {
+		if (tconfig.work_mode & MASTER_MODE) {
+			char path[128];
+			snprintf(path, sizeof(path), "/enablerule/%u", id);
+			sync_slaves_rules(path, EVHTTP_REQ_POST, cmd->body,
+					  cmd->body_len);
+		}
 		send_client_reply(cmd->req, NULL, 0, "application/json");
 	} else {
 		send_client_error(cmd->req, 404, "Not Found");
@@ -353,6 +362,12 @@ static int client_disable_rule(struct cmd *cmd)
 	uint32_t id = atoi(cmd->argv[1]);
 	int ret = disable_rule(id);
 	if (ret == 0) {
+		if (tconfig.work_mode & MASTER_MODE) {
+			char path[128];
+			snprintf(path, sizeof(path), "/disablerule/%u", id);
+			sync_slaves_rules(path, EVHTTP_REQ_POST, cmd->body,
+					  cmd->body_len);
+		}
 		send_client_reply(cmd->req, NULL, 0, "application/json");
 	} else {
 		send_client_error(cmd->req, 404, "Not Found");

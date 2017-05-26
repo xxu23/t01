@@ -178,3 +178,9 @@ uint64_t crc64(uint64_t crc, const unsigned char *s, uint64_t l) {
     }
     return crc;
 }
+
+
+uint64_t crc64_2(uint64_t crc, uint8_t value) {
+    crc = crc64_tab[(uint8_t)crc ^ value] ^ (crc >> 8);
+    return crc;
+}

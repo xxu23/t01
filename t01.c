@@ -1196,14 +1196,15 @@ static void master_cb(evutil_socket_t fd, short event, void *arg)
 
 static void *hitslog_thread(void *args)
 {
-	struct sockaddr_in addr;
-	socklen_t addr_len = sizeof(addr);
-	int fd;
+	struct sockaddr_in addr[2];
+	socklen_t addr_len[2] = {sizeof(addr[0]), sizeof(addr[1])};
+	int fd[2];
 	char err[ANET_ERR_LEN];
-	char *udp_ip;
-	int udp_port;
-	size_t offset = 0;
-	int log_len;
+	char *udp_ip[2];
+	int udp_port[2];
+	size_t offset[2] = {0, 0};
+	int log_len[2];
+	int count = 0, i;
 	int core = *((int*)args);
 
 	if (core > 0) 
@@ -1211,21 +1212,26 @@ static void *hitslog_thread(void *args)
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 	if(tconfig.hit_ip[0] && tconfig.hit_port) {
-		udp_ip = tconfig.hit_ip;
-		udp_port = tconfig.hit_port;
-		offset = offsetof(struct log_rz, src_ip);
-		log_len = sizeof(struct log_rz) - offset;
-	} else {
-		udp_ip = tconfig.master_ip;
-		udp_port = tconfig.master_port;
-		offset = 0;
-		log_len = sizeof(struct log_rz);
+		udp_ip[count] = tconfig.hit_ip;
+		udp_port[count] = tconfig.hit_port;
+		offset[count] = offsetof(struct log_rz, src_ip);
+		log_len[count] = sizeof(struct log_rz) - offset[count];
+		count++;
+	} 
+	if(tconfig.master_ip[0] && tconfig.master_port) {
+		udp_ip[count] = tconfig.master_ip;
+		udp_port[count] = tconfig.master_port;
+		offset[count] = 0;
+		log_len[count] = sizeof(struct log_rz);
+		count++;
 	}
-	fd = anetCreateUdpSocket(err, udp_ip, udp_port,
-				 (struct sockaddr *)&addr, addr_len);
-	if (fd < 0) {
-		t01_log(T01_WARNING, "Cannot create socket: %s", err);
-		goto leave;
+	for(i = 0;  i < count; i++) {
+		fd[i] = anetCreateUdpSocket(err, udp_ip[i], udp_port[i],
+				 (struct sockaddr *)&addr[i], addr_len[i]);
+		if (fd[i] < 0) {
+			t01_log(T01_WARNING, "Cannot create socket: %s", err);
+			goto leave;
+		}
 	}
 
 	while (!shutdown_app) {
@@ -1238,13 +1244,15 @@ static void *hitslog_thread(void *args)
 			list_del(pos);
 			pthread_spin_unlock(&hitlog_lock);			
 
-			anetUdpWrite(fd, (char *)&hlr->hit+offset, log_len,
-				     (struct sockaddr *)&addr, addr_len);
+			for(i = 0; i < count; i++) 
+				anetUdpWrite(fd[i], (char *)&hlr->hit+offset[i], log_len[i],
+				     (struct sockaddr *)&addr[i], addr_len[i]);
 			zfree(hlr);
 		}
 	}
 
-	close(fd);
+	for(i = 0; i < count; i++)
+		close(fd[i]);
 
 leave:
 	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
@@ -1483,7 +1491,7 @@ static void init_system()
 	}
 
 	zmalloc_enable_thread_safeness();
-	event_set_mem_functions(zmalloc, zrealloc, zfree);
+	//event_set_mem_functions(zmalloc, zrealloc, zfree);
 
 	queue = q_initialize();
 	if (!queue) {
