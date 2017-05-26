@@ -168,6 +168,7 @@ static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
 		hl->hit.dst_ip = flow->dst_ip;
 		hl->hit.src_port = flow->src_port;
 		hl->hit.dst_port = flow->dst_port;
+		hl->hit.local_ip = 0;
 		memcpy(hl->hit.smac, smac, 6);
 		memcpy(hl->hit.dmac, dmac, 6);
 
