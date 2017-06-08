@@ -525,7 +525,7 @@ static void parse_options(int argc, char **argv)
 
 static void signal_hander(int sig)
 {
-	static int called = 0;
+ 	static int called = 0;
 	int save = dirty != 0;
 	t01_log(T01_WARNING, "Received control-C, shutdowning");
 	if (called)
@@ -1238,6 +1238,10 @@ static void *hitslog_thread(void *args)
 	while (!shutdown_app) {
 		struct list_head *pos, *n;
 		struct hits_log_rz *hlr;
+		if (list_empty(&hitslog_list)) {
+			usleep(1000);
+			continue;
+		}
 
 		list_for_each_safe(pos, n, &hitslog_list) {
 			hlr = list_entry(pos, struct hits_log_rz, list);

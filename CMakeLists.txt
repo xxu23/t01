@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 2.6)
 project(t01)
 
 option(USE_JEMALLOC "used jemalloc as replacement for libc malloc" ON) 
+set(CMAKE_BUILD_TYPE Release)
 
 include_directories( "./" )
 include_directories( "./3rd/include/netmap/" )

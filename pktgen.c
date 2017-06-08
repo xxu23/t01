@@ -85,8 +85,8 @@ struct pptp_setlink {
 	u_int32_t r_accm;
 };
 
-static inline unsigned long csum_tcpudp_nofold(unsigned long saddr,
-					       unsigned long daddr,
+static inline unsigned int csum_tcpudp_nofold(unsigned int saddr,
+					       unsigned int daddr,
 					       unsigned short len,
 					       unsigned short proto,
 					       unsigned int sum)
@@ -108,8 +108,8 @@ static inline unsigned int csum_fold(unsigned int sum)
 	return (unsigned short)~sum;
 }
 
-static inline unsigned short csum_tcpudp_magic(unsigned long saddr,
-					       unsigned long daddr,
+static inline unsigned short csum_tcpudp_magic(unsigned int saddr,
+					       unsigned int daddr,
 					       unsigned short len,
 					       unsigned short proto,
 					       unsigned int sum)
@@ -117,14 +117,14 @@ static inline unsigned short csum_tcpudp_magic(unsigned long saddr,
 	return csum_fold(csum_tcpudp_nofold(saddr, daddr, len, proto, sum));
 }
 
-static inline unsigned short tcp_v4_check(int len, unsigned long saddr,
-					  unsigned long daddr, unsigned base)
+static inline unsigned short tcp_v4_check(int len, unsigned int saddr,
+					  unsigned int daddr, unsigned base)
 {
 	return csum_tcpudp_magic(saddr, daddr, len, IPPROTO_TCP, base);
 }
 
-static inline unsigned short udp_v4_check(int len, unsigned long saddr,
-					  unsigned long daddr, unsigned base)
+static inline unsigned short udp_v4_check(int len, unsigned int saddr,
+					  unsigned int daddr, unsigned base)
 {
 	return csum_tcpudp_magic(saddr, daddr, len, IPPROTO_UDP, base);
 }
