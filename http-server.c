@@ -852,11 +852,6 @@ static void cmd_dispatch(struct cmd *cmd, int method)
 	int i;
 	struct http_cmd_table *which = NULL;
 	
-	if (!cmd) {
-		send_client_error(cmd->req, 400, "Bad Request");
-		return;
-	}
-
 	for (i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
 		if (tables[i].method == method &&
 		    tables[i].params == cmd->count - 1 &&
@@ -923,6 +918,10 @@ void http_server_request_cb(struct evhttp_request *req, void *arg)
 
 	cmd = cmd_init(req, path+1, path_sz-1, query, query_sz, 
 			body, body_sz); 
+	if (!cmd) {
+		send_client_error(req, 400, "Bad Request");
+		goto done;
+	}
 
 	cmd_dispatch(cmd, method);
 done:
