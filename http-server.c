@@ -648,7 +648,8 @@ static int client_get_server_info(struct cmd *cmd)
 			cJSON_AddNumberToObject(item, "online", s->online);
 			cJSON_AddNumberToObject(item, "id", s->id);
 			cJSON_AddItemToArray(array, item);
-			hits1 += s->hits;
+			if (s->online)
+				hits1 += s->hits;
 		}
 		cJSON_AddItemToObject(root, "nodes", array);
 
