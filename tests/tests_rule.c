@@ -87,6 +87,7 @@ static struct ndpi_workflow *workflow;
 static struct timeval upstart_tv;
 static char conffile[256];
 static uint8_t shutdown_app = 0;
+static uint8_t cpu_thread = 0;
 static struct timeval last_report_ts;
 static uint64_t total_hits = 0;
 static uint64_t total_matching = 0;
@@ -140,10 +141,14 @@ static void parse_options(int argc, char **argv)
 	int opt;
 
 	while ((opt =
-		getopt(argc, argv, "hc:")) != EOF) {
+		getopt(argc, argv, "hc:C:")) != EOF) {
 		switch (opt) {
 		case 'c':
 			strncpy(conffile, optarg, sizeof(conffile));
+			break;
+
+		case 'C':
+			cpu_thread = atoi(optarg);
 			break;
 
 		case 'h':
@@ -393,7 +398,8 @@ static void main_thread()
 	int affinity[2] = {0};
 	
 	for (i = 0; i < 2; i++) {
-		affinity[i] = 2 + i;
+		if (cpu_thread > 0)
+			affinity[i] = cpu_thread + i;
 	}
 
 	gettimeofday(&last_report_ts, NULL);
