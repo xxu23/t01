@@ -36,6 +36,12 @@ target_link_libraries(t01 z)
 target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libmsgpackc.a)
 target_link_libraries(t01 ${EXTRA_LIBS})
 
+add_executable(tests_rule tests/tests_rule.c logger.c zmalloc.c rule.c crc64.c util.c ${THIRD_SRC})
+target_link_libraries(tests_rule m pthread)
+target_link_libraries(tests_rule ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
+target_link_libraries(tests_rule z)
+target_link_libraries(tests_rule ${EXTRA_LIBS})
+
 add_executable(t01log t01log.c anet.c queue.c queue_internal.c logger.c util.c zmalloc.c)
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
 target_link_libraries(t01log m pthread)
