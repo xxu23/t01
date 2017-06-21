@@ -72,28 +72,30 @@ struct hit_record {
 #pragma pack(1)
 struct rule {
 	uint32_t id;
+	char padding[4];
+	uint64_t version;	
 	char human_protocol[16];
 	char human_saddr[16];
 	char human_daddr[16];
-	uint16_t sport;
-	uint16_t dport;
 	char human_action[16];
-	char payload[212];
-	uint64_t version;
-	int type;
 	char human_match[16];
 	char human_which[16];
-	char action_params[4][256];
+	char description[144];
+	char payload[256];
+	char action_params[256];
+	uint16_t sport;
+	uint16_t dport;
+	int type;
 	uint8_t protocol;
 	uint8_t master_protocol;
-	uint8_t action:4;
+	uint8_t which:4;
 	uint8_t match:4;
 	uint8_t used:2;
 	uint8_t disabled:2;
-	uint8_t which:4;
-	uint32_t saved_hits;
+	uint8_t action:4;
 	uint32_t saddr0, saddr1;
 	uint32_t daddr0, daddr1;
+	uint32_t saved_hits;
 	uint64_t hits;
 	struct list_head list;
 	struct list_head hit_head;
@@ -126,9 +128,11 @@ uint64_t calc_totalhits();
 void calc_rules(uint64_t *total, uint64_t *enabled);
 
 struct ndpi_flow_info;
-struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, void *packet);
+struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, 
+					void *packet);
 
-struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow, void *packet);
+struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow,
+					void *packet);
 
 int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
 	 		uint32_t daddr, uint16_t sport, uint16_t dport,
