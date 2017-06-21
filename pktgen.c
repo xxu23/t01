@@ -422,11 +422,11 @@ int make_packet(const struct rule *rule, const char *hdr,
 {
 	if (rule->action == T01_ACTION_REDIRECT
 	    && rule->master_protocol == NDPI_PROTOCOL_HTTP)
-		return make_http_redirect_packet(rule->action_params[0], hdr,
+		return make_http_redirect_packet(rule->action_params, hdr,
 						 packet, len, flow);
 	else if (rule->action == T01_ACTION_CONFUSE
 		 && rule->master_protocol == NDPI_PROTOCOL_DNS)
-		return make_dns_spoof_packet(rule->action_params[0], hdr,
+		return make_dns_spoof_packet(rule->action_params, hdr,
 					     packet, len, flow);
 	else if (rule->action == T01_ACTION_REJECT
 		 && (rule->master_protocol == NDPI_PROTOCOL_PPTP
