@@ -1366,8 +1366,6 @@ static inline int receive_packets(struct netmap_ring *ring,
 	cur = ring->cur;
 	n = nm_ring_space(ring);
 
-	struct timeval tv1, tv2;
-	gettimeofday(&tv1, NULL);		
 	for (rx = 0; rx < n; rx++) {
 		struct netmap_slot *slot = &ring->slot[cur];
 		char *data = NETMAP_BUF(ring, slot->buf_idx);
@@ -1376,9 +1374,6 @@ static inline int receive_packets(struct netmap_ring *ring,
 		cur = nm_ring_next(ring, cur);
 		ndpi_workflow_process_packet(workflow, &hdr, (u_char *) data);
 	}
-	gettimeofday(&tv2, NULL);
-	long t = tv2.tv_usec - tv1.tv_usec;
-	printf("%d/%d avg %.2f us\n", t, n, t*1.0/n);
 
 	ring->head = ring->cur = cur;
 	return (rx);
