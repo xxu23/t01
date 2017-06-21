@@ -303,13 +303,13 @@ static void *rulematch_thread(void *args)
 		struct ndpi_flow_info *flow2 = flows[idx * 2 + 1];
 		int j = 0;
 		for (j = 0; j < 10240; j++) {
-			struct rule *rule2 = match_rule_after_detected(flow2, NULL);
+			struct rule *rule2 = match_rule_after_detected(flow2);
 			total_matching++;
 			if (!rule2) continue;
 			total_hits++;
 		}
 		struct ndpi_flow_info *flow1 = flows[idx * 2];
-		struct rule *rule1 = match_rule_after_detected(flow1, NULL);
+		struct rule *rule1 = match_rule_after_detected(flow1);
 		total_matching++;
 		if (!rule1)
 			continue;
@@ -393,7 +393,7 @@ static void main_thread()
 	int affinity[2] = {0};
 	
 	for (i = 0; i < 2; i++) {
-		affinity[i] = 1 + i;
+		affinity[i] = 2 + i;
 	}
 
 	gettimeofday(&last_report_ts, NULL);

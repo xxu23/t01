@@ -187,7 +187,7 @@ static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
 
 static int mirror_filter_from_rule(struct ndpi_flow_info *flow, void *packet)
 {
-	struct rule *rule = match_rule_before_mirrored(flow, packet);
+	struct rule *rule = match_rule_before_mirrored(flow);
 	if (!rule)
 		return 0;
 
@@ -746,7 +746,7 @@ next:
 		}
 	}
 
-	struct rule *rule = match_rule_after_detected(flow, packet);
+	struct rule *rule = match_rule_after_detected(flow);
 	if (!rule)
 		return;
 	

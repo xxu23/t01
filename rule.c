@@ -1343,7 +1343,7 @@ step2:
 
 	return ret;
 }
-struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow, void *packet)
+struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow)
 {
 	struct list_head *pos;
 	list_for_each(pos, &rule_list) {
@@ -1372,10 +1372,9 @@ struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow, void *packe
 	return NULL;
 }
 
-struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, 
-					void *packet)
+struct rule *match_rule_after_detected(struct ndpi_flow_info *flow)
 {
-#if 0
+#if 1
 	struct list_head *pos;
 	list_for_each(pos, &rule_list) {
 		struct rule *rule = list_entry(pos, struct rule, list);

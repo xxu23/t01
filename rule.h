@@ -128,11 +128,9 @@ uint64_t calc_totalhits();
 void calc_rules(uint64_t *total, uint64_t *enabled);
 
 struct ndpi_flow_info;
-struct rule *match_rule_after_detected(struct ndpi_flow_info *flow, 
-					void *packet);
+struct rule *match_rule_after_detected(struct ndpi_flow_info *flow);
 
-struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow,
-					void *packet);
+struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow);
 
 int add_hit_record(struct rule *r, uint64_t time, uint32_t saddr,
 	 		uint32_t daddr, uint16_t sport, uint16_t dport,
