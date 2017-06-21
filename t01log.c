@@ -92,6 +92,7 @@ static void *mysql_thread(void *args)
 	int offset = 0;
 	MYSQL mysql;
 	int st;
+	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
 	my_bool reconnect = 1;
 	time_t t0 = time(NULL);
 
@@ -116,7 +117,10 @@ static void *mysql_thread(void *args)
 		time_t t1;
 
 		queue_get(queues[tid], (void **)&log);
-		if (!log) continue;
+		if (!log) {
+			nanosleep(&ts, NULL);
+			continue;
+		}
 
 		if(cur_pkt == 0) {
 			st = mysql_query(&mysql,"START TRANSACTION"); 
