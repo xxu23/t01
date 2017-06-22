@@ -1415,9 +1415,9 @@ struct rule *match_rule_after_detected(struct ndpi_flow_info *flow)
 		if (rule->payload[0]) {
 			uint8_t which = rule->which;
 			uint8_t match = rule->match;
-			char *host = flow->host_server_name;
-			if (which == T01_WHICH_HOST && host[0]) {
-				if (match_payload(match, rule->payload, host,
+			if (which == T01_WHICH_HOST) {
+				char *host = flow->host_server_name;	
+				if (!host[0] || match_payload(match, rule->payload, host,
 				     rule->action_params) != 1)
 					continue;
 			} else if (which == T01_WHICH_URL) {
