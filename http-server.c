@@ -63,6 +63,10 @@ struct slave_client {
 	uint64_t cksum;
 	uint64_t hits;
 	uint64_t version;
+	uint64_t avg_bytes;
+	uint64_t avg_pkts;
+	uint64_t total_bytes;
+	uint64_t total_pkts;
 	int first;
 };
 
@@ -639,6 +643,8 @@ static int client_get_server_info(struct cmd *cmd)
 		cJSON *array = cJSON_CreateArray(), *item;
 		struct slave_client *s;
 		uint64_t hits1 = 0, hits2 = calc_totalhits();
+		uint64_t avg_bytes1 = 0, avg_pkts1 = 0;
+		uint64_t total_bytes1 = 0, total_pkts1 = 0;
 
 		list_for_each(pos, &slave_list) {
 			s = list_entry(pos, struct slave_client, list);
@@ -648,14 +654,23 @@ static int client_get_server_info(struct cmd *cmd)
 			cJSON_AddNumberToObject(item, "online", s->online);
 			cJSON_AddNumberToObject(item, "id", s->id);
 			cJSON_AddItemToArray(array, item);
-			if (s->online)
+			if (s->online) {
 				hits1 += s->hits;
+				avg_bytes1 += s->avg_bytes;
+				avg_pkts1 += s->avg_pkts;
+				total_bytes1 += s->total_bytes;
+				total_pkts1 += s->total_pkts;
+			}	
 		}
 		cJSON_AddItemToObject(root, "nodes", array);
 
 		if (hits1 < hits2)
 			hits1 = hits2;
 		cJSON_AddNumberToObject(root, "hits", hits1);
+		cJSON_AddNumberToObject(root, "total_pkts_in", total_pkts1);
+		cJSON_AddNumberToObject(root, "total_bytes_in", total_bytes1);
+		cJSON_AddNumberToObject(root, "avg_pkts_in", avg_pkts1);
+		cJSON_AddNumberToObject(root, "avg_bytes_in", avg_bytes1);
 	}
 
 	result = cJSON_PrintUnformatted(root);
@@ -766,6 +781,10 @@ static int slave_registry_cluster(struct cmd *cmd)
 	uint64_t cksum = 0;
 	uint64_t shits = 0;
 	uint64_t ver = 0;
+	uint64_t avg_bytes = 0;
+	uint64_t avg_pkts = 0;
+	uint64_t total_bytes = 0;
+	uint64_t total_pkts = 0;
 	struct list_head *pos;
 	struct slave_client *slave = NULL;
 
@@ -780,6 +799,14 @@ static int slave_registry_cluster(struct cmd *cmd)
 			sscanf(cmd->queries[i].val, "%llx", &shits);
 		else if (strcasecmp(cmd->queries[i].key, "version") == 0)
 			sscanf(cmd->queries[i].val, "%llx", &ver);
+		else if (strcasecmp(cmd->queries[i].key, "total_pkts") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &total_pkts);
+		else if (strcasecmp(cmd->queries[i].key, "total_bytes") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &total_bytes);
+		else if (strcasecmp(cmd->queries[i].key, "avg_pkts") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &avg_pkts);
+		else if (strcasecmp(cmd->queries[i].key, "avg_bytes") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &avg_bytes);
 	}
 	if (slave_port <= 0 || slave_port >= 65535) {
 		send_client_error(cmd->req, 400, "Bad Request");
@@ -807,6 +834,10 @@ static int slave_registry_cluster(struct cmd *cmd)
 	slave->id = id;
 	slave->hits = shits;
 	slave->online = 1;
+	slave->avg_bytes = avg_bytes;
+	slave->avg_pkts = avg_pkts;
+	slave->total_bytes = total_bytes;
+	slave->total_pkts = total_pkts;
 
 	send_client_reply(cmd->req, NULL, 0, "application/json");
 	return 0;
@@ -946,7 +977,7 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 	struct evhttp_connection *conn;
 	struct evhttp_request *req;
 	uint64_t cksum = calc_crc64_rules();
-	char path[1024];
+	char path[2048];
 
 	conn = evhttp_connection_base_new(base, NULL, master_ip, master_port);
 	req = evhttp_request_new(slave_request_cb, conn);
@@ -954,8 +985,11 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 	evhttp_connection_set_timeout(conn, 5);
 	evhttp_add_header(evhttp_request_get_output_headers(req), 
 				"Connection", "Keep-Alive");
-	snprintf(path, 1024, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx&version=%llx", 
-		self_port, cksum, tconfig.id, hits, version);
+	snprintf(path, 2048, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx&version=%llx&total_pkts=%llx&total_bytes=%llx&avg_pkts=%llx&avg_bytes=%llx", 
+		self_port, cksum, tconfig.id, hits, version, 
+		ip_packet_count, total_ip_bytes, 
+		pkts_per_second_in, bytes_per_second_in);
+
 	evhttp_make_request(conn, req, EVHTTP_REQ_POST, path);
 
 	return 0;
