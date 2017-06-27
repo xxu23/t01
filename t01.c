@@ -38,7 +38,7 @@
 #include <net/if.h>
 #include <sys/sysinfo.h>
 #include <sys/socket.h>
-#include <sched.h> 
+#include <sched.h>
 #include <net/if.h>
 #include <netpacket/packet.h>
 #include <net/ethernet.h>
@@ -122,8 +122,10 @@ static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
 static pthread_spinlock_t mirror_lock;
 static pthread_spinlock_t hitlog_lock;
-static	char *bind_ip;
-static	int bind_port;
+static char *bind_ip;
+static int bind_port;
+static int argc_;
+static char** argv_;
 
 
 static struct filter_strategy {
@@ -331,7 +333,7 @@ static void load_config(const char *filename)
 	get_string_from_json(item, json, "this_mac", tconfig.this_mac_addr);
 	get_string_from_json(item, json, "next_mac", tconfig.next_mac_addr);
 	get_string_from_json(item, json, "detected_protocol", tconfig.detected_protocol);
-	
+
 	if(strcasecmp(wm, "slave") == 0)
 		tconfig.work_mode = SLAVE_MODE;
 	else if(strcasecmp(wm, "master") == 0)
@@ -521,8 +523,36 @@ static void parse_options(int argc, char **argv)
 		strcpy(tconfig.ruledb, DEFAULT_RULEDB);
 	if (tconfig.rule_port == 0)
 		tconfig.rule_port = DEFAULT_RULE_PORT;
-}
 
+	{
+		argv_ = malloc(sizeof(char*)*(argc+1));
+		argv_[argc] = NULL;
+		while (argc > 0) {
+			argv_[argc - 1] = strdup(argv[argc -1]);
+			argc--;
+		}
+	}
+}
+static void segv_handler(int sig, siginfo_t *info, void *secret)
+{
+	int childpid;
+	
+	t01_log(T01_WARNING,
+				"    T01 crashed by signal: %d", sig);
+	t01_log(T01_WARNING,
+        "    SIGSEGV caused by address: %p", (void*)info->si_addr);
+	if ((childpid=fork()) != 0) {
+		struct sigaction act;
+		sigemptyset (&act.sa_mask);
+	 	act.sa_flags = SA_NODEFER | SA_ONSTACK | SA_RESETHAND;
+		act.sa_handler = SIG_DFL;
+	 	sigaction (sig, &act, NULL);
+		kill(getpid(),sig);
+		exit(0);	/* parent exits */
+	}
+	t01_log("Restarting childpid %d\n", childpid);
+	execv(argv_[0], argv_);
+}
 static void signal_hander(int sig)
 {
  	static int called = 0;
@@ -670,12 +700,12 @@ static int get_if_idx(const char *if_name)
 {
 	struct ifreq ifr;
 	int ret, sockfd;
- 
+
  	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	memset((void*)&ifr, 0, sizeof(ifr));
 	snprintf (ifr.ifr_name, sizeof (ifr.ifr_name), if_name);
 	ret = ioctl(sockfd, SIOCGIFINDEX, &ifr);
-	if (ret < 0) {     
+	if (ret < 0) {
 		t01_log(T01_WARNING, "failed to get idx of if %s", if_name);
 		exit(1);
 	}
@@ -735,7 +765,7 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
 
 			d->len = h->len;
 			d->buffer = zmalloc(h->len);
-			if (d->buffer == NULL) 
+			if (d->buffer == NULL)
 				return;
 			memcpy(d->buffer, packet, h->len);
 			d->flow = flow;
@@ -749,17 +779,17 @@ next:
 	struct rule *rule = match_rule_after_detected(flow);
 	if (!rule)
 		return;
-	
+
 	struct attack_data *attack = zmalloc(sizeof(*attack));
 	Value *value = zmalloc(sizeof(Value));
 	if (!attack)
 		return;
 	char *result = attack->buffer;
-	int len = sizeof(attack->buffer); 
+	int len = sizeof(attack->buffer);
 	len = make_packet(rule, packet, result, len, flow);
 	if (len == 0) {
 		zfree(attack);
-		return;	
+		return;
 	}
 	attack->len = len;
 	attack->rule = rule;
@@ -770,7 +800,7 @@ next:
 	qpush(queue, value);
 
 	total_ip_bytes_out += len;
-	ip_packet_count_out++;	
+	ip_packet_count_out++;
 }
 
 static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow)
@@ -857,17 +887,17 @@ struct ndpi_workflow *setup_detection()
 
 static void setup_cpuaffinity(int index, const char *name)
 {
-	cpu_set_t m;  
-	CPU_ZERO(&m);  
-	CPU_SET(index-1, &m);  
-  
+	cpu_set_t m;
+	CPU_ZERO(&m);
+	CPU_SET(index-1, &m);
+
     	if(-1 == pthread_setaffinity_np(pthread_self(), sizeof(m), &m)) {
 	 	t01_log(T01_WARNING, "failed to bind cpu %d to thread %s: %s",
-			index, name, strerror(errno));  
-		return;  
+			index, name, strerror(errno));
+		return;
 	}
-    	t01_log(T01_NOTICE, "succeed to bind cpu %d to thread %s", 
-		index, name);  
+    	t01_log(T01_NOTICE, "succeed to bind cpu %d to thread %s",
+		index, name);
 }
 
 static void *attack_thread(void *args)
@@ -875,7 +905,7 @@ static void *attack_thread(void *args)
 	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
 	int core = *((int*)args);
 
-	if (core > 0) 
+	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
@@ -884,7 +914,7 @@ static void *attack_thread(void *args)
 		Value *value = NULL;
 		struct attack_data *attack;
     		value = qpop(queue, 0);
-		if (value == NULL || 
+		if (value == NULL ||
 			(attack = (struct attack_data *)value->data) == NULL) {
 			nanosleep(&ts, NULL);
 			continue;
@@ -911,7 +941,7 @@ static void *attack_thread(void *args)
 			nm_inject(out_nmr, result, len);
 		else
 			write(sendfd, result, len);
-		
+
 		if (tconfig.verbose) {
 			char l[48], u[48];
 			char msg[4096];
@@ -984,7 +1014,7 @@ static void *mirror_thread(void *args)
 {
 	int core = *((int*)args);
 
-	if (core > 0) 
+	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
@@ -1016,7 +1046,7 @@ static void *backup_thread(void *args)
 	char protocol[64];
 	int core = *((int*)args);
 
-	if (core > 0) 
+	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
@@ -1211,7 +1241,7 @@ static void *hitslog_thread(void *args)
 	int count = 0, i;
 	int core = *((int*)args);
 
-	if (core > 0) 
+	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
@@ -1221,7 +1251,7 @@ static void *hitslog_thread(void *args)
 		offset[count] = offsetof(struct log_rz, src_ip);
 		log_len[count] = sizeof(struct log_rz) - offset[count];
 		count++;
-	} 
+	}
 	if(tconfig.master_ip[0] && tconfig.master_port) {
 		udp_ip[count] = tconfig.master_ip;
 		udp_port[count] = tconfig.master_port;
@@ -1250,9 +1280,9 @@ static void *hitslog_thread(void *args)
 			hlr = list_entry(pos, struct hits_log_rz, list);
 			pthread_spin_lock(&hitlog_lock);
 			list_del(pos);
-			pthread_spin_unlock(&hitlog_lock);			
+			pthread_spin_unlock(&hitlog_lock);
 
-			for(i = 0; i < count; i++) 
+			for(i = 0; i < count; i++)
 				anetUdpWrite(fd[i], (char *)&hlr->hit+offset[i], log_len[i],
 				     (struct sockaddr *)&addr[i], addr_len[i]);
 			zfree(hlr);
@@ -1293,7 +1323,7 @@ static void *libevent_thread(void *args)
 	struct timeval tv2, tv3, tv4;
 	int core = *((int*)args);
 
-	if (core > 0) 
+	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
 
 	/* initialize libevent */
@@ -1388,7 +1418,7 @@ static void *netmap_thread(void *args)
 	struct netmap_if *nifp = nmr->nifp;
 	int core = *((int*)args);
 
-	if (core > 0) 
+	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
 
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
@@ -1427,7 +1457,7 @@ static void main_thread()
 	int err, i, nthreads = 0, j = 0;
 	pthread_t threads[6];
 	int affinity[6] = {0};
-	
+
 	for (i = 0; i < 5; i++) {
 		if (tconfig.cpu_thread > 0)
 			affinity[i] = tconfig.cpu_thread + i;
@@ -1435,7 +1465,7 @@ static void main_thread()
 
 	gettimeofday(&last_report_ts, NULL);
 
-	if (tconfig.work_mode & NETMAP_MODE && 
+	if (tconfig.work_mode & NETMAP_MODE &&
 	    pthread_create(&threads[nthreads++], NULL, netmap_thread,
 			   &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create netmap thread: %s",
@@ -1451,9 +1481,9 @@ static void main_thread()
 		t01_log(T01_WARNING, "Can't create attack thread: %s",
 			strerror(errno));
 		exit(1);
-	} 
+	}
 
-	if ((tconfig.work_mode & SLAVE_MODE || 
+	if ((tconfig.work_mode & SLAVE_MODE ||
 	     (tconfig.hit_ip[0] && tconfig.hit_port)) &&
 	    pthread_create(&threads[nthreads++], NULL, hitslog_thread,
 			   &affinity[j++]) != 0) {
@@ -1692,6 +1722,16 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, signal_hander);
 	signal(SIGTERM, signal_hander);
+	{
+		 struct sigaction act;
+		 sigemptyset(&act.sa_mask);
+		 act.sa_flags = SA_NODEFER | SA_RESETHAND | SA_SIGINFO;
+		 act.sa_sigaction = segv_handler;
+		 sigaction(SIGSEGV, &act, NULL);
+		 sigaction(SIGBUS, &act, NULL);
+		 sigaction(SIGFPE, &act, NULL);
+		 sigaction(SIGILL, &act, NULL);
+	}
 	main_thread();
 
 	if (tconfig.work_mode & NETMAP_MODE)
