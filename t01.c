@@ -533,6 +533,7 @@ static void parse_options(int argc, char **argv)
 		}
 	}
 }
+
 static void segv_handler(int sig, siginfo_t *info, void *secret)
 {
 	int childpid;
@@ -550,9 +551,10 @@ static void segv_handler(int sig, siginfo_t *info, void *secret)
 		kill(getpid(),sig);
 		exit(0);	/* parent exits */
 	}
-	t01_log("Restarting childpid %d\n", childpid);
+	t01_log(T01_WARNING, "Restarting childpid %d", getpid());
 	execv(argv_[0], argv_);
 }
+
 static void signal_hander(int sig)
 {
  	static int called = 0;
@@ -1386,6 +1388,7 @@ static void *libevent_thread(void *args)
 	event_base_dispatch(base);
 
 	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
+	return NULL;
 }
 
 static inline int receive_packets(struct netmap_ring *ring,
