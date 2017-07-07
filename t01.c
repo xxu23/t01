@@ -377,6 +377,19 @@ static void usage()
 	exit(0);
 }
 
+static int mac_str_to_n(const char *addr, unsigned char mac0[6])
+{
+	unsigned int mac[6];
+	int i;
+	if(sscanf(addr, "%2x:%2x:%2x:%2x:%2x:%2x",
+		mac, mac+1, mac+2, mac+3, mac+4, mac+5) != 6)
+		return -1;
+
+	for(i = 0; i < 6; i++)
+		mac0[i] = mac[i];
+	return 0;
+}
+
 static void parse_options(int argc, char **argv)
 {
 	int opt;
@@ -483,19 +496,15 @@ static void parse_options(int argc, char **argv)
 			       sizeof(tconfig.hit_ip), &tconfig.hit_port);
 	}
 	if (tconfig.this_mac_addr[0]) {
-		unsigned char *mac = tconfig.this_mac;
 		char *addr = tconfig.this_mac_addr;
-		if(sscanf(addr, "%02x:%02x:%02x:%02x:%02x:%02x",
-			&mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6) {
+		if(mac_str_to_n(addr, tconfig.this_mac) != 0) {
 			fprintf(stderr, "%s is not a valid mac address\n", addr);
 			exit(-1);
 		}
 	}
 	if (tconfig.next_mac_addr[0]) {
-		unsigned char *mac = tconfig.next_mac;
 		char *addr = tconfig.next_mac_addr;
-		if(sscanf(addr, "%02x:%02x:%02x:%02x:%02x:%02x",
-			&mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6) {
+		if(mac_str_to_n(addr, tconfig.next_mac) != 0) {
 			fprintf(stderr, "%s is not a valid mac address\n", addr);
 			exit(-1);
 		}
@@ -810,6 +819,7 @@ static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow)
 	char *protocols = zstrdup(tconfig.detected_protocol);
 	if (protocols[0] == 0 || strstr(protocols, "all")) {
 		// enable all protocols
+		t01_log(T01_NOTICE, "Enable all procotols into ndpi mask");
 		NDPI_BITMASK_SET_ALL(ndpi_mask);
 		ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &ndpi_mask);
 		zfree(protocols);
@@ -1283,6 +1293,7 @@ static void *hitslog_thread(void *args)
 			pthread_spin_lock(&hitlog_lock);
 			list_del(pos);
 			pthread_spin_unlock(&hitlog_lock);
+			t01_log(T01_NOTICE, "%x --> %x", hlr->hit.src_ip,  hlr->hit.dst_ip);
 
 			for(i = 0; i < count; i++)
 				anetUdpWrite(fd[i], (char *)&hlr->hit+offset[i], log_len[i],
