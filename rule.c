@@ -813,7 +813,8 @@ static char *rule2jsonstr(struct rule *rule)
 	return cjson2string(root);
 }
 
-int get_ruleids(int type, const char *kw, int offset, int limit, 
+int get_ruleids(int type, uint8_t match, uint8_t disabled, uint8_t action,
+		const char *kw, int offset, int limit, 
 		char **out, size_t * out_len, int json)
 {
 	uint32_t *ids;
@@ -830,6 +831,12 @@ int get_ruleids(int type, const char *kw, int offset, int limit,
 			&& strstr(rule->action_params, kw) == NULL
 			&& strstr(rule->human_saddr, kw) == NULL
 			&& strstr(rule->human_daddr, kw) == NULL))
+			continue;
+		if (match && rule->match != match)
+			continue;
+		if (action && rule->action != action)
+			continue;
+		if (disabled != 0xff && rule->disabled != disabled)
 			continue;
 		if (limit == 0) {
 			n++;
@@ -860,6 +867,12 @@ int get_ruleids(int type, const char *kw, int offset, int limit,
                         && strstr(rule->human_saddr, kw) == NULL
                         && strstr(rule->human_daddr, kw) == NULL))
                         continue;
+		if (match && rule->match != match)
+			continue;
+		if (action && rule->action != action)
+			continue;
+		if (disabled != 0xff && rule->disabled != disabled)
+			continue;
 		if (limit == 0) {
 			ids[i++] = rule->id;
 		} else if(j++ >= offset && i < limit) {

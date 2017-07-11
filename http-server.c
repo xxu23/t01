@@ -78,7 +78,7 @@ struct http_query
 	char *val;
 };
 
-struct cmd 
+struct cmd
 {
 	struct evhttp_request *req;
 	const char *url;
@@ -98,7 +98,7 @@ static struct http_query *get_query_param(const char *at, int *count)
 	struct http_query *queries = NULL;
 	const char *p = at;
 	size_t n = *count;
-	size_t sz = at ? strlen(at) : 0; 
+	size_t sz = at ? strlen(at) : 0;
 
 	while(p && p < at + sz) {
 		const char *key = p, *val;
@@ -220,8 +220,8 @@ static char *decode_uri(const char *uri, size_t length, size_t * out_len,
 	return ret;
 }
 
-static struct cmd *cmd_init(struct evhttp_request *req, 
-				const char *uri, size_t uri_len, 
+static struct cmd *cmd_init(struct evhttp_request *req,
+				const char *uri, size_t uri_len,
 				const char *query, size_t query_len,
 				const char *body, size_t body_len)
 {
@@ -281,10 +281,10 @@ static struct cmd *cmd_init(struct evhttp_request *req,
 			    decode_uri(arg, arg_len, &cmd->argv_len[cur_param],
 				       1);
 			if (cmd->argv[cur_param] == NULL) {
-				for (i = 0; i < cur_param; i++) 
+				for (i = 0; i < cur_param; i++)
 					zfree(cmd->argv[i]);
 				zfree(cmd);
-				return NULL; 
+				return NULL;
 			}
 			cur_param++;
 		}
@@ -311,7 +311,7 @@ static void send_client_reply(struct evhttp_request *req, const char *p,
 {
 	const char *ct = content_type;
 	struct evbuffer *evb = evbuffer_new();
-	
+
 	evhttp_add_header(evhttp_request_get_output_headers(req),
 		    "Content-Type", ct);
 
@@ -322,7 +322,7 @@ static void send_client_reply(struct evhttp_request *req, const char *p,
 	evbuffer_free(evb);
 }
 
-static void send_client_error(struct evhttp_request *req, int code, 
+static void send_client_error(struct evhttp_request *req, int code,
 				const char *reason)
 {
 	evhttp_send_error(req, code, reason);
@@ -384,9 +384,10 @@ static int client_get_ruleids(struct cmd *cmd)
 	char *result = NULL;
 	size_t len = 0;
 	int32_t type = -1, offset = 0, limit = 0;
+	uint8_t match = 0, disabled = 0xff, action = 0;
 	int query_count = cmd->query_count, i;
 	char *keyword = NULL;
-	
+
 	for (i = 0; i < query_count; i++) {
 		if (strcasecmp(cmd->queries[i].key, "type") == 0)
 			type = atoi(cmd->queries[i].val);
@@ -396,9 +397,16 @@ static int client_get_ruleids(struct cmd *cmd)
 			limit = atoi(cmd->queries[i].val);
 		else if (strcasecmp(cmd->queries[i].key, "keyword") == 0)
 			keyword = cmd->queries[i].val;
+		else if (strcasecmp(cmd->queries[i].key, "match") == 0)
+			match = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "disabled") == 0)
+			disabled = atoi(cmd->queries[i].val);
+		else if (strcasecmp(cmd->queries[i].key, "action") == 0)
+			action = atoi(cmd->queries[i].val);
 	}
 
-	get_ruleids(type, keyword, offset, limit, &result, &len, 1);
+	get_ruleids(type,  match, disabled, action, 
+			keyword, offset, limit, &result, &len, 1);
 
 	send_client_reply(cmd->req, result, len, "application/json");
 	release_buffer(&result);
@@ -435,7 +443,7 @@ static int client_get_summary(struct cmd *cmd)
 		if (strcasecmp(cmd->queries[i].key, "type") == 0)
 			type = atoi(cmd->queries[i].val);
 	}
-	
+
 	ret = get_summary(type, &result, &len);
 	if (ret == 0) {
 		send_client_reply(cmd->req, result, len, "application/json");
@@ -532,14 +540,14 @@ static void sync_slaves_rules(const char *path, int method,
 
 		evhttp_connection_free_on_completion(conn);
 		evhttp_connection_set_timeout(conn, 5);
-		evhttp_add_header(evhttp_request_get_output_headers(req), 
+		evhttp_add_header(evhttp_request_get_output_headers(req),
 					"Connection", "Keep-Alive");
 
 		if (body && len) {
 			evbuffer_add(buffer, body, len);
 			evutil_snprintf(buf, sizeof(buf) - 1, "%lu",
 					(unsigned long)len);
-			evhttp_add_header(evhttp_request_get_output_headers(req), 
+			evhttp_add_header(evhttp_request_get_output_headers(req),
 					"Content-Length", buf);
 		}
 
@@ -660,7 +668,7 @@ static int client_get_server_info(struct cmd *cmd)
 				avg_pkts1 += s->avg_pkts;
 				total_bytes1 += s->total_bytes;
 				total_pkts1 += s->total_pkts;
-			}	
+			}
 		}
 		cJSON_AddItemToObject(root, "nodes", array);
 
@@ -756,7 +764,7 @@ static int client_get_slave_info(struct cmd *cmd)
 	arg->req_client = cmd->req;
 	evhttp_connection_free_on_completion(conn);
 	evhttp_connection_set_timeout(conn, 5);
-	evhttp_add_header(evhttp_request_get_output_headers(req), 
+	evhttp_add_header(evhttp_request_get_output_headers(req),
 				"Connection", "Keep-Alive");
 	evhttp_make_request(conn, req, EVHTTP_REQ_GET, "/info");
 
@@ -849,20 +857,20 @@ static struct http_cmd_table {
 	size_t params;
 	int (*action) (struct cmd * cmd);
 } tables[] = {
-	{EVHTTP_REQ_GET, "rule", 1, client_get_rule}, 
-	{EVHTTP_REQ_GET, "ruleids", 0, client_get_ruleids}, 
-	{EVHTTP_REQ_GET, "rules", 0, client_get_rules}, 
-	{EVHTTP_REQ_GET, "hits", 0, client_get_hits}, 
-	{EVHTTP_REQ_POST, "rules", 0, client_create_rule}, 
-	{EVHTTP_REQ_POST, "enablerule", 1, client_enable_rule}, 
+	{EVHTTP_REQ_GET, "rule", 1, client_get_rule},
+	{EVHTTP_REQ_GET, "ruleids", 0, client_get_ruleids},
+	{EVHTTP_REQ_GET, "rules", 0, client_get_rules},
+	{EVHTTP_REQ_GET, "hits", 0, client_get_hits},
+	{EVHTTP_REQ_POST, "rules", 0, client_create_rule},
+	{EVHTTP_REQ_POST, "enablerule", 1, client_enable_rule},
 	{EVHTTP_REQ_POST, "disablerule", 1, client_disable_rule},
-	{EVHTTP_REQ_PUT, "rule", 1, client_update_rule}, 
-	{EVHTTP_REQ_DELETE, "rule", 1, client_delete_rule}, 
-	{EVHTTP_REQ_GET, "summary", 0, client_get_summary}, 
-	{EVHTTP_REQ_GET, "info", 0, client_get_server_info}, 
-	{EVHTTP_REQ_GET, "sinfo", 0, client_get_slave_info}, 
-	{EVHTTP_REQ_POST, "registry", 0, slave_registry_cluster}, 
-	{EVHTTP_REQ_GET, "registry", 0, slave_registry_cluster}, 
+	{EVHTTP_REQ_PUT, "rule", 1, client_update_rule},
+	{EVHTTP_REQ_DELETE, "rule", 1, client_delete_rule},
+	{EVHTTP_REQ_GET, "summary", 0, client_get_summary},
+	{EVHTTP_REQ_GET, "info", 0, client_get_server_info},
+	{EVHTTP_REQ_GET, "sinfo", 0, client_get_slave_info},
+	{EVHTTP_REQ_POST, "registry", 0, slave_registry_cluster},
+	{EVHTTP_REQ_GET, "registry", 0, slave_registry_cluster},
 	{EVHTTP_REQ_POST, "rulessync", 0, master_sync_rules},
 };
 
@@ -883,7 +891,7 @@ static void cmd_dispatch(struct cmd *cmd, int method)
 {
 	int i;
 	struct http_cmd_table *which = NULL;
-	
+
 	for (i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
 		if (tables[i].method == method &&
 		    tables[i].params == cmd->count - 1 &&
@@ -897,7 +905,7 @@ static void cmd_dispatch(struct cmd *cmd, int method)
 		send_client_error(cmd->req, 405, "Method Not allowed");
 	} else {
 		int ret = which->action(cmd);
-		t01_log(T01_NOTICE, "%s /%s %s", get_method(method), 
+		t01_log(T01_NOTICE, "%s /%s %s", get_method(method),
 				cmd->url, ret == 0 ? "OK" : "Fail");
 	}
 }
@@ -911,7 +919,7 @@ void http_server_request_cb(struct evhttp_request *req, void *arg)
 	const char *path = NULL;
 	const char *query = NULL;
 	char *body = NULL;
-	size_t path_sz = 0, query_sz = 0, body_sz = 0;	
+	size_t path_sz = 0, query_sz = 0, body_sz = 0;
 	size_t len;
 	int method;
 	struct cmd *cmd = NULL;
@@ -927,12 +935,12 @@ void http_server_request_cb(struct evhttp_request *req, void *arg)
 
 	/* Let's see what path the user asked for. */
 	path = evhttp_uri_get_path(decoded);
-	if (!path) 
+	if (!path)
 		path = "/";
 	path_sz = strlen(path);
 
 	query = evhttp_uri_get_query(decoded);
-	if (query) 
+	if (query)
 		query_sz = strlen(query);
 
 	buf = evhttp_request_get_input_buffer(req);
@@ -948,8 +956,8 @@ void http_server_request_cb(struct evhttp_request *req, void *arg)
 		}
 	}
 
-	cmd = cmd_init(req, path+1, path_sz-1, query, query_sz, 
-			body, body_sz); 
+	cmd = cmd_init(req, path+1, path_sz-1, query, query_sz,
+			body, body_sz);
 	if (!cmd) {
 		send_client_error(req, 400, "Bad Request");
 		goto done;
@@ -959,7 +967,7 @@ void http_server_request_cb(struct evhttp_request *req, void *arg)
 done:
 	if (decoded)
 		evhttp_uri_free(decoded);
-	if (cmd) 
+	if (cmd)
 		cmd_free(cmd);
 }
 
@@ -983,11 +991,11 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 	req = evhttp_request_new(slave_request_cb, conn);
 	evhttp_connection_free_on_completion(conn);
 	evhttp_connection_set_timeout(conn, 5);
-	evhttp_add_header(evhttp_request_get_output_headers(req), 
+	evhttp_add_header(evhttp_request_get_output_headers(req),
 				"Connection", "Keep-Alive");
-	snprintf(path, 2048, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx&version=%llx&total_pkts=%llx&total_bytes=%llx&avg_pkts=%llx&avg_bytes=%llx", 
-		self_port, cksum, tconfig.id, hits, version, 
-		ip_packet_count, total_ip_bytes, 
+	snprintf(path, 2048, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx&version=%llx&total_pkts=%llx&total_bytes=%llx&avg_pkts=%llx&avg_bytes=%llx",
+		self_port, cksum, tconfig.id, hits, version,
+		ip_packet_count, total_ip_bytes,
 		pkts_per_second_in, bytes_per_second_in);
 
 	evhttp_make_request(conn, req, EVHTTP_REQ_POST, path);
@@ -1045,7 +1053,9 @@ int master_check_slaves()
 			"Rule not match: master [crc=%llx,version=%lld] VS slave [address=%s:%d, crc=%llx,version=%lld]",
 			cksum, version, s->ip, s->port, s->cksum, s->version);
 
-		if (!ids && get_ruleids(0, NULL, 0, 0, (char **)&ids, &len, 0) < 0)
+		if (!ids && get_ruleids(0, 0, -1, 0, 
+					NULL, 0, 0, 
+					(char **)&ids, &len, 0) < 0)
 			continue;
 		len /= sizeof(uint32_t);
 		if (!rules && get_rules(ids, len, &rules, &len2) < 0)
@@ -1057,13 +1067,13 @@ int master_check_slaves()
 
 		evhttp_connection_free_on_completion(conn);
 		evhttp_connection_set_timeout(conn, 5);
-		evhttp_add_header(evhttp_request_get_output_headers(req), 
+		evhttp_add_header(evhttp_request_get_output_headers(req),
 					"Connection", "Keep-Alive");
 
 		evbuffer_add(buffer, rules, len2);
 		evutil_snprintf(buf, sizeof(buf) - 1, "%lu",
 				(unsigned long)len2);
-		evhttp_add_header(evhttp_request_get_output_headers(req), 
+		evhttp_add_header(evhttp_request_get_output_headers(req),
 					"Content-Length", buf);
 
 		evhttp_make_request(conn, req, EVHTTP_REQ_POST, "/rulessync");
