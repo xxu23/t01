@@ -36,6 +36,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <sys/sysinfo.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -612,10 +613,13 @@ static int client_get_server_info(struct cmd *cmd)
 	cJSON *root = cJSON_CreateObject();
 	char *result;
 	uint64_t total_rules, enabled_rules;
+	struct sysinfo si;
+	sysinfo(&si);
 
 	cJSON_AddNumberToObject(root, "upstart", upstart);
 	cJSON_AddNumberToObject(root, "now", time(NULL));
 	cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
+	cJSON_AddNumberToObject(root, "total_memory", si.totalram);
 	cJSON_AddNumberToObject(root, "version", version);
 	cJSON_AddNumberToObject(root, "crc64", calc_crc64_rules());
 
