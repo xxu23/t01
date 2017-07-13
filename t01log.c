@@ -56,7 +56,8 @@ struct log_rz_2
 	uint32_t local_ip;
 	uint32_t time;
 	uint32_t rule_id;
-	uint8_t rule_type;
+	uint8_t rule_type:4;
+	uint8_t rule_action:4;
 	uint8_t proto;
 	uint16_t pktlen;
 };
