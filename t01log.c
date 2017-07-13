@@ -108,6 +108,11 @@ static void *mysql_thread(void *args)
 		t01_log(T01_WARNING, "Cannot connect to mysql %s:%d: %s", host, port, mysql_error(&mysql));
  		return NULL;
 	}
+
+	st = mysql_query(&mysql,"create table IF NOT EXISTS t01log(id int NOT NULL auto_increment, src_ip bigint, dst_ip bigint, src_port int, dst_port int, local_ip bigint, time int, rule_id int, rule_type int, proto int, pktlen int, user_type int, PRIMARY KEY (id));"); 
+	if(st != 0) {
+		t01_log(T01_WARNING, "Failed to transaction %s", mysql_error(&mysql));
+	}
 	
 	if (mysql_query(&mysql, "set autocommit=0;") != 0) {
 		t01_log(T01_WARNING, "Cannot disable auto commit: %s", mysql_error(&mysql));
