@@ -162,7 +162,8 @@ static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
 			return;
 		rule->hits++;
 		hl->hit.rule_id = rule->id;
-		hl->hit.rule_type = rule->action;
+		hl->hit.rule_type = rule->type;
+		hl->hit.rule_action = rule->action;
 		hl->hit.pktlen = flow->pktlen;
 		hl->hit.proto = flow->protocol;
 		hl->hit.time = flow->last_seen / 1000;
@@ -1293,7 +1294,6 @@ static void *hitslog_thread(void *args)
 			pthread_spin_lock(&hitlog_lock);
 			list_del(pos);
 			pthread_spin_unlock(&hitlog_lock);
-			t01_log(T01_NOTICE, "%x --> %x", hlr->hit.src_ip,  hlr->hit.dst_ip);
 
 			for(i = 0; i < count; i++)
 				anetUdpWrite(fd[i], (char *)&hlr->hit+offset[i], log_len[i],

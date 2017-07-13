@@ -131,13 +131,13 @@ static void *mysql_thread(void *args)
 		}
 
 		if (cur_pkt % BATCH_INSERT == 0)
-			offset = sprintf(cmd, "insert into t01log values(NULL,%u,%u,%d,%d,%u,%u,%u,%d,%d,%d)",
+			offset = sprintf(cmd, "insert into t01log values(NULL,%u,%u,%d,%d,%u,%u,%u,%d,%d,%d,%d)",
 				log->src_ip, log->dst_ip, log->src_port, log->dst_port, log->local_ip,
-				log->time, log->rule_id, log->rule_type, log->proto, log->pktlen);
+				log->time, log->rule_id, log->rule_action, log->proto, log->pktlen, log->rule_type);
 		else {
-			int len = sprintf(cmd+offset, ", (NULL,%u,%u,%d,%d,%u,%u,%u,%d,%d,%d)",
+			int len = sprintf(cmd+offset, ", (NULL,%u,%u,%d,%d,%u,%u,%u,%d,%d,%d,%d)",
 				log->src_ip, log->dst_ip, log->src_port, log->dst_port, log->local_ip,
-				log->time, log->rule_id, log->rule_type, log->proto, log->pktlen);
+				log->time, log->rule_id, log->rule_action, log->proto, log->pktlen, log->rule_type);
 			offset += len;
 		}			
 		zfree(log);
