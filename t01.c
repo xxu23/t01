@@ -92,6 +92,8 @@ uint64_t bytes_per_second_in = 0;
 uint64_t bytes_per_second_out = 0;
 uint64_t pkts_per_second_in = 0;
 uint64_t pkts_per_second_out = 0;
+uint64_t cur_bytes_per_second_in = 0;
+uint64_t cur_pkts_per_second_in = 0;
 struct event_base *base;
 struct evhttp *http;
 struct evhttp_bound_socket *handle;
@@ -1156,16 +1158,15 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg)
 
 	if (tot_usec > 0) {
 		char buf[32], buf1[32];
-		float t =
-		    (float)(curr_ip_packet_count * 1000000) / (float)tot_usec;
-		float b =
-		    (float)(curr_total_wire_bytes * 8 * 1000000) /
-		    (float)tot_usec;
-		float traffic_duration = tot_usec;
+		cur_pkts_per_second_in = 
+			curr_ip_packet_count * 1000000.0 / tot_usec;
+		cur_bytes_per_second_in = 
+			curr_total_wire_bytes * 8 * 1000000.0 / tot_usec;
 		printf("\tTraffic throughput:    %s pps / %s/sec\n",
-		       format_packets(t, buf), format_traffic(b, 1, buf1));
+			format_packets(curr_ip_packet_count, buf), 
+			format_traffic(cur_bytes_per_second_in, 1, buf1));
 		printf("\tTraffic duration:      %.3f sec\n",
-		       traffic_duration / 1000000);
+		       tot_usec / 1000000.0);
 		printf("\tIncoming throughput:   %s pps / %s/sec\n",
 		       format_packets(pkts_per_second_in, buf),
 		       format_traffic(bytes_per_second_in, 1, buf1));

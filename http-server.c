@@ -65,6 +65,8 @@ struct slave_client {
 	uint64_t hits;
 	uint64_t version;
 	uint64_t max_bytes_ps;
+	uint64_t cur_bytes_ps;
+	uint64_t cur_pkts_ps;
 	uint64_t avg_bytes;
 	uint64_t avg_pkts;
 	uint64_t total_bytes;
@@ -641,10 +643,14 @@ static int client_get_server_info(struct cmd *cmd)
 		cJSON_AddNumberToObject(root, "total_bytes_in", total_ip_bytes);
 		cJSON_AddNumberToObject(root, "total_bytes_out",
 					total_ip_bytes_out);
+		cJSON_AddNumberToObject(root, "cur_pkts_in",
+					cur_pkts_per_second_in);
 		cJSON_AddNumberToObject(root, "avg_pkts_in",
 					pkts_per_second_in);
 		cJSON_AddNumberToObject(root, "avg_pkts_out",
 					pkts_per_second_out);
+		cJSON_AddNumberToObject(root, "cur_bytes_in",
+					cur_bytes_per_second_in);
 		cJSON_AddNumberToObject(root, "avg_bytes_in",
 					bytes_per_second_in);
 		cJSON_AddNumberToObject(root, "avg_bytes_out",
@@ -658,6 +664,7 @@ static int client_get_server_info(struct cmd *cmd)
 		uint64_t hits1 = 0, hits2 = calc_totalhits();
 		uint64_t avg_bytes1 = 0, avg_pkts1 = 0;
 		uint64_t total_bytes1 = 0, total_pkts1 = 0;
+		uint64_t cur_bytes1 = 0, cur_pkts1 = 0;
 		uint64_t max_bytes_ps = 0;
 
 		list_for_each(pos, &slave_list) {
@@ -670,6 +677,8 @@ static int client_get_server_info(struct cmd *cmd)
 			cJSON_AddItemToArray(array, item);
 			if (s->online) {
 				hits1 += s->hits;
+				cur_bytes1 += s->cur_bytes_ps;
+				cur_pkts1 += s->cur_pkts_ps;
 				avg_bytes1 += s->avg_bytes;
 				avg_pkts1 += s->avg_pkts;
 				total_bytes1 += s->total_bytes;
@@ -684,6 +693,8 @@ static int client_get_server_info(struct cmd *cmd)
 		cJSON_AddNumberToObject(root, "hits", hits1);
 		cJSON_AddNumberToObject(root, "total_pkts_in", total_pkts1);
 		cJSON_AddNumberToObject(root, "total_bytes_in", total_bytes1);
+		cJSON_AddNumberToObject(root, "cur_pkts_in", cur_pkts1);
+		cJSON_AddNumberToObject(root, "cur_bytes_in", cur_bytes1);
 		cJSON_AddNumberToObject(root, "avg_pkts_in", avg_pkts1);
 		cJSON_AddNumberToObject(root, "avg_bytes_in", avg_bytes1);
 		cJSON_AddNumberToObject(root, "max_bytes_in", max_bytes_ps);
@@ -799,6 +810,8 @@ static int slave_registry_cluster(struct cmd *cmd)
 	uint64_t ver = 0;
 	uint64_t avg_bytes = 0;
 	uint64_t avg_pkts = 0;
+	uint64_t cur_bytes = 0;
+	uint64_t cur_pkts = 0;
 	uint64_t total_bytes = 0;
 	uint64_t total_pkts = 0;
 	struct list_head *pos;
@@ -823,6 +836,10 @@ static int slave_registry_cluster(struct cmd *cmd)
 			sscanf(cmd->queries[i].val, "%llx", &avg_pkts);
 		else if (strcasecmp(cmd->queries[i].key, "avg_bytes") == 0)
 			sscanf(cmd->queries[i].val, "%llx", &avg_bytes);
+		else if (strcasecmp(cmd->queries[i].key, "cur_pkts") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &cur_pkts);
+		else if (strcasecmp(cmd->queries[i].key, "cur_bytes") == 0)
+			sscanf(cmd->queries[i].val, "%llx", &cur_bytes);
 	}
 	if (slave_port <= 0 || slave_port >= 65535) {
 		send_client_error(cmd->req, 400, "Bad Request");
@@ -850,13 +867,15 @@ static int slave_registry_cluster(struct cmd *cmd)
 	slave->id = id;
 	slave->hits = shits;
 	slave->online = 1;
+	slave->cur_bytes_ps = cur_bytes;
+	slave->cur_pkts_ps = cur_pkts;
 	slave->avg_bytes = avg_bytes;
 	slave->avg_pkts = avg_pkts;
 	slave->total_bytes = total_bytes;
 	slave->total_pkts = total_pkts;
-	if (avg_bytes < 100000000)
+	if (cur_bytes < 100000000)
 		slave->max_bytes_ps = 100000000;
-	else if (avg_bytes < 1000000000)
+	else if (cur_bytes < 1000000000)
 		slave->max_bytes_ps = 1000000000;
 	else
 		slave->max_bytes_ps = 10000000000;
@@ -1008,10 +1027,11 @@ int slave_registry_master(const char *master_ip, int master_port, int self_port)
 	evhttp_connection_set_timeout(conn, 5);
 	evhttp_add_header(evhttp_request_get_output_headers(req),
 				"Connection", "Keep-Alive");
-	snprintf(path, 2048, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx&version=%llx&total_pkts=%llx&total_bytes=%llx&avg_pkts=%llx&avg_bytes=%llx",
+	snprintf(path, 2048, "/registry?port=%d&crc64=%llx&id=%d&hits=%llx&version=%llx&total_pkts=%llx&total_bytes=%llx&avg_pkts=%llx&avg_bytes=%llx&cur_pkts=%llx&cur_bytes=%llx",
 		self_port, cksum, tconfig.id, hits, version,
 		ip_packet_count, total_ip_bytes,
-		pkts_per_second_in, bytes_per_second_in);
+		pkts_per_second_in, bytes_per_second_in,
+		cur_pkts_per_second_in, cur_bytes_per_second_in);
 
 	evhttp_make_request(conn, req, EVHTTP_REQ_POST, path);
 

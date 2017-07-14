@@ -85,8 +85,10 @@ extern uint64_t total_wire_bytes, total_ip_bytes;
 extern uint64_t total_ip_bytes_out;
 extern uint64_t tcp_count, udp_count;
 extern uint64_t hits; 
+extern uint64_t cur_bytes_per_second_in;
 extern uint64_t bytes_per_second_in;
 extern uint64_t bytes_per_second_out;
+extern uint64_t cur_pkts_per_second_in;
 extern uint64_t pkts_per_second_in;
 extern uint64_t pkts_per_second_out;
 
