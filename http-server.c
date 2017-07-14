@@ -64,6 +64,7 @@ struct slave_client {
 	uint64_t cksum;
 	uint64_t hits;
 	uint64_t version;
+	uint64_t max_bytes_ps;
 	uint64_t avg_bytes;
 	uint64_t avg_pkts;
 	uint64_t total_bytes;
@@ -657,6 +658,7 @@ static int client_get_server_info(struct cmd *cmd)
 		uint64_t hits1 = 0, hits2 = calc_totalhits();
 		uint64_t avg_bytes1 = 0, avg_pkts1 = 0;
 		uint64_t total_bytes1 = 0, total_pkts1 = 0;
+		uint64_t max_bytes_ps = 0;
 
 		list_for_each(pos, &slave_list) {
 			s = list_entry(pos, struct slave_client, list);
@@ -672,6 +674,7 @@ static int client_get_server_info(struct cmd *cmd)
 				avg_pkts1 += s->avg_pkts;
 				total_bytes1 += s->total_bytes;
 				total_pkts1 += s->total_pkts;
+				max_bytes_ps += s->max_bytes_ps;
 			}
 		}
 		cJSON_AddItemToObject(root, "nodes", array);
@@ -683,6 +686,7 @@ static int client_get_server_info(struct cmd *cmd)
 		cJSON_AddNumberToObject(root, "total_bytes_in", total_bytes1);
 		cJSON_AddNumberToObject(root, "avg_pkts_in", avg_pkts1);
 		cJSON_AddNumberToObject(root, "avg_bytes_in", avg_bytes1);
+		cJSON_AddNumberToObject(root, "max_bytes_in", max_bytes_ps);
 	}
 
 	result = cJSON_PrintUnformatted(root);
@@ -850,6 +854,13 @@ static int slave_registry_cluster(struct cmd *cmd)
 	slave->avg_pkts = avg_pkts;
 	slave->total_bytes = total_bytes;
 	slave->total_pkts = total_pkts;
+	if (avg_bytes < 100000000)
+		slave->max_bytes_ps = 100000000;
+	else if (avg_bytes < 1000000000)
+		slave->max_bytes_ps = 1000000000;
+	else
+		slave->max_bytes_ps = 10000000000;
+
 
 	send_client_reply(cmd->req, NULL, 0, "application/json");
 	return 0;
