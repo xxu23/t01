@@ -1163,6 +1163,7 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 	struct rule src_rule, *new_rule = NULL;
 	struct list_head *pos;
 	cJSON *root;
+	uint32_t rule_id = 0;
 
 	root = cJSON_Parse(body);
 	if (!root) {
@@ -1205,7 +1206,15 @@ int create_rule(const char *body, int body_len, char **out, size_t * out_len)
 		new_rule->version = ++version;
 	else if (new_rule->version > version)
 		version = new_rule->version;
-	new_rule->id = src_rule.id ? src_rule.id : ++max_id;
+	rule_id = src_rule.id;
+	list_for_each(pos, &rule_list) {
+		struct rule *rule = list_entry(pos, struct rule, list);
+		if (rule_id == rule->id) {
+			rule_id = ++max_id;
+			break;
+		}
+	}
+	new_rule->id = rule_id ? rule_id : ++max_id;
 	t01_log(T01_NOTICE, "Create rule %d version %lld", 
 			new_rule->id, new_rule->version);
 	dirty += HITS_THRESHOLD_PER_SECOND;
