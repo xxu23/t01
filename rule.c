@@ -830,7 +830,8 @@ int get_ruleids(int type, uint8_t match, uint8_t disabled, uint8_t action,
 			(  strstr(rule->payload, kw) == NULL
 			&& strstr(rule->action_params, kw) == NULL
 			&& strstr(rule->human_saddr, kw) == NULL
-			&& strstr(rule->human_daddr, kw) == NULL))
+			&& strstr(rule->human_daddr, kw) == NULL
+			&& strstr(rule->description, kw) == NULL))
 			continue;
 		if (match && rule->match != match)
 			continue;
@@ -865,7 +866,8 @@ int get_ruleids(int type, uint8_t match, uint8_t disabled, uint8_t action,
                         (  strstr(rule->payload, kw) == NULL
                         && strstr(rule->action_params, kw) == NULL
                         && strstr(rule->human_saddr, kw) == NULL
-                        && strstr(rule->human_daddr, kw) == NULL))
+                        && strstr(rule->human_daddr, kw) == NULL
+			&& strstr(rule->description, kw) == NULL))
                         continue;
 		if (match && rule->match != match)
 			continue;
