@@ -303,6 +303,13 @@ static struct cmd *cmd_init(struct evhttp_request *req,
 
 	cmd->queries = get_query_param(query, &query_count);
 	cmd->query_count = query_count;
+	for (i = 0; i < query_count; i++) {
+		char *val = cmd->queries[i].val;
+		size_t len = cmd->queries[i].val_sz;
+		cmd->queries[i].val = 
+			decode_uri(val, len, &cmd->queries[i].val_sz, 1);
+		zfree(val);
+	}
 
 	conn = evhttp_request_get_connection(req);
 	evhttp_connection_get_peer(conn, &cmd->ip, &cmd->port);
@@ -414,7 +421,7 @@ static int client_get_ruleids(struct cmd *cmd)
 
 	send_client_reply(cmd->req, result, len, "application/json");
 	release_buffer(&result);
-
+	
 	return 0;
 }
 
