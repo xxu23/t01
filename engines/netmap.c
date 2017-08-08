@@ -37,6 +37,10 @@ static int netmap_disconnect(struct ioengine_data *td)
 	return 0;
 }
 
+static int netmap_ping(struct ioengine_data *td) {
+	return 0;
+}
+
 static int netmap_show_help()
 {
 	printf("--engine-opt=interface\n"
@@ -64,6 +68,7 @@ static struct ioengine_ops ioengine = {
 	.name = "netmap",
 	.connect = netmap_connect,
 	.disconnect = netmap_disconnect,
+	.ping = netmap_ping,
 	.show_help = netmap_show_help,
 	.write = netmap_write,
 };

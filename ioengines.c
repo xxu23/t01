@@ -39,6 +39,7 @@
 #include "ndpi_api.h"
 #include "ndpi_util.h"
 #include "msgpack.h"
+#include "zmalloc.h"
 #include "logger.h"
 
 static ZLIST_HEAD(engine_list);
@@ -61,6 +62,9 @@ void close_ioengine(struct ioengine_data *td)
 	if (td->io_ops->disconnect) {
 		td->io_ops->disconnect(td);
 		td->private = NULL;
+		zfree(td->args);
+		td->args = NULL;
+		td->flag = 0;
 	}
 }
 
@@ -68,10 +72,31 @@ int init_ioengine(struct ioengine_data *td, const char *args)
 {
 	t01_log(T01_NOTICE, "init ioengine %s with opt %s", td->io_ops->name,
 		args);
+	td->args = zstrdup(args);
 	if (td->io_ops->connect) {
-		return td->io_ops->connect(td, args);
+		int ret = td->io_ops->connect(td, args);
+		td->flag = ret == 0;
+		return ret;
 	}
 	return -1;
+}
+
+int check_ioengine(struct ioengine_data *td)
+{
+	int (*ping)(struct ioengine_data *) = td->io_ops->ping;
+	int flag = td->flag;
+
+	if (flag == 0 || (ping && ping(td) != 0)) {
+		if (flag && td->io_ops->disconnect)
+			td->io_ops->disconnect(td);
+
+		if (td->io_ops->connect) {
+			int ret = td->io_ops->connect(td, td->args);
+			td->flag = ret == 0;
+			return ret;
+		}
+	}
+	return 0;
 }
 
 typedef int (*write_engine)(struct ioengine_data *, const char *, int, const char *, int);
@@ -82,9 +107,13 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
 				  uint32_t daddr, uint16_t dport)
 {
 	write_engine write = td->io_ops->write;
-	if (!write)
-		return 0;
-	return write(td, "raw_queue", 9, data, len);
+	int ret;
+
+	if (!write || td->flag == 0)
+		return -1;
+	ret = write(td, "raw_queue", 9, data, len);
+	td->flag = ret > 0;
+	return ret;
 }
 
 int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
@@ -93,8 +122,9 @@ int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
 {
 	struct ndpi_flow_info *flow = (struct ndpi_flow_info *)flow_;
 	write_engine write = td->io_ops->write;
-	if (!write)
-		return 0;
+
+	if (!write || td->flag == 0)
+		return -1;
 
 	u_int32_t src_ip = flow->src_ip;
 	u_int32_t dst_ip = flow->dst_ip;
@@ -199,6 +229,7 @@ int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
 	len = write(td, "payload_queue", 13, sbuf.data, sbuf.size);
 clean:
 	msgpack_sbuffer_destroy(&sbuf);
+	td->flag = len > 0;
 	return len;
 }
 

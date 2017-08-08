@@ -40,6 +40,8 @@ struct ioengine_ops;
 
 struct ioengine_data {
 	void *private;
+	char *args;
+	int flag;
 	struct ioengine_ops *io_ops;
 };
 
@@ -48,6 +50,7 @@ struct ioengine_ops {
 	const char *name;
 	int (*connect) (struct ioengine_data *, const char *);
 	int (*disconnect) (struct ioengine_data *);
+	int (*ping) (struct ioengine_data *);
 	int (*show_help) ();
 	int (*write) (struct ioengine_data *, const char *, int, const char *, int);
 };
@@ -64,6 +67,8 @@ extern int store_raw_via_ioengine(struct ioengine_data *ed, const char *data,
 				  int len, uint8_t protocol, uint64_t ts,
 				  uint32_t saddr, uint16_t sport,
 				  uint32_t daddr, uint16_t dport);
+
+extern int check_ioengine(struct ioengine_data *ed);
 
 extern void register_ioengine(struct ioengine_ops *ops);
 extern void unregister_ioengine(struct ioengine_ops *ops);

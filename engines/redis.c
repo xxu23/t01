@@ -25,7 +25,8 @@ static int redis_connect(struct ioengine_data *td, const char *args)
 
 	c = redisConnect(host, port);
 	if (c != NULL && c->err) {
-		t01_log(T01_WARNING, "failed to connect %s:%d: %s\n", host, port, c->errstr);
+		t01_log(T01_WARNING, "failed to connect %s:%d: %s", 
+			host, port, c->errstr);
 		zfree(args2);
 		return -1;
 	}
@@ -41,6 +42,17 @@ static int redis_disconnect(struct ioengine_data *td)
 	return 0;
 }
 
+static int redis_ping(struct ioengine_data *td) {
+	redisContext *c = (redisContext *)td->private;
+	redisReply *reply = (redisReply*)redisCommand(c, "ping");  
+    	if(reply == NULL) {
+		return -1;
+	} else {
+		freeReplyObject(reply);
+		return 0;
+	}
+}
+
 static int redis_show_help()
 {
 	printf("--engine-opt=hostname[:port]\n"
@@ -49,8 +61,8 @@ static int redis_show_help()
 	return 0;
 }
 
-static int redis_write(struct ioengine_data *td, const char *args, int args_len,
-		       const char *buffer, int len)
+static int redis_write(struct ioengine_data *td, const char *args,
+			int args_len, const char *buffer, int len)
 {
 	redisContext *c = (redisContext *) td->private;
 	redisReply *reply;
@@ -76,6 +88,7 @@ static struct ioengine_ops ioengine = {
 	.name = "redis",
 	.connect = redis_connect,
 	.disconnect = redis_disconnect,
+	.ping = redis_ping,
 	.show_help = redis_show_help,
 	.write = redis_write,
 };

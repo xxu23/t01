@@ -1028,6 +1028,7 @@ static void *attack_thread(void *args)
 static void *mirror_thread(void *args)
 {
 	int core = *((int*)args);
+	time_t last = time(NULL);
 
 	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
@@ -1043,10 +1044,19 @@ static void *mirror_thread(void *args)
 			list_del(pos);
 			pthread_spin_unlock(&mirror_lock);
 			fb = list_entry(pos, struct filter_buffer, list);
-			store_raw_via_ioengine(&mirror_engine, fb->buffer,
+			if (store_raw_via_ioengine(&mirror_engine, fb->buffer,
 					       fb->len, fb->protocol, fb->ts,
 					       fb->saddr, fb->sport, fb->daddr,
-					       fb->dport);
+					       fb->dport) < 0) {
+				time_t now = time(NULL);
+				if (now - last < 5) 
+					continue;
+
+				t01_log(T01_WARNING, 
+					"failed to write mirror ioengine, reconnect every 5 seconds");
+				check_ioengine(&mirror_engine);
+				last = now;
+			}
 			zfree(fb);
 		}
 	}
@@ -1060,6 +1070,7 @@ static void *backup_thread(void *args)
 	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
 	char protocol[64];
 	int core = *((int*)args);
+	time_t last = time(NULL);
 
 	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
@@ -1089,8 +1100,18 @@ static void *backup_thread(void *args)
 						   flow->detected_protocol.
 						   protocol));
 
-		store_payload_via_ioengine(&backup_engine, flow, protocol,
-					   d->buffer, d->len);
+		
+		if (store_payload_via_ioengine(&backup_engine, flow, protocol,
+					   d->buffer, d->len) < 0) {
+			time_t now = time(NULL);
+			if (now - last < 5) 
+				continue;
+
+			t01_log(T01_WARNING, 
+				"failed to write backup ioengine, reconnect every 5 seconds");
+			check_ioengine(&backup_engine);
+			last = now;
+		}
 
 next:
 		zfree(d->buffer);
