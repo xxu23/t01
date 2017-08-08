@@ -126,7 +126,6 @@ static pthread_spinlock_t mirror_lock;
 static pthread_spinlock_t hitlog_lock;
 static char *bind_ip;
 static int bind_port;
-static int argc_;
 static char** argv_;
 
 

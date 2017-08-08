@@ -82,6 +82,8 @@ static char password[128];
 static char logfile[256];
 static int daemon_mode = 0;
 static int nthreads = 4;
+static char** argv_;
+
 
 static void *mysql_thread(void *args)
 {
@@ -316,6 +318,26 @@ static void signal_hander(int sig)
 	event_base_loopexit(base, NULL);
 }
 
+static void segv_handler(int sig, siginfo_t *info, void *secret)
+{
+	int childpid;
+	
+	t01_log(T01_WARNING, "    T01Log crashed by signal: %d", sig);
+	t01_log(T01_WARNING,
+        "    SIGSEGV caused by address: %p", (void*)info->si_addr);
+	if ((childpid=fork()) != 0) {
+		struct sigaction act;
+		sigemptyset (&act.sa_mask);
+	 	act.sa_flags = SA_NODEFER | SA_ONSTACK | SA_RESETHAND;
+		act.sa_handler = SIG_DFL;
+	 	sigaction (sig, &act, NULL);
+		kill(getpid(),sig);
+		exit(0);	/* parent exits */
+	}
+	t01_log(T01_WARNING, "Restarting childpid %d", getpid());
+	execv(argv_[0], argv_);
+}
+
 static void usage()
 {
 	const char *cmd = "t01log";
@@ -384,6 +406,15 @@ static void parse_options(int argc, char **argv)
 	}
 	if (nthreads > MAX_THREADS || nthreads <= 0)
 		nthreads = 4;
+
+	{
+		argv_ = malloc(sizeof(char*)*(argc+1));
+		argv_[argc] = NULL;
+		while (argc > 0) {
+			argv_[argc - 1] = strdup(argv[argc -1]);
+			argc--;
+		}
+	}
 }
 
 static void daemonize(void)
@@ -421,6 +452,16 @@ int main(int argc, char *argv[])
 
 	signal(SIGINT, signal_hander);
 	signal(SIGTERM, signal_hander);
+	{
+		 struct sigaction act;
+		 sigemptyset(&act.sa_mask);
+		 act.sa_flags = SA_NODEFER | SA_RESETHAND | SA_SIGINFO;
+		 act.sa_sigaction = segv_handler;
+		 sigaction(SIGSEGV, &act, NULL);
+		 sigaction(SIGBUS, &act, NULL);
+		 sigaction(SIGFPE, &act, NULL);
+		 sigaction(SIGILL, &act, NULL);
+	}
 
 	setup_threads();
 
