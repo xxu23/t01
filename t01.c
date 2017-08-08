@@ -321,6 +321,7 @@ static void load_config(const char *filename)
 	get_string_from_json(item, json, "filter", tconfig.filter);
 	get_string_from_json(item, json, "engine", tconfig.engine);
 	get_string_from_json(item, json, "engine_opt", tconfig.engine_opt);
+	get_int_from_json(item, json, "engine_reconnect", tconfig.engine_reconnect);
 	get_int_from_json(item, json, "daemon", tconfig.daemon_mode);
 	get_string_from_json(item, json, "master_ip", tconfig.master_ip);
 	get_int_from_json(item, json, "master_port", tconfig.master_port);
@@ -1669,6 +1670,7 @@ static void init_engine()
 		if (init_ioengine(&mirror_engine, tconfig.engine_opt) < 0) {
 			t01_log(T01_WARNING, "Unable to init mirror engine %s",
 				tconfig.engine);
+			mirror = tconfig.engine_reconnect > 0;		
 		} else {
 			mirror = 1;
 		}
@@ -1676,6 +1678,7 @@ static void init_engine()
 		if (init_ioengine(&backup_engine, tconfig.engine_opt) < 0) {
 			t01_log(T01_WARNING, "Unable to init backup engine %s",
 				tconfig.engine);
+			backup = tconfig.engine_reconnect > 0;		
 		} else {
 			backup = 1;
 		}

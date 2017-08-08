@@ -56,6 +56,7 @@ struct t01_config {
 	char filter[MAX_FILTERS * 16];
 	char engine[64];
 	char engine_opt[256];
+	int engine_reconnect;
 	int daemon_mode;
 	char master_ip[32];
 	int master_port;
