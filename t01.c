@@ -554,7 +554,11 @@ static void segv_handler(int sig, siginfo_t *info, void *secret)
 				"    T01 crashed by signal: %d", sig);
 	t01_log(T01_WARNING,
         "    SIGSEGV caused by address: %p", (void*)info->si_addr);
-	if ((childpid=fork()) != 0) {
+
+    evhttp_free(http);
+    event_base_loopexit(base, NULL);
+
+    if ((childpid=fork()) != 0) {
 		struct sigaction act;
 		sigemptyset (&act.sa_mask);
 	 	act.sa_flags = SA_NODEFER | SA_ONSTACK | SA_RESETHAND;
@@ -564,6 +568,8 @@ static void segv_handler(int sig, siginfo_t *info, void *secret)
 		exit(0);	/* parent exits */
 	}
 	t01_log(T01_WARNING, "Restarting childpid %d", getpid());
+
+
 	execv(argv_[0], argv_);
 }
 
