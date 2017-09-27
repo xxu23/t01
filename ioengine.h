@@ -42,6 +42,8 @@ struct ioengine_data {
 	void *private;
 	char *args;
 	int flag;
+	int count;
+	uint64_t ts;
 	struct ioengine_ops *io_ops;
 };
 
@@ -52,7 +54,7 @@ struct ioengine_ops {
 	int (*disconnect) (struct ioengine_data *);
 	int (*ping) (struct ioengine_data *);
 	int (*show_help) ();
-	int (*write) (struct ioengine_data *, const char *, int, const char *, int);
+	int (*write) (struct ioengine_data *, const char *, int, const char *, int, int);
 };
 
 extern int load_ioengine(struct ioengine_data *ed, const char *name);

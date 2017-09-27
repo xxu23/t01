@@ -44,6 +44,8 @@
 
 static ZLIST_HEAD(engine_list);
 
+static const int MAX_FLUSH_ITEM = 1000;
+
 void unregister_ioengine(struct ioengine_ops *ops)
 {
 	t01_log(T01_DEBUG, "ioengine %s unregistered", ops->name);
@@ -74,7 +76,7 @@ int init_ioengine(struct ioengine_data *td, const char *args)
 		args);
 	td->args = zstrdup(args);
 	if (td->io_ops->connect) {
-		int ret = td->io_ops->connect(td, args);
+        int ret = td->io_ops->connect(td, args);
 		td->flag = ret == 0;
 		return ret;
 	}
@@ -99,7 +101,7 @@ int check_ioengine(struct ioengine_data *td)
 	return 0;
 }
 
-typedef int (*write_engine)(struct ioengine_data *, const char *, int, const char *, int);
+typedef int (*write_engine)(struct ioengine_data *, const char *, int, const char *, int, int);
 
 int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
 				  int len, uint8_t protocol, uint64_t ts,
@@ -108,10 +110,16 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
 {
 	write_engine write = td->io_ops->write;
 	int ret;
+    int flush = 0;
+    if (++td->count >= MAX_FLUSH_ITEM || ts - td->ts >= 5) {
+        flush = 1;
+        td->count = 0;
+        td->ts = ts;
+    }
 
 	if (!write || td->flag == 0)
 		return -1;
-	ret = write(td, "raw_queue", 9, data, len);
+	ret = write(td, "raw_queue", 9, data, len, flush);
 	td->flag = ret > 0;
 	return ret;
 }
@@ -122,6 +130,11 @@ int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
 {
 	struct ndpi_flow_info *flow = (struct ndpi_flow_info *)flow_;
 	write_engine write = td->io_ops->write;
+    int flush = 0;
+    if (++td->count >= MAX_FLUSH_ITEM) {
+        flush = 1;
+        td->count = 0;
+    }
 
 	if (!write || td->flag == 0)
 		return -1;
@@ -226,7 +239,7 @@ int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
 	msgpack_pack_str_body(&pk, "when", 4);
 	msgpack_pack_uint32(&pk, ts / 1000);
 
-	len = write(td, "payload_queue", 13, sbuf.data, sbuf.size);
+	len = write(td, "payload_queue", 13, sbuf.data, sbuf.size, flush);
 clean:
 	msgpack_sbuffer_destroy(&sbuf);
 	td->flag = len > 0;
@@ -252,7 +265,7 @@ int load_ioengine(struct ioengine_data *data, const char *name)
 	struct ioengine_ops *ops;
 	char engine[64];
 
-	t01_log(T01_NOTICE, "load ioengine %s", name);
+	t01_log(T01_NOTICE, "load ioengine %s into %p", name, data);
 
 	engine[sizeof(engine) - 1] = '\0';
 	strncpy(engine, name, sizeof(engine) - 1);

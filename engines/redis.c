@@ -45,7 +45,7 @@ static int redis_disconnect(struct ioengine_data *td)
 static int redis_ping(struct ioengine_data *td) {
 	redisContext *c = (redisContext *)td->private;
 	redisReply *reply = (redisReply*)redisCommand(c, "ping");  
-    	if(reply == NULL) {
+	if(reply == NULL) {
 		return -1;
 	} else {
 		freeReplyObject(reply);
@@ -62,7 +62,7 @@ static int redis_show_help()
 }
 
 static int redis_write(struct ioengine_data *td, const char *args,
-			int args_len, const char *buffer, int len)
+			int args_len, const char *buffer, int len, int flush)
 {
 	redisContext *c = (redisContext *) td->private;
 	redisReply *reply;

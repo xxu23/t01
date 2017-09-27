@@ -49,7 +49,7 @@ static int netmap_show_help()
 }
 
 static int netmap_write(struct ioengine_data *td, const char *args, int args_len,
-		       const char *buffer, int len)
+		       const char *buffer, int len, int flush)
 {
 	struct nm_desc *nmr = (struct nm_desc *) td->private;
 	struct pollfd pfd;
