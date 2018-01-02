@@ -110,16 +110,16 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
 {
 	write_engine write = td->io_ops->write;
 	int ret;
-    int flush = 0;
-    if (++td->count >= MAX_FLUSH_ITEM || ts - td->ts >= 5) {
-        flush = 1;
-        td->count = 0;
-        td->ts = ts;
-    }
+	int flush = 0;
+	if (++td->count >= MAX_FLUSH_ITEM || ts - td->ts >= 5) {
+		flush = 1;
+		td->count = 0;
+		td->ts = ts;
+	}
 
 	if (!write || td->flag == 0)
 		return -1;
-	ret = write(td, "raw_queue", 9, data, len, flush);
+	ret = write(td, "raw_queue", 9, data, len, flush == 0 ? 0 : td->count);
 	td->flag = ret > 0;
 	return ret;
 }
@@ -130,11 +130,11 @@ int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
 {
 	struct ndpi_flow_info *flow = (struct ndpi_flow_info *)flow_;
 	write_engine write = td->io_ops->write;
-    int flush = 0;
-    if (++td->count >= MAX_FLUSH_ITEM) {
-        flush = 1;
-        td->count = 0;
-    }
+	int flush = 0;
+	if (++td->count >= MAX_FLUSH_ITEM) {
+		flush = 1;
+		td->count = 0;
+	}
 
 	if (!write || td->flag == 0)
 		return -1;
@@ -239,7 +239,7 @@ int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
 	msgpack_pack_str_body(&pk, "when", 4);
 	msgpack_pack_uint32(&pk, ts / 1000);
 
-	len = write(td, "payload_queue", 13, sbuf.data, sbuf.size, flush);
+	len = write(td, "payload_queue", 13, sbuf.data, sbuf.size, flush == 0 ? 0 : td->count);
 clean:
 	msgpack_sbuffer_destroy(&sbuf);
 	td->flag = len > 0;

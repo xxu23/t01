@@ -76,12 +76,20 @@ static int redis_write(struct ioengine_data *td, const char *args,
 	v[2] = buffer;
 	vlen[2] = len;
 
-	reply = redisCommandArgv(c, 3, v, vlen);
-	if (reply) {
-		freeReplyObject(reply);
+	if (redisAppendCommandArgv(c, 3, v, vlen) < 0)
+		return -1;
+
+	if (flush) {
+		int i;
+		for (i = 0; i < flush; i++) {
+			redisGetReply(c, &reply); 
+			if (reply == NULL) {
+				continue;
+			}
+			freeReplyObject(reply);
+		}
 		return len;
 	}
-	return -1;
 }
 
 static struct ioengine_ops ioengine = {
