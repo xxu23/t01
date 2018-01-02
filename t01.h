@@ -35,13 +35,18 @@
 #define DEFAULT_RULEDB "/var/lib/t01/dump.tdb"
 #define DEFAULT_PID_FILE "/var/run/t01.pid"
 #define MAX_BACKUP_DATA 65536
+#define MAX_PCAP_DATA 65535
+#define PCAP_PROMISC 1
+#define PCAP_TIMEOUT 0
 
-enum t01_work_mode {NONE_MODE=0x00, NETMAP_MODE=0x01, SLAVE_MODE=0x02, MASTER_MODE=0x04};
+enum t01_work_mode { SLAVE_MODE=0x01, MASTER_MODE=0x02 };
+
+enum t01_eth_mode { NETMAP_MODE=0x01, LIBPCAP_MODE=0x02 };
 
 extern struct event_base *base;
 extern int dirty;
 extern int dirty_before_bgsave;
-extern lastbgsave_status;
+extern int lastbgsave_status;
 extern time_t lastsave;
 extern pid_t tdb_child_pid;
 
@@ -69,6 +74,7 @@ struct t01_config {
 	int cpu_thread;
 	int raw_socket;
 	enum t01_work_mode work_mode;
+	enum t01_eth_mode eth_mode;
 	char this_mac_addr[32];
 	char next_mac_addr[32];
 	unsigned char this_mac[6];

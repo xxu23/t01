@@ -5,7 +5,7 @@
  *
  * This file is part of nDPI, an open source deep packet inspection
  * library based on the OpenDPI and PACE technology by ipoque GmbH
- *
+         *
  * nDPI is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
@@ -170,7 +170,7 @@ int ndpi_workflow_node_cmp(const void *a, const void *b) {
   struct ndpi_flow_info *fa = (struct ndpi_flow_info*)a;
   struct ndpi_flow_info *fb = (struct ndpi_flow_info*)b;
 
-  if(fa->vlan_id   < fb->vlan_id  )   return(-1); else { if(fa->vlan_id   > fb->vlan_id    ) return(1); }
+  if(fa->vlan_ids[0]   < fb->vlan_ids[0]  )   return(-1); else { if(fa->vlan_ids[0]   > fb->vlan_ids[0]    ) return(1); }
   if(fa->lower_ip   < fb->lower_ip  ) return(-1); else { if(fa->lower_ip   > fb->lower_ip  ) return(1); }
   if(fa->lower_port < fb->lower_port) return(-1); else { if(fa->lower_port > fb->lower_port) return(1); }
   if(fa->upper_ip   < fb->upper_ip  ) return(-1); else { if(fa->upper_ip   > fb->upper_ip  ) return(1); }
@@ -245,8 +245,9 @@ void ndpi_workflow_clean_idle_flows(struct ndpi_workflow * workflow, int mandato
 
 static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow,
 						 const u_int8_t version,
-						 u_int16_t vlan_id,
-						 const struct ndpi_iphdr *iph,
+						 u_int16_t* vlan_ids,
+						 u_int8_t total_vlan,
+                                                 const struct ndpi_iphdr *iph,
 						 const struct ndpi_ipv6hdr *iph6,
 						 u_int16_t ip_offset,
 						 u_int16_t ipsize,
@@ -370,7 +371,9 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
     upper_port = 0;
   }
 
-  flow.protocol = iph->protocol, flow.vlan_id = vlan_id;
+  flow.protocol = iph->protocol;
+  memcpy(flow.vlan_ids, vlan_ids, sizeof(flow.vlan_ids));
+  flow.total_vlan = total_vlan;
   flow.lower_ip = lower_ip, flow.upper_ip = upper_ip;
   flow.lower_port = lower_port, flow.upper_port = upper_port;
 
@@ -384,7 +387,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
     NDPI_LOG(0, workflow.ndpi_struct, NDPI_LOG_DEBUG, "[NDPI] [%u][%u:%u <-> %u:%u]\n",
 	     iph->protocol, lower_ip, ntohs(lower_port), upper_ip, ntohs(upper_port));
 
-  idx = (vlan_id + lower_ip + upper_ip + iph->protocol + lower_port + upper_port) % workflow->prefs.num_roots;
+  idx = (vlan_ids[0] + lower_ip + upper_ip + iph->protocol + lower_port + upper_port) % workflow->prefs.num_roots;
   ret = ndpi_tfind(&flow, &workflow->ndpi_flows_root[idx], ndpi_workflow_node_cmp);
 
   if(ret == NULL) {
@@ -404,12 +407,14 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
 
       memset(newflow, 0, sizeof(struct ndpi_flow_info));
       newflow->magic = NDPI_FLOW_MAGIC;
-      newflow->protocol = iph->protocol, newflow->vlan_id = vlan_id;
+      newflow->protocol = iph->protocol;
+      memcpy(newflow->vlan_ids, vlan_ids, sizeof(newflow->vlan_ids));
       newflow->lower_ip = lower_ip, newflow->upper_ip = upper_ip;
       newflow->lower_port = lower_port, newflow->upper_port = upper_port;
       newflow->ip_version = version;
       newflow->src_ipid = id; 
       newflow->src_ttl = ttl;
+      newflow->total_vlan = total_vlan;
       
       if(flag == 0){ newflow->src_ip = lower_ip; newflow->dst_ip = upper_ip; newflow->src_port = ntohs(lower_port); newflow->dst_port = ntohs(upper_port); }
       else{ newflow->src_ip = upper_ip; newflow->dst_ip = lower_ip; newflow->src_port = ntohs(upper_port); newflow->dst_port = ntohs(lower_port); }
@@ -486,7 +491,8 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
 /* ****************************************************** */
 
 static struct ndpi_flow_info *get_ndpi_flow_info6(struct ndpi_workflow * workflow,
-						  u_int16_t vlan_id,
+						  u_int16_t *vlan_ids,
+						  u_int8_t total_vlan,
 						  const struct ndpi_ipv6hdr *iph6,
 						  u_int16_t ip_offset,
 						  struct ndpi_tcphdr **tcph,
@@ -512,7 +518,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info6(struct ndpi_workflow * workflo
     iph.protocol = options[0];
   }
 
-  return(get_ndpi_flow_info(workflow, 6, vlan_id, &iph, iph6, ip_offset,
+  return(get_ndpi_flow_info(workflow, 6, vlan_ids, total_vlan, &iph, iph6, ip_offset,
 			    sizeof(struct ndpi_ipv6hdr),
 			    ntohs(iph6->ip6_ctlun.ip6_un1.ip6_un1_plen),
 			    tcph, udph, sport, dport,
@@ -524,7 +530,8 @@ static struct ndpi_flow_info *get_ndpi_flow_info6(struct ndpi_workflow * workflo
 // ipsize = header->len - ip_offset ; rawsize = header->len
 static unsigned int packet_processing(struct ndpi_workflow * workflow,
 				      const u_int64_t time,
-				      u_int16_t vlan_id,
+				      u_int16_t* vlan_ids,
+				      u_int8_t total_vlan,
 				      const struct ndpi_iphdr *iph,
 				      struct ndpi_ipv6hdr *iph6,
 				      u_int16_t ip_offset,
@@ -540,14 +547,14 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
   u_int8_t src_to_dst_direction= 1;
 
   if(iph)
-    flow = get_ndpi_flow_info(workflow, 4, vlan_id, iph, NULL,
+    flow = get_ndpi_flow_info(workflow, 4, vlan_ids, total_vlan, iph, NULL,
 			      ip_offset, ipsize,
 			      ntohs(iph->tot_len) - (iph->ihl * 4),
 			      &tcph, &udph, &sport, &dport,
 			      &src, &dst, &proto,
 			      &payload, &payload_len, &src_to_dst_direction);
   else
-    flow = get_ndpi_flow_info6(workflow, vlan_id, iph6, ip_offset,
+    flow = get_ndpi_flow_info6(workflow, vlan_ids, total_vlan, iph6, ip_offset,
 			       &tcph, &udph, &sport, &dport,
 			       &src, &dst, &proto,
 			       &payload, &payload_len, &src_to_dst_direction);
@@ -654,6 +661,8 @@ void ndpi_workflow_process_packet (struct ndpi_workflow * workflow, struct nm_pk
   u_int16_t ip_offset, ip_len, ip6_offset;
   u_int16_t frag_off = 0, vlan_id = 0;
   u_int8_t proto = 0;
+  u_int8_t total_vlan = 0;
+  u_int16_t vlan_ids[MAX_VLAN_COUNT] = {0};
   u_int32_t label;
 
   /* counters */
@@ -700,10 +709,14 @@ void ndpi_workflow_process_packet (struct ndpi_workflow * workflow, struct nm_pk
   /* check ether type */
   switch(type) {
     case VLAN:
+vlan_check:
       vlan_id = ((packet[ip_offset] << 8) + packet[ip_offset+1]) & 0xFFF;
       type = (packet[ip_offset+2] << 8) + packet[ip_offset+3];
       ip_offset += 4;
       vlan_packet = 1;
+      if (total_vlan < MAX_VLAN_COUNT)
+          vlan_ids[total_vlan++] = vlan_id;
+      if (type == VLAN) goto vlan_check;
       break;
     case MPLS_UNI:
     case MPLS_MULTI:
@@ -853,7 +866,7 @@ void ndpi_workflow_process_packet (struct ndpi_workflow * workflow, struct nm_pk
 	  offset += tag_len;
 
 	  if(offset >= header->caplen)
-	    return; /* Invalid packet */
+          return; /* Invalid packet */
 	  else {
 	    eth_offset = offset;
 	    goto datalink_check;
@@ -864,6 +877,6 @@ void ndpi_workflow_process_packet (struct ndpi_workflow * workflow, struct nm_pk
   }
 
   /* process the packet */
-  packet_processing(workflow, time, vlan_id, iph, iph6,
+  packet_processing(workflow, time, vlan_ids, total_vlan, iph, iph6,
 		    ip_offset, header->len - ip_offset, header->len);
 }

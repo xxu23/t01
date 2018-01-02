@@ -54,10 +54,13 @@
 #include "t01.h"
 #include "http-server.h"
 #include "zmalloc.h"
+#include "util.h"
 #include "lfq.h"
 #include <cJSON.h>
 #include <net/netmap_user.h>
 #include <event.h>
+#include <pcap.h>
+#include <time.h>
 
 struct backup_data {
 	char *buffer;
@@ -127,6 +130,9 @@ static pthread_spinlock_t hitlog_lock;
 static char *bind_ip;
 static int bind_port;
 static char** argv_;
+char errBuf[PCAP_ERRBUF_SIZE];
+pcap_t *device;
+pcap_t *out_device;
 
 
 static struct filter_strategy {
@@ -284,7 +290,7 @@ static void load_config(const char *filename)
 	long size;
 	char *data;
 	cJSON *json, *item;
-	char wm[64], sm[64] = {0};
+	char wm[64], sm[64] = {0}, ethm[64];
 
 	/* Read content from file */
 	fp = fopen(filename, "r");
@@ -332,6 +338,7 @@ static void load_config(const char *filename)
 	get_int_from_json(item, json, "id", tconfig.id);
 	get_int_from_json(item, json, "cpu_thread", tconfig.cpu_thread);
 	get_string_from_json(item, json, "work_mode", wm);
+	get_string_from_json(item, json, "eth_mode", ethm);
 	get_string_from_json(item, json, "send_mode", sm);
 	get_string_from_json(item, json, "this_mac", tconfig.this_mac_addr);
 	get_string_from_json(item, json, "next_mac", tconfig.next_mac_addr);
@@ -341,8 +348,15 @@ static void load_config(const char *filename)
 		tconfig.work_mode = SLAVE_MODE;
 	else if(strcasecmp(wm, "master") == 0)
 		tconfig.work_mode = MASTER_MODE;
-	else if(strcasecmp(wm, "netmap") == 0)
-		tconfig.work_mode =NETMAP_MODE;
+    else
+        tconfig.work_mode = SLAVE_MODE;
+
+    if(strcasecmp(ethm, "netmap") == 0)
+        tconfig.eth_mode = NETMAP_MODE;
+    else if(strcasecmp(ethm, "libpcap") == 0)
+		tconfig.eth_mode = LIBPCAP_MODE;
+    else
+        tconfig.eth_mode = LIBPCAP_MODE;
 
 	if (sm[0] == 0 || strcasecmp(sm, "netmap") == 0)
 		tconfig.raw_socket = 0;
@@ -522,13 +536,11 @@ static void parse_options(int argc, char **argv)
 			"Master address should be specified in master/slave mode\n");
 		usage();
 	}
-	if (tconfig.work_mode & SLAVE_MODE || tconfig.work_mode == NONE_MODE)
-		tconfig.work_mode |= NETMAP_MODE;
 
-	if (tconfig.work_mode & NETMAP_MODE && tconfig.ifname[0] == 0
+	if (tconfig.work_mode & SLAVE_MODE && tconfig.ifname[0] == 0
 	    && tconfig.ruledb[0] == 0) {
 		fprintf(stderr,
-			"Incoming interface should be specified in netmap/slave mode\n");
+			"Incoming interface should be specified in slave mode\n");
 		usage();
 	}
 	if (tconfig.ruledb[0] == 0)
@@ -549,7 +561,7 @@ static void parse_options(int argc, char **argv)
 static void segv_handler(int sig, siginfo_t *info, void *secret)
 {
 	int childpid;
-	
+
 	t01_log(T01_WARNING,
 				"    T01 crashed by signal: %d", sig);
 	t01_log(T01_WARNING,
@@ -578,10 +590,6 @@ static void signal_hander(int sig)
  	static int called = 0;
 	int save = dirty != 0;
 	t01_log(T01_WARNING, "Received control-C, shutdowning");
-	if (called)
-		return;
-	else
-		called = 1;
 	if (save) {
 		t01_log(T01_NOTICE,
 			"Saving the final TDB snapshot before exiting.");
@@ -763,7 +771,6 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
 				   struct ndpi_flow_info *flow, void *header,
 				   void *packet)
 {
-
 	if (flow->detected_protocol.protocol == NDPI_PROTOCOL_UNKNOWN) {
 		flow->detected_protocol =
 		    ndpi_guess_undetected_protocol(workflow->ndpi_struct,
@@ -958,10 +965,14 @@ static void *attack_thread(void *args)
 			continue;
 		}
 
-		if (out_nmr)
-			nm_inject(out_nmr, result, len);
-		else
-			write(sendfd, result, len);
+        if (tconfig.eth_mode & NETMAP_MODE) {
+            if (out_nmr)
+                nm_inject(out_nmr, result, len);
+            else
+                write(sendfd, result, len);
+        } else if (tconfig.eth_mode & LIBPCAP_MODE) {
+            pcap_inject(out_device, result, len);
+        }
 
 		if (tconfig.verbose) {
 			char l[48], u[48];
@@ -1055,10 +1066,10 @@ static void *mirror_thread(void *args)
 					       fb->saddr, fb->sport, fb->daddr,
 					       fb->dport) < 0) {
 				time_t now = time(NULL);
-				if (now - last < 5) 
+				if (now - last < 5)
 					continue;
 
-				t01_log(T01_WARNING, 
+				t01_log(T01_WARNING,
 					"failed to write mirror ioengine, reconnect every 5 seconds");
 				check_ioengine(&mirror_engine);
 				last = now;
@@ -1106,14 +1117,14 @@ static void *backup_thread(void *args)
 						   flow->detected_protocol.
 						   protocol));
 
-		
+
 		if (store_payload_via_ioengine(&backup_engine, flow, protocol,
 					   d->buffer, d->len) < 0) {
 			time_t now = time(NULL);
-			if (now - last < 5) 
+			if (now - last < 5)
 				continue;
 
-			t01_log(T01_WARNING, 
+			t01_log(T01_WARNING,
 				"failed to write backup ioengine, reconnect every 5 seconds");
 			check_ioengine(&backup_engine);
 			last = now;
@@ -1185,12 +1196,12 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg)
 
 	if (tot_usec > 0) {
 		char buf[32], buf1[32];
-		cur_pkts_per_second_in = 
+		cur_pkts_per_second_in =
 			curr_ip_packet_count * 1000000.0 / tot_usec;
-		cur_bytes_per_second_in = 
+		cur_bytes_per_second_in =
 			curr_total_wire_bytes * 8 * 1000000.0 / tot_usec;
 		printf("\tTraffic throughput:    %s pps / %s/sec\n",
-			format_packets(curr_ip_packet_count, buf), 
+			format_packets(curr_ip_packet_count, buf),
 			format_traffic(cur_bytes_per_second_in, 1, buf1));
 		printf("\tTraffic duration:      %.3f sec\n",
 		       tot_usec / 1000000.0);
@@ -1494,6 +1505,22 @@ static void *netmap_thread(void *args)
 	return NULL;
 }
 
+void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *packet)
+{
+	struct nm_pkthdr hdr;
+
+	hdr.ts = pkthdr->ts;
+	hdr.caplen = pkthdr->caplen;
+	hdr.len = pkthdr->len;
+	ndpi_workflow_process_packet(workflow, &hdr, packet);
+	ndpi_workflow_clean_idle_flows(workflow, 0);
+}
+
+static void *libpcap_get_thread(void *args) {
+	int pcap_id = 0;
+	pcap_loop(device, -1, get_packet, (u_char*)&pcap_id);
+}
+
 static void main_thread()
 {
 	int err, i, nthreads = 0, j = 0;
@@ -1507,7 +1534,7 @@ static void main_thread()
 
 	gettimeofday(&last_report_ts, NULL);
 
-	if (tconfig.work_mode & NETMAP_MODE &&
+	if (tconfig.eth_mode & NETMAP_MODE &&
 	    pthread_create(&threads[nthreads++], NULL, netmap_thread,
 			   &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create netmap thread: %s",
@@ -1516,8 +1543,17 @@ static void main_thread()
 	} else {
 		sleep(1);
 	}
+    if (tconfig.eth_mode & LIBPCAP_MODE &&
+        pthread_create(&threads[nthreads++], NULL, libpcap_get_thread,
+                       &affinity[j++]) != 0) {
+        t01_log(T01_WARNING, "Can't create libpcap_get thread: %s",
+                strerror(errno));
+        exit(1);
+    } else {
+        sleep(1);
+    }
 
-	if (tconfig.work_mode & NETMAP_MODE &&
+	if (tconfig.work_mode & SLAVE_MODE &&
 	    pthread_create(&threads[nthreads++], NULL, attack_thread,
 			   &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create attack thread: %s",
@@ -1534,7 +1570,7 @@ static void main_thread()
 		exit(1);
 	}
 
-	if ((tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE)
+	if ((tconfig.work_mode & SLAVE_MODE || tconfig.work_mode & MASTER_MODE)
 	    && pthread_create(&threads[nthreads++], NULL, libevent_thread,
 			      &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create libevent thread: %s",
@@ -1629,6 +1665,28 @@ static void init_netmap()
 	workflow = setup_detection();
 }
 
+static void init_libpcap()
+{
+	device = pcap_open_live(tconfig.ifname, MAX_PCAP_DATA, PCAP_PROMISC, PCAP_TIMEOUT, errBuf);
+	if(!device)
+	{
+		t01_log(T01_WARNING, "error device pcap_open_live(): %s", errBuf);
+		exit(1);
+	}
+	if(tconfig.ofname[0] == 0 || strcmp(tconfig.ifname, tconfig.ofname) == 0)
+	{
+		out_device = device;
+	} else {
+		out_device = pcap_open_live(tconfig.ofname, MAX_PCAP_DATA, PCAP_PROMISC, PCAP_TIMEOUT, errBuf);
+		if(!out_device){
+			t01_log(T01_WARNING, "error out_device pcap_open_live(): %s", errBuf);
+			exit(1);
+		}
+	}
+
+	workflow = setup_detection();
+}
+
 static void init_engine()
 {
 	if (tconfig.filter[0]) {
@@ -1675,7 +1733,7 @@ static void init_engine()
 		if (init_ioengine(&mirror_engine, tconfig.engine_opt) < 0) {
 			t01_log(T01_WARNING, "Unable to init mirror engine %s",
 				tconfig.engine);
-			mirror = tconfig.engine_reconnect > 0;		
+			mirror = tconfig.engine_reconnect > 0;
 		} else {
 			mirror = 1;
 		}
@@ -1683,7 +1741,7 @@ static void init_engine()
 		if (init_ioengine(&backup_engine, tconfig.engine_opt) < 0) {
 			t01_log(T01_WARNING, "Unable to init backup engine %s",
 				tconfig.engine);
-			backup = tconfig.engine_reconnect > 0;		
+			backup = tconfig.engine_reconnect > 0;
 		} else {
 			backup = 1;
 		}
@@ -1704,7 +1762,7 @@ static void init_rulemgmt()
 		}
 	}
 
-	if (tconfig.work_mode & NETMAP_MODE) {
+	if (tconfig.work_mode & SLAVE_MODE) {
 		bind_ip = tconfig.rule_ip;
 		bind_port = tconfig.rule_port;
 	} else {
@@ -1748,9 +1806,17 @@ static void exit_netmap()
 
 static void exit_rulemgmt()
 {
-	if (tconfig.work_mode & NETMAP_MODE)
-		destroy_rules();
+	destroy_rules();
 	close_listening_sockets();
+}
+
+static void exit_libpcap()
+{
+  pcap_breakloop(device);
+	pcap_close(device);
+	if(out_device && out_device != device){
+		pcap_close(out_device);
+	}
 }
 
 int main(int argc, char **argv)
@@ -1759,10 +1825,12 @@ int main(int argc, char **argv)
 
 	init_system();
 	init_engine();
-	if (tconfig.work_mode & NETMAP_MODE)
+
+	if (tconfig.eth_mode & NETMAP_MODE)
 		init_netmap();
-	if (tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE)
-		init_rulemgmt();
+    else if (tconfig.eth_mode & LIBPCAP_MODE)
+        init_libpcap();
+    init_rulemgmt();
 
 	signal(SIGINT, signal_hander);
 	signal(SIGTERM, signal_hander);
@@ -1778,10 +1846,11 @@ int main(int argc, char **argv)
 	}
 	main_thread();
 
-	if (tconfig.work_mode & NETMAP_MODE)
+	if (tconfig.eth_mode & NETMAP_MODE)
 		exit_netmap();
-	if (tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE)
-		exit_rulemgmt();
+    else if (tconfig.eth_mode & LIBPCAP_MODE)
+        exit_libpcap();
+    exit_rulemgmt();
 
 	return 0;
 }

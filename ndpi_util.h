@@ -40,6 +40,8 @@
 
 #define NDPI_FLOW_MAGIC    0xbeafdead
 
+#define MAX_VLAN_COUNT              4
+
 #define NETMAP_WITH_LIBS 1
 #include <net/netmap_user.h>
 
@@ -57,7 +59,7 @@ typedef struct ndpi_flow_info {
   u_int16_t src_port;
   u_int16_t dst_port;
   u_int8_t detection_completed, protocol;
-  u_int16_t vlan_id;
+  u_int16_t vlan_ids[MAX_VLAN_COUNT];
   u_int8_t ip_version;
   u_int8_t payload_offset;
   u_int8_t src_ttl;
@@ -66,6 +68,7 @@ typedef struct ndpi_flow_info {
   u_int64_t last_seen;
   u_int64_t bytes;
   u_int32_t packets;
+  u_int8_t total_vlan;
 
   struct ndpi_flow_struct *ndpi_flow;
 
