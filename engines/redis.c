@@ -89,6 +89,8 @@ static int redis_write(struct ioengine_data *td, const char *args,
 			freeReplyObject(reply);
 		}
 		return len;
+	} else {
+		return len;
 	}
 }
 
