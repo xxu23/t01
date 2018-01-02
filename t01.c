@@ -60,7 +60,6 @@
 #include <net/netmap_user.h>
 #include <event.h>
 #include <pcap.h>
-#include <time.h>
 
 struct backup_data {
 	char *buffer;
@@ -348,15 +347,15 @@ static void load_config(const char *filename)
 		tconfig.work_mode = SLAVE_MODE;
 	else if(strcasecmp(wm, "master") == 0)
 		tconfig.work_mode = MASTER_MODE;
-    else
-        tconfig.work_mode = SLAVE_MODE;
+    	else
+        	tconfig.work_mode = SLAVE_MODE;
 
-    if(strcasecmp(ethm, "netmap") == 0)
-        tconfig.eth_mode = NETMAP_MODE;
-    else if(strcasecmp(ethm, "libpcap") == 0)
+	if(strcasecmp(ethm, "netmap") == 0)
+		tconfig.eth_mode = NETMAP_MODE;
+	else if(strcasecmp(ethm, "libpcap") == 0)
 		tconfig.eth_mode = LIBPCAP_MODE;
-    else
-        tconfig.eth_mode = LIBPCAP_MODE;
+	else
+		tconfig.eth_mode = LIBPCAP_MODE;
 
 	if (sm[0] == 0 || strcasecmp(sm, "netmap") == 0)
 		tconfig.raw_socket = 0;
@@ -1534,8 +1533,9 @@ static void main_thread()
 
 	gettimeofday(&last_report_ts, NULL);
 
-	if (tconfig.eth_mode & NETMAP_MODE &&
-	    pthread_create(&threads[nthreads++], NULL, netmap_thread,
+	if (tconfig.work_mode & SLAVE_MODE &&
+		tconfig.eth_mode & NETMAP_MODE &&
+		pthread_create(&threads[nthreads++], NULL, netmap_thread,
 			   &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create netmap thread: %s",
 			strerror(errno));
@@ -1543,18 +1543,20 @@ static void main_thread()
 	} else {
 		sleep(1);
 	}
-    if (tconfig.eth_mode & LIBPCAP_MODE &&
-        pthread_create(&threads[nthreads++], NULL, libpcap_get_thread,
-                       &affinity[j++]) != 0) {
-        t01_log(T01_WARNING, "Can't create libpcap_get thread: %s",
-                strerror(errno));
-        exit(1);
-    } else {
-        sleep(1);
-    }
 
 	if (tconfig.work_mode & SLAVE_MODE &&
-	    pthread_create(&threads[nthreads++], NULL, attack_thread,
+		tconfig.eth_mode & LIBPCAP_MODE &&
+		pthread_create(&threads[nthreads++], NULL, libpcap_get_thread,
+                       &affinity[j++]) != 0) {
+        	t01_log(T01_WARNING, "Can't create libpcap_get thread: %s",
+                strerror(errno));
+        exit(1);
+	} else {
+		sleep(1);
+	}
+
+	if (tconfig.work_mode & SLAVE_MODE &&
+		pthread_create(&threads[nthreads++], NULL, attack_thread,
 			   &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create attack thread: %s",
 			strerror(errno));
@@ -1563,15 +1565,14 @@ static void main_thread()
 
 	if ((tconfig.work_mode & SLAVE_MODE ||
 	     (tconfig.hit_ip[0] && tconfig.hit_port)) &&
-	    pthread_create(&threads[nthreads++], NULL, hitslog_thread,
+		pthread_create(&threads[nthreads++], NULL, hitslog_thread,
 			   &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create hitslog thread: %s",
 			strerror(errno));
 		exit(1);
 	}
 
-	if ((tconfig.work_mode & SLAVE_MODE || tconfig.work_mode & MASTER_MODE)
-	    && pthread_create(&threads[nthreads++], NULL, libevent_thread,
+	if (pthread_create(&threads[nthreads++], NULL, libevent_thread,
 			      &affinity[j++]) != 0) {
 		t01_log(T01_WARNING, "Can't create libevent thread: %s",
 			strerror(errno));
@@ -1825,12 +1826,15 @@ int main(int argc, char **argv)
 
 	init_system();
 	init_engine();
+	printf("%d %d\n", tconfig.work_mode, tconfig.eth_mode);
 
-	if (tconfig.eth_mode & NETMAP_MODE)
-		init_netmap();
-    else if (tconfig.eth_mode & LIBPCAP_MODE)
-        init_libpcap();
-    init_rulemgmt();
+	if (tconfig.work_mode & SLAVE_MODE) {
+		if (tconfig.eth_mode & NETMAP_MODE)
+			init_netmap();
+		else if (tconfig.eth_mode & LIBPCAP_MODE)
+			init_libpcap();
+	}
+	init_rulemgmt();
 
 	signal(SIGINT, signal_hander);
 	signal(SIGTERM, signal_hander);
@@ -1846,11 +1850,13 @@ int main(int argc, char **argv)
 	}
 	main_thread();
 
-	if (tconfig.eth_mode & NETMAP_MODE)
-		exit_netmap();
-    else if (tconfig.eth_mode & LIBPCAP_MODE)
-        exit_libpcap();
-    exit_rulemgmt();
+	if (tconfig.work_mode & SLAVE_MODE) {
+		if (tconfig.eth_mode & NETMAP_MODE)
+			exit_netmap();
+		else if (tconfig.eth_mode & LIBPCAP_MODE)
+			exit_libpcap();
+	}
+	exit_rulemgmt();
 
 	return 0;
 }

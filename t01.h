@@ -41,7 +41,7 @@
 
 enum t01_work_mode { SLAVE_MODE=0x01, MASTER_MODE=0x02 };
 
-enum t01_eth_mode { NETMAP_MODE=0x01, LIBPCAP_MODE=0x02 };
+enum t01_eth_mode { NETMAP_MODE=0x010, LIBPCAP_MODE=0x20 };
 
 extern struct event_base *base;
 extern int dirty;
