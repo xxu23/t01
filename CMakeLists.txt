@@ -4,8 +4,6 @@ project(t01)
 option(USE_JEMALLOC "used jemalloc as replacement for libc malloc" ON)
 option(LIBPCAP_PFRING "used libpcap ported for pfring" OFF)
 
-message(${LIBPCAP_PFRING}, ${USE_JEMALLOC})
-
 set(CMAKE_BUILD_TYPE Release)
 
 include_directories( "./" )
@@ -42,18 +40,16 @@ SET(MAIN_LINK_LIB m pthread
         ${PROJECT_SOURCE_DIR}/3rd/lib/libmsgpackc.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
 
-if (LIBPCAP_PFRING)
-    SET(MAIN_LINK_LIB ${MAIN_LINK_LIB}
-            ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpfring.a
-            ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpcap.a)
-    add_executable(t01-pfring ${MAIN_SRC})
-    target_link_libraries(t01-pfring ${MAIN_LINK_LIB} ${EXTRA_LIBS})
-else()
-    SET(MAIN_LINK_LIB ${MAIN_LINK_LIB}
-            ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/libpcap.a)
-    add_executable(t01 ${MAIN_SRC})
-    target_link_libraries(t01 ${MAIN_LINK_LIB} ${EXTRA_LIBS})
-endif(LIBPCAP_PFRING)
+SET(T01_PFRING_LINK_LIB ${MAIN_LINK_LIB}
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpfring.a
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpcap.a)
+add_executable(t01-pfring ${MAIN_SRC})
+target_link_libraries(t01-pfring ${T01_PFRING_LINK_LIB} ${EXTRA_LIBS})
+
+SET(T01_LINK_LIB ${MAIN_LINK_LIB}
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/libpcap.a)
+add_executable(t01 ${MAIN_SRC})
+target_link_libraries(t01 ${T01_LINK_LIB} ${EXTRA_LIBS})
 
 add_executable(tests_rule tests/tests_rule.c logger.c zmalloc.c rule.c crc64.c util.c ${THIRD_SRC})
 target_link_libraries(tests_rule m pthread)
