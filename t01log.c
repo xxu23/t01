@@ -40,7 +40,7 @@
 #include <pthread.h>
 
 #include "mysql.h"
-#include "queue.h"
+#include "libhl/queue.h"
 #include "logger.h"
 #include "anet.h"
 #include "event.h"
@@ -124,7 +124,7 @@ static void *mysql_thread(void *args)
 		struct log_rz_2 *log = NULL;
 		time_t t1;
 
-		queue_get(queues[tid], (void **)&log);
+		queue_pop_left(queues[tid], (void **)&log);
 		if (!log) {
 			nanosleep(&ts, NULL);
 			continue;
@@ -204,7 +204,7 @@ void udp_server_can_read(int fd, short event, void *ptr)
 	if (log->local_ip == 0)
 		log->local_ip = addr.sin_addr.s_addr;
 
-	queue_put(queues[idx], log);
+	queue_push_right(queues[idx], log);
 
 	idx ++;
 	if(idx == nthreads) idx = 0;
