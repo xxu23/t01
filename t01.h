@@ -86,7 +86,6 @@ struct t01_config {
 
 extern struct t01_config tconfig;
 
-extern uint64_t total_flow_bytes;
 extern uint64_t raw_packet_count;
 extern uint64_t ip_packet_count;
 extern uint64_t ip_packet_count_out;

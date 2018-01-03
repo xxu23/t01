@@ -48,10 +48,11 @@ target_link_libraries(tests_rule ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
 target_link_libraries(tests_rule z)
 target_link_libraries(tests_rule ${EXTRA_LIBS})
 
-add_executable(t01log t01log.c anet.c queue.c queue_internal.c logger.c util.c zmalloc.c)
+add_executable(t01log t01log.c anet.c logger.c util.c zmalloc.c)
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
 target_link_libraries(t01log m pthread)
 target_link_libraries(t01log ${EXTRA_LIBS})
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libmysqlclient.a)
+target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
 target_link_libraries(t01log z m)
 
