@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 2.6)
 project(t01)
 
-option(USE_JEMALLOC "used jemalloc as replacement for libc malloc" ON) 
+option(USE_JEMALLOC "used jemalloc as replacement for libc malloc" ON)
+option(LIBPCAP_PFRING "used libpcap ported for pfring" OFF)
+
+message(${LIBPCAP_PFRING}, ${USE_JEMALLOC})
+
 set(CMAKE_BUILD_TYPE Release)
 
 include_directories( "./" )
@@ -28,19 +32,28 @@ endif (USE_JEMALLOC)
 SET(THIRD_SRC_DIR 3rd/src/)
 SET(CJSON_SRC_DIR ${THIRD_SRC_DIR}/cJSON)
 SET(THIRD_SRC ${CJSON_SRC_DIR}/cJSON.c)
+SET(MAIN_SRC logger.c t01.c zmalloc.c ndpi_util.c pktgen.c rule.c crc64.c util.c anet.c http-server.c ioengines.c engines/redis.c engines/kafka.c ${THIRD_SRC})
+SET(MAIN_LINK_LIB m pthread
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libndpi.a
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libhiredis.a
+        ${PROJECT_SOURCE_DIR}/3rd/lib/librdkafka.a
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a
+        z
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libmsgpackc.a
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
 
-add_executable(t01 logger.c t01.c zmalloc.c ndpi_util.c pktgen.c rule.c crc64.c util.c anet.c http-server.c ioengines.c engines/redis.c engines/kafka.c ${THIRD_SRC})
-target_link_libraries(t01 m pthread)
-target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libndpi.a)
-target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libhiredis.a)
-target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/librdkafka.a)
-target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
-target_link_libraries(t01 z)
-target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libmsgpackc.a)
-target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libpfring.a)
-target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap.a)
-target_link_libraries(t01 ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
-target_link_libraries(t01 ${EXTRA_LIBS})
+if (LIBPCAP_PFRING)
+    SET(MAIN_LINK_LIB ${MAIN_LINK_LIB}
+            ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpfring.a
+            ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpcap.a)
+    add_executable(t01-pfring ${MAIN_SRC})
+    target_link_libraries(t01-pfring ${MAIN_LINK_LIB} ${EXTRA_LIBS})
+else()
+    SET(MAIN_LINK_LIB ${MAIN_LINK_LIB}
+            ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/libpcap.a)
+    add_executable(t01 ${MAIN_SRC})
+    target_link_libraries(t01 ${MAIN_LINK_LIB} ${EXTRA_LIBS})
+endif(LIBPCAP_PFRING)
 
 add_executable(tests_rule tests/tests_rule.c logger.c zmalloc.c rule.c crc64.c util.c ${THIRD_SRC})
 target_link_libraries(tests_rule m pthread)
