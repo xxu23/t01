@@ -73,6 +73,7 @@ struct t01_config {
 	int id;
 	int cpu_thread;
 	int raw_socket;
+	int restart_if_crash;
 	enum t01_work_mode work_mode;
 	enum t01_eth_mode eth_mode;
 	char this_mac_addr[32];

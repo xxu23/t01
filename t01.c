@@ -55,11 +55,13 @@
 #include "http-server.h"
 #include "zmalloc.h"
 #include "util.h"
-#include "lfq.h"
 #include <cJSON.h>
 #include <net/netmap_user.h>
 #include <event.h>
 #include <pcap.h>
+#include <queue.h>
+
+#define MAX_THREADS 6
 
 struct backup_data {
 	char *buffer;
@@ -103,8 +105,8 @@ struct evhttp_bound_socket *handle;
 struct t01_config tconfig;
 
 static struct ndpi_workflow *workflow;
-static Queue *queue;
-static ZLIST_HEAD(filter_buffer_list);
+static queue_t *attack_queue;
+static queue_t *mirror_queue;
 static ZLIST_HEAD(hitslog_list);
 static struct timeval upstart_tv;
 static char master_address[64];
@@ -124,7 +126,6 @@ static int mirror = 0;
 static int enable_all_protocol = 1;
 static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
-static pthread_spinlock_t mirror_lock;
 static pthread_spinlock_t hitlog_lock;
 static char *bind_ip;
 static int bind_port;
@@ -132,6 +133,8 @@ static char** argv_;
 char errBuf[PCAP_ERRBUF_SIZE];
 pcap_t *device;
 pcap_t *out_device;
+static int nthreads;
+static pthread_t threads[MAX_THREADS];
 
 
 static struct filter_strategy {
@@ -141,7 +144,6 @@ static struct filter_strategy {
 static int n_filters;
 
 struct filter_buffer {
-	struct list_head list;
 	uint64_t ts;
 	int len;
 	int protocol;
@@ -228,6 +230,7 @@ static void netflow_data_clone(void *data, uint32_t n,
 	struct filter_buffer *fb = zmalloc(sizeof(struct filter_buffer) + n);
 	if (!fb)
 		return;
+
 	memcpy(fb->buffer, data, n);
 	fb->len = n;
 	fb->protocol = protocol;
@@ -237,9 +240,7 @@ static void netflow_data_clone(void *data, uint32_t n,
 	fb->daddr = daddr;
 	fb->dport = dport;
 
-	pthread_spin_lock(&mirror_lock);
-	list_add_tail(&fb->list, &filter_buffer_list);
-	pthread_spin_unlock(&mirror_lock);
+	queue_push_right(mirror_queue, fb);
 }
 
 static void create_pidfile(void)
@@ -326,6 +327,7 @@ static void load_config(const char *filename)
 	get_string_from_json(item, json, "engine", tconfig.engine);
 	get_string_from_json(item, json, "engine_opt", tconfig.engine_opt);
 	get_int_from_json(item, json, "engine_reconnect", tconfig.engine_reconnect);
+	get_int_from_json(item, json, "restart_if_crash", tconfig.restart_if_crash);
 	get_int_from_json(item, json, "daemon", tconfig.daemon_mode);
 	get_string_from_json(item, json, "master_ip", tconfig.master_ip);
 	get_int_from_json(item, json, "master_port", tconfig.master_port);
@@ -562,14 +564,14 @@ static void segv_handler(int sig, siginfo_t *info, void *secret)
 	int childpid;
 
 	t01_log(T01_WARNING,
-				"    T01 crashed by signal: %d", sig);
+		"    T01 crashed by signal: %d", sig);
 	t01_log(T01_WARNING,
-        "    SIGSEGV caused by address: %p", (void*)info->si_addr);
+        	"    SIGSEGV caused by address: %p", (void*)info->si_addr);
 
-    evhttp_free(http);
-    event_base_loopexit(base, NULL);
+	evhttp_free(http);
+	event_base_loopexit(base, NULL);
 
-    if ((childpid=fork()) != 0) {
+	if ((childpid=fork()) != 0) {
 		struct sigaction act;
 		sigemptyset (&act.sa_mask);
 	 	act.sa_flags = SA_NODEFER | SA_ONSTACK | SA_RESETHAND;
@@ -579,7 +581,6 @@ static void segv_handler(int sig, siginfo_t *info, void *secret)
 		exit(0);	/* parent exits */
 	}
 	t01_log(T01_WARNING, "Restarting childpid %d", getpid());
-
 
 	execv(argv_[0], argv_);
 }
@@ -604,6 +605,9 @@ static void signal_hander(int sig)
 		}
 	}
 	shutdown_app = 1;
+	if (tconfig.work_mode & SLAVE_MODE && tconfig.eth_mode & LIBPCAP_MODE) {
+		pcap_breakloop(device);
+	}
 	event_base_loopexit(base, NULL);
 }
 
@@ -807,7 +811,6 @@ next:
 		return;
 
 	struct attack_data *attack = zmalloc(sizeof(*attack));
-	Value *value = zmalloc(sizeof(Value));
 	if (!attack)
 		return;
 	char *result = attack->buffer;
@@ -822,8 +825,7 @@ next:
 	attack->flow = flow;
 	memcpy(attack->smac, (uint8_t*)packet+6, 6);
 	memcpy(attack->dmac, (uint8_t*)packet, 6);
-	value->data = attack;
-	qpush(queue, value);
+	queue_push_right(attack_queue, attack);
 
 	total_ip_bytes_out += len;
 	ip_packet_count_out++;
@@ -932,17 +934,21 @@ static void *attack_thread(void *args)
 	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
 	int core = *((int*)args);
 
-	if (core > 0)
-		setup_cpuaffinity(core, __FUNCTION__);
-
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
+	if (core > 0)
+		setup_cpuaffinity(core, __FUNCTION__);
+	pthread_setname_np(pthread_self(), __FUNCTION__);
+{
+char name[64];
+pthread_getname_np(pthread_self(), name, sizeof(name));
+printf("%s\n", name);
+}
+
 	while (!shutdown_app) {
-		Value *value = NULL;
-		struct attack_data *attack;
-    		value = qpop(queue, 0);
-		if (value == NULL ||
-			(attack = (struct attack_data *)value->data) == NULL) {
+		struct attack_data *attack = NULL;
+    		queue_pop_left(attack_queue, &attack);
+		if (attack == NULL) {
 			nanosleep(&ts, NULL);
 			continue;
 		}
@@ -951,7 +957,6 @@ static void *attack_thread(void *args)
 		struct rule *rule = attack->rule;
 		if (is_ndpi_flow_info_used(flow) == 0) {
 			zfree(attack);
-			zfree(value);
 			continue;
 		}
 		process_hitslog(rule, flow, attack->smac, attack->dmac);
@@ -960,18 +965,17 @@ static void *attack_thread(void *args)
 		char *result = attack->buffer;
 		if (len == 0) {
 			zfree(attack);
-			zfree(value);
 			continue;
 		}
 
-        if (tconfig.eth_mode & NETMAP_MODE) {
-            if (out_nmr)
-                nm_inject(out_nmr, result, len);
-            else
-                write(sendfd, result, len);
-        } else if (tconfig.eth_mode & LIBPCAP_MODE) {
-            pcap_inject(out_device, result, len);
-        }
+        	if (tconfig.eth_mode & NETMAP_MODE) {
+            		if (out_nmr)
+                		nm_inject(out_nmr, result, len);
+            		else
+                		write(sendfd, result, len);
+        	} else if (tconfig.eth_mode & LIBPCAP_MODE) {
+            		pcap_inject(out_device, result, len);
+        	}
 
 		if (tconfig.verbose) {
 			char l[48], u[48];
@@ -1033,8 +1037,6 @@ static void *attack_thread(void *args)
 			t01_log(T01_NOTICE, msg);
 		}
 		zfree(attack);
-		zfree(value);
-
 	}
 
 	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
@@ -1043,6 +1045,7 @@ static void *attack_thread(void *args)
 
 static void *mirror_thread(void *args)
 {
+	struct timespec ts = {.tv_sec = 0,.tv_nsec = 1 };
 	int core = *((int*)args);
 	time_t last = time(NULL);
 
@@ -1052,29 +1055,26 @@ static void *mirror_thread(void *args)
 	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
 	while (!shutdown_app) {
-		struct list_head *pos, *n;
-		struct filter_buffer *fb;
+		struct filter_buffer *fb = NULL;
+		queue_pop_left(mirror_queue, &fb);
+		if (fb == NULL) {
+			nanosleep(&ts, NULL);
+			continue;
+		}
 
-		list_for_each_safe(pos, n, &filter_buffer_list) {
-			pthread_spin_lock(&mirror_lock);
-			list_del(pos);
-			pthread_spin_unlock(&mirror_lock);
-			fb = list_entry(pos, struct filter_buffer, list);
-			if (store_raw_via_ioengine(&mirror_engine, fb->buffer,
-					       fb->len, fb->protocol, fb->ts,
-					       fb->saddr, fb->sport, fb->daddr,
-					       fb->dport) < 0) {
-				time_t now = time(NULL);
-				if (now - last < 5)
-					continue;
-
+		if (store_raw_via_ioengine(&mirror_engine, fb->buffer,
+					   fb->len, fb->protocol, fb->ts,
+					   fb->saddr, fb->sport, fb->daddr,
+					   fb->dport) < 0) {
+			time_t now = time(NULL);
+			if (now - last >= 5) {
 				t01_log(T01_WARNING,
 					"failed to write mirror ioengine, reconnect every 5 seconds");
 				check_ioengine(&mirror_engine);
 				last = now;
 			}
-			zfree(fb);
 		}
+		zfree(fb);
 	}
 
 	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
@@ -1088,10 +1088,11 @@ static void *backup_thread(void *args)
 	int core = *((int*)args);
 	time_t last = time(NULL);
 
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+
 	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
-
-	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+	pthread_setname_np(pthread_self(), "backup_thread");
 
 	while (!shutdown_app) {
 		if (bak_consume_idx == bak_produce_idx) {
@@ -1292,10 +1293,11 @@ static void *hitslog_thread(void *args)
 	int count = 0, i;
 	int core = *((int*)args);
 
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+
 	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
-
-	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+	pthread_setname_np(pthread_self(), "hitslog_thread");
 	if(tconfig.hit_ip[0] && tconfig.hit_port) {
 		udp_ip[count] = tconfig.hit_ip;
 		udp_port[count] = tconfig.hit_port;
@@ -1374,11 +1376,12 @@ static void *libevent_thread(void *args)
 	struct timeval tv2, tv3, tv4;
 	int core = *((int*)args);
 
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+
 	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
-
+	pthread_setname_np(pthread_self(), __FUNCTION__);
 	/* initialize libevent */
-	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 	base = event_base_new();
 
 	/* start hit log udp server */
@@ -1404,7 +1407,7 @@ static void *libevent_thread(void *args)
 	}
 
 	/* Initalize timeout event */
-	if (tconfig.work_mode & NETMAP_MODE) {
+	if (tconfig.work_mode & SLAVE_MODE) {
 		event_assign(&ev2, base, -1, EV_PERSIST, statistics_cb,
 			     (void *)&ev2);
 		evutil_timerclear(&tv2);
@@ -1412,7 +1415,7 @@ static void *libevent_thread(void *args)
 		event_add(&ev2, &tv2);
 	}
 
-	if (tconfig.work_mode & NETMAP_MODE || tconfig.work_mode & MASTER_MODE) {
+	if (tconfig.work_mode & SLAVE_MODE || tconfig.work_mode & MASTER_MODE) {
 		evutil_timerclear(&tv3);
 		tv3.tv_usec = 1000;
 		event_assign(&ev3, base, -1, EV_PERSIST, rulesaving_cb,
@@ -1470,10 +1473,11 @@ static void *netmap_thread(void *args)
 	struct netmap_if *nifp = nmr->nifp;
 	int core = *((int*)args);
 
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+
+	pthread_setname_np(pthread_self(), __FUNCTION__);
 	if (core > 0)
 		setup_cpuaffinity(core, __FUNCTION__);
-
-	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 	memset(pfd, 0, sizeof(pfd));
 	pfd[0].fd = nmr->fd;
 	pfd[0].events = POLLIN;
@@ -1516,17 +1520,26 @@ void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *pac
 }
 
 static void *libpcap_get_thread(void *args) {
-	int pcap_id = 0;
+	int core = *((int*)args);
+	int pcap_id = 0; 
+
+	t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+
+	if (core > 0)
+		setup_cpuaffinity(core, __FUNCTION__);
+	pthread_setname_np(pthread_self(), "libpcap_thread");
+
 	pcap_loop(device, -1, get_packet, (u_char*)&pcap_id);
+
+	t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
 }
 
 static void main_thread()
 {
-	int err, i, nthreads = 0, j = 0;
-	pthread_t threads[6];
-	int affinity[6] = {0};
+	int err, i, j = 0;
+	int affinity[MAX_THREADS] = {0};
 
-	for (i = 0; i < 5; i++) {
+	for (i = 0; i < MAX_THREADS; i++) {
 		if (tconfig.cpu_thread > 0)
 			affinity[i] = tconfig.cpu_thread + i;
 	}
@@ -1550,7 +1563,7 @@ static void main_thread()
                        &affinity[j++]) != 0) {
         	t01_log(T01_WARNING, "Can't create libpcap_get thread: %s",
                 strerror(errno));
-        exit(1);
+        	exit(1);
 	} else {
 		sleep(1);
 	}
@@ -1612,8 +1625,9 @@ static void init_system()
 	zmalloc_enable_thread_safeness();
 	//event_set_mem_functions(zmalloc, zrealloc, zfree);
 
-	queue = q_initialize();
-	if (!queue) {
+	attack_queue = queue_create();
+	mirror_queue = queue_create();
+	if (!attack_queue || !mirror_queue) {
 		t01_log(T01_WARNING, "failed to initialize queue");
 		exit(0);
 	}
@@ -1723,7 +1737,6 @@ static void init_engine()
 		zfree(temp);
 	}
 
-	pthread_spin_init(&mirror_lock, 0);
 	if (tconfig.engine[0] && tconfig.engine_opt[0]) {
 		if (load_ioengine(&backup_engine, tconfig.engine) < 0 ||
 		    load_ioengine(&mirror_engine, tconfig.engine) < 0) {
@@ -1813,7 +1826,6 @@ static void exit_rulemgmt()
 
 static void exit_libpcap()
 {
-  pcap_breakloop(device);
 	pcap_close(device);
 	if(out_device && out_device != device){
 		pcap_close(out_device);
@@ -1826,7 +1838,6 @@ int main(int argc, char **argv)
 
 	init_system();
 	init_engine();
-	printf("%d %d\n", tconfig.work_mode, tconfig.eth_mode);
 
 	if (tconfig.work_mode & SLAVE_MODE) {
 		if (tconfig.eth_mode & NETMAP_MODE)
@@ -1838,7 +1849,7 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, signal_hander);
 	signal(SIGTERM, signal_hander);
-	{
+	if (tconfig.restart_if_crash){
 		 struct sigaction act;
 		 sigemptyset(&act.sa_mask);
 		 act.sa_flags = SA_NODEFER | SA_RESETHAND | SA_SIGINFO;
