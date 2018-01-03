@@ -60,7 +60,8 @@ struct t01_config {
 	char logfile[256];
 	char filter[MAX_FILTERS * 16];
 	char engine[64];
-	char engine_opt[256];
+	char mirror_engine_opt[256];
+	char backup_engine_opt[256];
 	int engine_reconnect;
 	int daemon_mode;
 	char master_ip[32];

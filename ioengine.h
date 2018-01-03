@@ -30,8 +30,8 @@
 #ifndef IO_IOENGINE_H
 #define IO_IOENGINE_H
 
-#define io_init	__attribute__((constructor))
-#define io_exit	__attribute__((destructor))
+#define io_init    __attribute__((constructor))
+#define io_exit    __attribute__((destructor))
 
 #include <stdint.h>
 #include "list.h"
@@ -39,40 +39,52 @@
 struct ioengine_ops;
 
 struct ioengine_data {
-	void *private;
-	char *args;
-	int flag;
-	int count;
-	uint64_t ts;
-	struct ioengine_ops *io_ops;
+    void *private;
+    char *total_param;
+    char *host;
+    int port;
+    char *topic;
+    int flag;
+    int count;
+    uint64_t ts;
+    struct ioengine_ops *io_ops;
 };
 
 struct ioengine_ops {
-	struct list_head list;
-	const char *name;
-	int (*connect) (struct ioengine_data *, const char *);
-	int (*disconnect) (struct ioengine_data *);
-	int (*ping) (struct ioengine_data *);
-	int (*show_help) ();
-	int (*write) (struct ioengine_data *, const char *, int, const char *, int, int);
+    struct list_head list;
+    const char *name;
+
+    int (*init)(struct ioengine_data *, const char *param);
+
+    int (*connect)(struct ioengine_data *);
+
+    int (*disconnect)(struct ioengine_data *);
+
+    int (*ping)(struct ioengine_data *);
+
+    int (*show_help)();
+
+    int (*write)(struct ioengine_data *, const char *, int, int);
 };
 
 extern int load_ioengine(struct ioengine_data *ed, const char *name);
+
 extern int init_ioengine(struct ioengine_data *ed, const char *args);
+
 extern void close_ioengine(struct ioengine_data *ed);
 
 extern int store_payload_via_ioengine(struct ioengine_data *ed, void *flow,
-				      const char *protocol, const char *data,
-				      int len);
+                                      const char *protocol, const char *data, int len);
 
 extern int store_raw_via_ioengine(struct ioengine_data *ed, const char *data,
-				  int len, uint8_t protocol, uint64_t ts,
-				  uint32_t saddr, uint16_t sport,
-				  uint32_t daddr, uint16_t dport);
+                                  int len, uint8_t protocol, uint64_t ts,
+                                  uint32_t saddr, uint16_t sport,
+                                  uint32_t daddr, uint16_t dport);
 
 extern int check_ioengine(struct ioengine_data *ed);
 
 extern void register_ioengine(struct ioengine_ops *ops);
+
 extern void unregister_ioengine(struct ioengine_ops *ops);
 
 extern int fio_show_ioengine_help(const char *engine);

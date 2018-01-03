@@ -9,29 +9,46 @@
 #include "zmalloc.h"
 #include "logger.h"
 
-static int redis_connect(struct ioengine_data *td, const char *args)
+static int redis_init(struct ioengine_data *td, const char *param)
+{
+    char *args = zstrdup(param), *input = args;
+    char *state;
+    int port = 6379;
+    char *result = NULL;
+    int i = 0;
+    char *s[3] = {0};
+
+    while((result = strtok_r(input, ":", &state)) != NULL)
+    {
+        if (i == 3)
+            break;
+        s[i++] = result;
+        input = NULL;
+    }
+    td->host = i > 0 ? zstrdup(s[0]) : NULL;
+    td->port = i > 1 ? atoi(s[1]) : port;
+    td->topic = i > 2 ? zstrdup(s[2]) : "raw_queue";
+
+    zfree(args);
+
+    return 0;
+}
+
+static int redis_connect(struct ioengine_data *td)
 {
 	redisContext *c;
-	char *args2 = zstrdup(args);
-	char *sep, *host = args2;
-	int port = 6379;
-
-	sep = strchr(args2, ':');
-	if (sep) {
-		*sep = 0;
-		sep++;
-		port = atoi(sep);
-	}
+	char *host = td->host;
+	int port = td->port;
+    if (port == 0)
+        port = 6379;
 
 	c = redisConnect(host, port);
 	if (c != NULL && c->err) {
 		t01_log(T01_WARNING, "failed to connect %s:%d: %s", 
 			host, port, c->errstr);
-		zfree(args2);
 		return -1;
 	}
 	td->private = c;
-	zfree(args2);
 	return 0;
 }
 
@@ -61,8 +78,7 @@ static int redis_show_help()
 	return 0;
 }
 
-static int redis_write(struct ioengine_data *td, const char *args,
-			int args_len, const char *buffer, int len, int flush)
+static int redis_write(struct ioengine_data *td, const char *buffer, int len, int flush)
 {
 	redisContext *c = (redisContext *) td->private;
 	redisReply *reply;
@@ -71,8 +87,8 @@ static int redis_write(struct ioengine_data *td, const char *args,
 
 	v[0] = "RPUSH";
 	vlen[0] = 5;
-	v[1] = args;
-	vlen[1] = args_len;
+	v[1] = td->topic;
+	vlen[1] = strlen(td->topic);
 	v[2] = buffer;
 	vlen[2] = len;
 
@@ -96,6 +112,7 @@ static int redis_write(struct ioengine_data *td, const char *args,
 
 static struct ioengine_ops ioengine = {
 	.name = "redis",
+    .init = redis_init,
 	.connect = redis_connect,
 	.disconnect = redis_disconnect,
 	.ping = redis_ping,

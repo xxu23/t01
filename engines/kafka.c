@@ -26,26 +26,45 @@ static void logger (const rd_kafka_t *rk, int level,
             level, fac, rk ? rd_kafka_name(rk) : NULL, buf);
 }
 
-static int kafka_connect(struct ioengine_data *td, const char * args)
+static int kafka_init(struct ioengine_data *td, const char *param)
+{
+    char *args = zstrdup(param), *input = args;
+    char *state;
+    int port = 9092;
+    char *result = NULL;
+    int i = 0;
+    char *s[3] = {0};
+
+    while((result = strtok_r(input, ":", &state)) != NULL)
+    {
+        if (i == 3)
+            break;
+        s[i++] = result;
+        input = NULL;
+    }
+    td->host = i > 0 ? zstrdup(s[0]) : NULL;
+    td->port = i > 1 ? atoi(s[1]) : port;
+    td->topic = i > 2 ? zstrdup(s[2]) : "raw_queue";
+    zfree(args);
+
+    return 0;
+}
+
+static int kafka_connect(struct ioengine_data *td)
 {
 	struct kafka_data *kd = zmalloc(sizeof(*kd));
-	char *args2 = zstrdup(args);
-	char *sep, *host = args2;
-	int port = 9092;
+	char *total_param = td->total_param;
+	char *host = td->host;
+	int port = td->host;
 	char brokers[512];
 	char tmp[16];
 	char errstr[512];
 
 	bzero(kd, sizeof(*kd));
 
-    if (strchr(args2, ',')) {
-        snprintf(brokers, sizeof(brokers), "%s", host);
-    } else if((sep = strchr(args2, ':'))) {
-		*sep = 0;
-		sep++;
-		port = atoi(sep);
-        snprintf(brokers, sizeof(brokers), "%s:%d", host, port);
-	} else {
+    if (strchr(total_param, ',')) {
+        snprintf(brokers, sizeof(brokers), "%s", total_param);
+    } else {
         snprintf(brokers, sizeof(brokers), "%s:%d", host, port);
     }
 
@@ -67,7 +86,6 @@ static int kafka_connect(struct ioengine_data *td, const char * args)
 		t01_log(T01_WARNING, "Failed to create new producer: %s", errstr);
 		rd_kafka_topic_conf_destroy(kd->topic_conf);
 		free(kd);
-		zfree(args2);
 		return -1;
 	}
 
@@ -76,12 +94,10 @@ static int kafka_connect(struct ioengine_data *td, const char * args)
 		t01_log(T01_WARNING, "%% No valid brokers specified");
 		rd_kafka_topic_conf_destroy(kd->topic_conf);
 		zfree(kd);
-		zfree(args2);
 		return -2;
 	}
 
 	td->private = kd;
-	zfree(args2);
 	return 0;
 }
 
@@ -122,8 +138,7 @@ static int kafka_show_help()
 	return 0;
 }
 
-static int kafka_write(struct ioengine_data *td, const char *args, int args_len,
-		       const char *buffer, int len, int flush)
+static int kafka_write(struct ioengine_data *td, const char *buffer, int len, int flush)
 {
 	struct kafka_data *kd = (struct kafka_data*)td->private;
 	int partition = RD_KAFKA_PARTITION_UA;
@@ -131,7 +146,7 @@ static int kafka_write(struct ioengine_data *td, const char *args, int args_len,
 
     if(!kd->rkt) {
 		/* Create topic */
-		kd->rkt = rd_kafka_topic_new(kd->rk, args, kd->topic_conf);
+		kd->rkt = rd_kafka_topic_new(kd->rk, td->topic, kd->topic_conf);
 		kd->topic_conf = NULL; /* Now owned by topic */
 	}
 
@@ -155,11 +170,12 @@ static int kafka_write(struct ioengine_data *td, const char *args, int args_len,
 
 static struct ioengine_ops ioengine = {
 	.name		= "kafka",
+    .init       = kafka_init,
 	.connect	= kafka_connect,
 	.disconnect	= kafka_disconnect,
 	.ping		= kafka_ping,
 	.show_help	= kafka_show_help,
-	.write	= kafka_write,
+	.write	    = kafka_write,
 };
 
 static void io_init io_kafka_register(void)
