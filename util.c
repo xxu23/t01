@@ -38,9 +38,14 @@
 #include <float.h>
 #include <stdint.h>
 #include <arpa/inet.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <linux/if_ether.h>
+#include <netpacket/packet.h>
 
 #include "util.h"
 #include "zmalloc.h"
+#include "logger.h"
 
 /* Glob-style pattern matching. */
 int stringmatchlen(const char *pattern, int patternLen,
@@ -526,4 +531,112 @@ int parseipandport(const char *addr, char *ip, size_t len, uint16_t *port)
 	}
 	zfree(temp);
 	return 0;
+}
+
+int manage_interface_promisc_mode(const char *interface, int on) {
+    // We need really any socket for ioctl
+    int fd;
+    struct ifreq ethreq;
+    int ioctl_res;
+    int promisc_enabled_on_device;
+    int ioctl_res_set;
+
+    fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (!fd) {
+        t01_log(T01_WARNING,
+                "Can't create socket for promisc mode manager");
+        return -1;
+    }
+
+    bzero(&ethreq, sizeof(ethreq));
+    strncpy(ethreq.ifr_name, interface, IFNAMSIZ);
+
+    ioctl_res = ioctl(fd, SIOCGIFFLAGS, &ethreq);
+    if (ioctl_res == -1) {
+        t01_log(T01_WARNING, "Can't get interface flags");
+        return -1;
+    }
+
+    promisc_enabled_on_device = ethreq.ifr_flags & IFF_PROMISC;
+    if (on) {
+        if (promisc_enabled_on_device) {
+            t01_log(T01_DEBUG,
+                    "Interface %s in promisc mode already",
+                    interface);
+            return 0;
+        } else {
+            t01_log(T01_DEBUG,
+                    "Interface %s in non promisc mode now, switch it on",
+                    interface);
+            ethreq.ifr_flags |= IFF_PROMISC;
+            ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
+            if (ioctl_res_set == -1) {
+                t01_log(T01_WARNING,
+                        "Can't set interface flags");
+                return -1;
+            }
+
+            return 1;
+        }
+    } else {
+        if (!promisc_enabled_on_device) {
+            t01_log(T01_DEBUG,
+                    "Interface %s in normal mode already",
+                    interface);
+            return 0;
+        } else {
+            t01_log(T01_DEBUG,
+                    "Interface in promisc mode now, switch it off");
+            ethreq.ifr_flags &= ~IFF_PROMISC;
+            ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
+            if (ioctl_res_set == -1) {
+                t01_log(T01_WARNING,
+                        "Can't set interface flags");
+                return -1;
+            }
+
+            return 1;
+        }
+    }
+}
+
+static int get_if_idx(const char *if_name) {
+    struct ifreq ifr;
+    int ret, sockfd;
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset((void *) &ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), if_name);
+    ret = ioctl(sockfd, SIOCGIFINDEX, &ifr);
+    if (ret < 0) {
+        t01_log(T01_WARNING, "failed to get idx of if %s", if_name);
+        exit(1);
+    }
+
+    ret = ifr.ifr_ifindex;
+    close(sockfd);
+    return ret;
+}
+
+int create_l2_raw_socket(const char *if_name) {
+    int ret;
+    struct sockaddr_ll sock_addr = {
+            .sll_family = AF_PACKET,
+            .sll_protocol = 0,
+            .sll_ifindex = get_if_idx(if_name)
+    };
+
+    int fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+    if (fd < 0) {
+        t01_log(T01_WARNING, "failed to create L2 socket");
+        exit(1);
+    }
+
+    ret = bind(fd, (struct sockaddr *) &sock_addr, sizeof(struct sockaddr_ll));
+    if (ret < 0) {
+        t01_log(T01_WARNING, "failed to bind socket");
+        exit(1);
+    }
+
+    return fd;
 }

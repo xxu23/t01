@@ -19,6 +19,7 @@ include_directories( "./3rd/include/mysql/" )
 include_directories( "./3rd/include/" )
 include_directories( "./3rd/include/pcap/" )
 include_directories( "./3rd/include/libhl/" )
+include_directories( "./3rd/include/pfring/" )
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wformat=0")
 
 if (USE_JEMALLOC)
@@ -37,11 +38,11 @@ SET(MAIN_LINK_LIB m pthread
         ${PROJECT_SOURCE_DIR}/3rd/lib/librdkafka.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a
         z
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpfring.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libmsgpackc.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
 
 SET(T01_PFRING_LINK_LIB ${MAIN_LINK_LIB}
-        ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpfring.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpcap.a)
 add_executable(t01-pfring ${MAIN_SRC})
 target_link_libraries(t01-pfring ${T01_PFRING_LINK_LIB} ${EXTRA_LIBS})

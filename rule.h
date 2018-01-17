@@ -167,4 +167,6 @@ int create_rule(const char *body, int body_len, char **out, size_t *out_len);
 
 int sync_rules(const char *body, int body_len);
 
+void background_save_done_handler(int exitcode, int bysignal);
+
 #endif /* __RULE_H__ */

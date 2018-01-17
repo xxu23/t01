@@ -98,7 +98,7 @@ static int redis_write(struct ioengine_data *td, const char *buffer, int len, in
 	if (flush) {
 		int i;
 		for (i = 0; i < flush; i++) {
-			redisGetReply(c, &reply); 
+			redisGetReply(c, (void**)&reply);
 			if (reply == NULL) {
 				continue;
 			}

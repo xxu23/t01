@@ -35,18 +35,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/poll.h>
-#include <sys/ioctl.h>
 #include <net/if.h>
 #include <sys/sysinfo.h>
-#include <sys/socket.h>
+#include <sys/wait.h>
 #include <sched.h>
-#include <net/if.h>
-#include <netpacket/packet.h>
-#include <net/ethernet.h>
 
 #include <ndpi_api.h>
+#include <cJSON.h>
+#include <event.h>
+#include <pcap.h>
+#include <pfring.h>
+#include <libhl/queue.h>
+
 #include "ndpi_util.h"
-#include "ndpi_protocol_ids.h"
 #include "pktgen.h"
 #include "rule.h"
 #include "anet.h"
@@ -56,11 +57,6 @@
 #include "http-server.h"
 #include "zmalloc.h"
 #include "util.h"
-#include <cJSON.h>
-#include <net/netmap_user.h>
-#include <event.h>
-#include <pcap.h>
-#include <libhl/queue.h>
 
 #define MAX_THREADS 6
 
@@ -133,10 +129,11 @@ static pthread_spinlock_t hitlog_lock;
 static char *bind_ip;
 static int bind_port;
 static char **argv_;
-char errBuf[PCAP_ERRBUF_SIZE];
-pcap_t *device;
-pcap_t *out_device;
-static int nthreads;
+static char errBuf[PCAP_ERRBUF_SIZE];
+static pcap_t *device;
+static pcap_t *out_device;
+static pfring *in_ring;
+static pfring *out_ring;
 static pthread_t threads[MAX_THREADS];
 
 
@@ -353,6 +350,8 @@ static void load_config(const char *filename) {
         tconfig.eth_mode = NETMAP_MODE;
     else if (strcasecmp(ethm, "libpcap") == 0)
         tconfig.eth_mode = LIBPCAP_MODE;
+    else if (strcasecmp(ethm, "pfring") == 0)
+        tconfig.eth_mode = PFRING_MODE;
     else
         tconfig.eth_mode = LIBPCAP_MODE;
 
@@ -602,8 +601,12 @@ static void signal_hander(int sig) {
         }
     }
     shutdown_app = 1;
-    if (tconfig.work_mode & SLAVE_MODE && tconfig.eth_mode & LIBPCAP_MODE) {
-        pcap_breakloop(device);
+    if (tconfig.work_mode & SLAVE_MODE) {
+        if (tconfig.eth_mode & LIBPCAP_MODE) {
+            pcap_breakloop(device);
+        } else if (tconfig.eth_mode & PFRING_MODE) {
+            pfring_breakloop(in_ring);
+        }
     }
     event_base_loopexit(base, NULL);
 }
@@ -654,114 +657,6 @@ static char *format_packets(float numPkts, char *buf) {
     return (buf);
 }
 
-static int manage_interface_promisc_mode(const char *interface, int on) {
-    // We need really any socket for ioctl
-    int fd;
-    struct ifreq ethreq;
-    int ioctl_res;
-    int promisc_enabled_on_device;
-    int ioctl_res_set;
-
-    fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (!fd) {
-        t01_log(T01_WARNING,
-                "Can't create socket for promisc mode manager");
-        return -1;
-    }
-
-    bzero(&ethreq, sizeof(ethreq));
-    strncpy(ethreq.ifr_name, interface, IFNAMSIZ);
-
-    ioctl_res = ioctl(fd, SIOCGIFFLAGS, &ethreq);
-    if (ioctl_res == -1) {
-        t01_log(T01_WARNING, "Can't get interface flags");
-        return -1;
-    }
-
-    promisc_enabled_on_device = ethreq.ifr_flags & IFF_PROMISC;
-    if (on) {
-        if (promisc_enabled_on_device) {
-            t01_log(T01_DEBUG,
-                    "Interface %s in promisc mode already",
-                    interface);
-            return 0;
-        } else {
-            t01_log(T01_DEBUG,
-                    "Interface %s in non promisc mode now, switch it on",
-                    interface);
-            ethreq.ifr_flags |= IFF_PROMISC;
-            ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
-            if (ioctl_res_set == -1) {
-                t01_log(T01_WARNING,
-                        "Can't set interface flags");
-                return -1;
-            }
-
-            return 1;
-        }
-    } else {
-        if (!promisc_enabled_on_device) {
-            t01_log(T01_DEBUG,
-                    "Interface %s in normal mode already",
-                    interface);
-            return 0;
-        } else {
-            t01_log(T01_DEBUG,
-                    "Interface in promisc mode now, switch it off");
-            ethreq.ifr_flags &= ~IFF_PROMISC;
-            ioctl_res_set = ioctl(fd, SIOCSIFFLAGS, &ethreq);
-            if (ioctl_res_set == -1) {
-                t01_log(T01_WARNING,
-                        "Can't set interface flags");
-                return -1;
-            }
-
-            return 1;
-        }
-    }
-}
-
-static int get_if_idx(const char *if_name) {
-    struct ifreq ifr;
-    int ret, sockfd;
-
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    memset((void *) &ifr, 0, sizeof(ifr));
-    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), if_name);
-    ret = ioctl(sockfd, SIOCGIFINDEX, &ifr);
-    if (ret < 0) {
-        t01_log(T01_WARNING, "failed to get idx of if %s", if_name);
-        exit(1);
-    }
-
-    ret = ifr.ifr_ifindex;
-    close(sockfd);
-    return ret;
-}
-
-static int create_l2_raw_socket(const char *if_name) {
-    int ret;
-    struct sockaddr_ll sock_addr = {
-            .sll_family = AF_PACKET,
-            .sll_protocol = 0,
-            .sll_ifindex = get_if_idx(if_name)
-    };
-
-    int fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-    if (fd < 0) {
-        t01_log(T01_WARNING, "failed to create L2 socket");
-        exit(1);
-    }
-
-    ret = bind(fd, (struct sockaddr *) &sock_addr, sizeof(struct sockaddr_ll));
-    if (ret < 0) {
-        t01_log(T01_WARNING, "failed to bind socket");
-        exit(1);
-    }
-
-    return fd;
-}
-
 static void on_protocol_discovered(struct ndpi_workflow *workflow,
                                    struct ndpi_flow_info *flow, void *header,
                                    void *packet) {
@@ -796,7 +691,7 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
                 bak_produce_idx = 0;
         }
     }
-    
+
     total_pkts_ndpi++;
     struct rule *rule = match_rule_after_detected(flow);
     if (!rule)
@@ -921,6 +816,7 @@ static void setup_cpuaffinity(int index, const char *name) {
 static void *attack_thread(void *args) {
     struct timespec ts = {.tv_sec = 0, .tv_nsec = 1};
     int core = *((int *) args);
+    enum t01_eth_mode eth_mode = tconfig.eth_mode;
 
     t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
@@ -930,7 +826,7 @@ static void *attack_thread(void *args) {
 
     while (!shutdown_app) {
         struct attack_data *attack = NULL;
-        queue_pop_left(attack_queue, &attack);
+        queue_pop_left(attack_queue, (void**)&attack);
         if (attack == NULL) {
             nanosleep(&ts, NULL);
             continue;
@@ -951,13 +847,15 @@ static void *attack_thread(void *args) {
             continue;
         }
 
-        if (tconfig.eth_mode & NETMAP_MODE) {
+        if (eth_mode & NETMAP_MODE) {
             if (out_nmr)
                 nm_inject(out_nmr, result, len);
             else
                 write(sendfd, result, len);
-        } else if (tconfig.eth_mode & LIBPCAP_MODE) {
+        } else if (eth_mode & LIBPCAP_MODE) {
             pcap_inject(out_device, result, len);
+        } else if (eth_mode & PFRING_MODE) {
+            pfring_send(out_ring, result, len, 0);
         }
 
         if (tconfig.verbose) {
@@ -1038,7 +936,7 @@ static void *mirror_thread(void *args) {
 
     while (!shutdown_app) {
         struct filter_buffer *fb = NULL;
-        queue_pop_left(mirror_queue, &fb);
+        queue_pop_left(mirror_queue, (void**)&fb);
         if (fb == NULL) {
             nanosleep(&ts, NULL);
             continue;
@@ -1511,11 +1409,40 @@ static void *libpcap_get_thread(void *args) {
     pcap_loop(device, -1, get_packet, (u_char *) &pcap_id);
 
     t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
+    return NULL;
+}
+
+static void pfring_processs_packet(const struct pfring_pkthdr *h, const u_char *p,
+                                   const u_char *user_bytes) {
+    struct nm_pkthdr hdr;
+
+    hdr.ts = h->ts;
+    hdr.caplen = h->caplen;
+    hdr.len = h->len;
+    ndpi_workflow_process_packet(workflow, &hdr, p);
+    ndpi_workflow_clean_idle_flows(workflow, 0);
+}
+
+
+static void *pfring_thread(void *args) {
+    int core = *((int *) args);
+
+    t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+
+    if (core > 0)
+        setup_cpuaffinity(core, __FUNCTION__);
+    pthread_setname_np(pthread_self(), "pfring_thread");
+
+    pfring_loop(in_ring, pfring_processs_packet, NULL, 0);
+
+    t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
+    return NULL;
 }
 
 static void main_thread() {
     int err, i, j = 0;
     int affinity[MAX_THREADS] = {0};
+    int nthreads = 0;
 
     for (i = 0; i < MAX_THREADS; i++) {
         if (tconfig.cpu_thread > 0)
@@ -1524,25 +1451,27 @@ static void main_thread() {
 
     gettimeofday(&last_report_ts, NULL);
 
-    if (tconfig.work_mode & SLAVE_MODE &&
-        tconfig.eth_mode & NETMAP_MODE &&
-        pthread_create(&threads[nthreads++], NULL, netmap_thread,
+    if (tconfig.work_mode & SLAVE_MODE) {
+        if (tconfig.eth_mode & NETMAP_MODE &&
+                pthread_create(&threads[nthreads++], NULL, netmap_thread,
                        &affinity[j++]) != 0) {
-        t01_log(T01_WARNING, "Can't create netmap thread: %s",
-                strerror(errno));
-        exit(1);
-    } else {
-        sleep(1);
-    }
+            t01_log(T01_WARNING, "Can't create netmap thread: %s",
+                    strerror(errno));
+            exit(1);
+        } else if (tconfig.eth_mode & LIBPCAP_MODE &&
+                pthread_create(&threads[nthreads++], NULL, libpcap_get_thread,
+                       &affinity[j++]) != 0) {
+            t01_log(T01_WARNING, "Can't create libpcap_get thread: %s",
+                    strerror(errno));
+            exit(1);
+        } else if (tconfig.eth_mode & PFRING_MODE &&
+                   pthread_create(&threads[nthreads++], NULL, pfring_thread,
+                                  &affinity[j++]) != 0) {
+            t01_log(T01_WARNING, "Can't create pfring_thread thread: %s",
+                    strerror(errno));
+            exit(1);
+        }
 
-    if (tconfig.work_mode & SLAVE_MODE &&
-        tconfig.eth_mode & LIBPCAP_MODE &&
-        pthread_create(&threads[nthreads++], NULL, libpcap_get_thread,
-                       &affinity[j++]) != 0) {
-        t01_log(T01_WARNING, "Can't create libpcap_get thread: %s",
-                strerror(errno));
-        exit(1);
-    } else {
         sleep(1);
     }
 
@@ -1670,6 +1599,39 @@ static void init_libpcap() {
             t01_log(T01_WARNING, "error out_device pcap_open_live(): %s", errBuf);
             exit(1);
         }
+    }
+
+    t01_log(T01_NOTICE, "Using PF_RING v%d.%d", pcap_lib_version());
+
+    workflow = setup_detection();
+}
+
+static void init_pfring() {
+    in_ring = pfring_open(tconfig.ifname, MAX_PKT_LEN, PF_RING_PROMISC);
+    if (!in_ring) {
+        t01_log(T01_WARNING, "Failed to open pfring device %s [%s]", tconfig.ifname, strerror(errno));
+        exit(1);
+    }
+    if (tconfig.ofname[0] == 0 || strcmp(tconfig.ifname, tconfig.ofname) == 0) {
+        out_ring = in_ring;
+    } else {
+        out_ring = pfring_open(tconfig.ofname, MAX_PKT_LEN, PF_RING_PROMISC);
+        if (!out_device) {
+            t01_log(T01_WARNING, "Failed to open pfring device %s [%s]", tconfig.ifname, strerror(errno));
+            exit(1);
+        }
+    }
+
+    u_int32_t version;
+    pfring_set_application_name(in_ring, "t01-slave");
+    pfring_version(in_ring, &version);
+    t01_log(T01_NOTICE, "Using PF_RING v%d.%d.%d", (version & 0xFFFF0000) >> 16,
+           (version & 0x0000FF00) >> 8, version & 0x000000FF);
+
+    if(pfring_enable_ring(in_ring) != 0) {
+        t01_log(T01_WARNING, "Unable to enable ring :-(");
+        pfring_close(in_ring);
+        exit(1);
     }
 
     workflow = setup_detection();
@@ -1805,6 +1767,13 @@ static void exit_libpcap() {
     }
 }
 
+static void exit_pfring() {
+    pfring_close(in_ring);
+    if (out_ring && out_ring != in_ring) {
+        pfring_close(out_ring);
+    }
+}
+
 int main(int argc, char **argv) {
     parse_options(argc, argv);
 
@@ -1816,6 +1785,8 @@ int main(int argc, char **argv) {
             init_netmap();
         else if (tconfig.eth_mode & LIBPCAP_MODE)
             init_libpcap();
+        else if (tconfig.eth_mode & PFRING_MODE)
+            init_pfring();
     }
     init_rulemgmt();
 
@@ -1838,6 +1809,8 @@ int main(int argc, char **argv) {
             exit_netmap();
         else if (tconfig.eth_mode & LIBPCAP_MODE)
             exit_libpcap();
+        else if (tconfig.eth_mode & PFRING_MODE)
+            exit_pfring();
     }
     exit_rulemgmt();
 

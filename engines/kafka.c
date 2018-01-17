@@ -55,7 +55,7 @@ static int kafka_connect(struct ioengine_data *td)
 	struct kafka_data *kd = zmalloc(sizeof(*kd));
 	char *total_param = td->total_param;
 	char *host = td->host;
-	int port = td->host;
+	int port = td->port;
 	char brokers[512];
 	char tmp[16];
 	char errstr[512];
@@ -152,7 +152,7 @@ static int kafka_write(struct ioengine_data *td, const char *buffer, int len, in
 
 	/* Send/Produce message. */
     ret = rd_kafka_produce(kd->rkt, partition, RD_KAFKA_MSG_F_COPY,
-                         buffer, len, NULL, 0, NULL);
+                           (void*)buffer, len, NULL, 0, NULL);
 	if(ret == -1) {
         rd_kafka_resp_err_t err = rd_kafka_last_error();
 		t01_log(T01_WARNING, "Failed to produce to topic %s partition %i: %s\n",

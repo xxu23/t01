@@ -40,5 +40,7 @@ int d2string(char *buf, size_t len, double value);
 int pathIsBaseName(char *path);
 char *ipproto_name(uint8_t proto_id);
 int parseipandport(const char *addr, char *ip, size_t len, uint16_t *port);
+int manage_interface_promisc_mode(const char *interface, int on);
+int create_l2_raw_socket(const char *if_name);
 
 #endif

@@ -38,10 +38,11 @@
 #define MAX_PCAP_DATA 65535
 #define PCAP_PROMISC 1
 #define PCAP_TIMEOUT 0
+#define MAX_PKT_LEN 1536
 
 enum t01_work_mode { SLAVE_MODE=0x01, MASTER_MODE=0x02 };
 
-enum t01_eth_mode { NETMAP_MODE=0x010, LIBPCAP_MODE=0x20 };
+enum t01_eth_mode { NETMAP_MODE=0x010, LIBPCAP_MODE=0x20, PFRING_MODE = 0x40 };
 
 extern struct event_base *base;
 extern int dirty;
@@ -65,11 +66,11 @@ struct t01_config {
 	int engine_reconnect;
 	int daemon_mode;
 	char master_ip[32];
-	int master_port;
+    uint16_t master_port;
 	char rule_ip[32];
-	int rule_port;
+    uint16_t rule_port;
 	char hit_ip[32];
-	int hit_port;
+    uint16_t hit_port;
 	int verbose;
 	int id;
 	int cpu_thread;

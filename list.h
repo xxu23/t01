@@ -144,7 +144,9 @@ static inline void list_del(struct list_head *entry)
 	for (pos = (head)->next, n = pos->next; pos != (head); \
 		pos = n, n = pos->next)
 
+#ifndef offsetof
 #define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+#endif
 
 /**
  * container_of - cast a member of a structure out to the containing structure
