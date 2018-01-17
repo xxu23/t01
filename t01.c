@@ -1065,6 +1065,17 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
     }
 
     printf("\nTraffic statistics:\n");
+    if (tconfig.eth_mode & NETMAP_MODE) {
+        printf("\tNetmap recv/drop:     %llu/%llu\n", nmr->st.ps_recv, nmr->st.ps_drop);
+    } else if (tconfig.eth_mode & LIBPCAP_MODE) {
+        struct pcap_stat pstat;
+        pcap_stats(device, &pstat);
+        printf("\tLibpcap recv/drop:     %llu/%llu\n", pstat.ps_recv, pstat.ps_drop);
+    } else if (tconfig.eth_mode & PFRING_MODE) {
+        pfring_stat pfstat;
+        pfring_stats(in_ring, &pfstat);
+        printf("\tPFRING recv/drop:      %llu/%llu\n", pfstat.recv, pfstat.drop);
+    }
     printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
     printf("\tIP bytes:              %-13llu\n", curr_total_ip_bytes);
     printf
