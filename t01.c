@@ -1191,6 +1191,8 @@ static void main_thread() {
     for (i = 0; i < nthreads; i++) {
         pthread_join(threads[i], NULL);
     }
+
+    t01_log(T01_NOTICE, "See you next time :-)");
 }
 
 static void init_system() {
@@ -1272,7 +1274,7 @@ static void init_libpcap() {
         }
     }
 
-    t01_log(T01_NOTICE, "Using Libpcap v%s", pcap_lib_version());
+    t01_log(T01_NOTICE, "Using %s", pcap_lib_version());
 
     if (tconfig.bpf != NULL && tconfig.bpf[0] != 0) {
         struct bpf_program filter;

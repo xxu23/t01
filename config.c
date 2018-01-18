@@ -42,11 +42,6 @@
 #include "logger.h"
 #include "zmalloc.h"
 
-
-char master_address[64];
-char hit_address[64];
-char config_file[256];
-
 #define copy_string_from_json(item, json, key, value)   \
     item = cJSON_GetObjectItem(json, key);              \
     if(item){                                           \
@@ -194,6 +189,9 @@ static int mac_str_to_n(const char *addr, unsigned char mac0[6]) {
 
 void parse_options(int argc, char **argv) {
     int opt;
+    char master_address[64] = {0};
+    char hit_address[64] = {0};
+    char config_file[256];
 
     while ((opt = getopt(argc, argv,
                          "SMdhc:i:o:r:e:b:p:C:m:B:v:l:F:j:H:")) != EOF) {
