@@ -31,7 +31,7 @@ endif (USE_JEMALLOC)
 SET(THIRD_SRC_DIR 3rd/src/)
 SET(CJSON_SRC_DIR ${THIRD_SRC_DIR}/cJSON)
 SET(THIRD_SRC ${CJSON_SRC_DIR}/cJSON.c)
-SET(MAIN_SRC logger.c t01.c zmalloc.c ndpi_util.c pktgen.c rule.c crc64.c util.c anet.c http-server.c ioengines.c engines/redis.c engines/kafka.c ${THIRD_SRC})
+SET(MAIN_SRC t01.c logger.c config.c zmalloc.c ndpi_util.c pktgen.c rule.c crc64.c util.c anet.c http-server.c ioengines.c engines/redis.c engines/kafka.c ${THIRD_SRC})
 SET(MAIN_LINK_LIB m pthread
         ${PROJECT_SOURCE_DIR}/3rd/lib/libndpi.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libhiredis.a

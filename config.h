@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
+ * Copyright (c) 2016-18, YAO Wei <njustyw at gmail dot com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,40 +27,16 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef __UTIL_H__
-#define __UTIL_H__
+#ifndef CONFIG_H
+#define CONFIG_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int stringmatchlen(const char *p, int plen, const char *s, int slen, int nocase);
+void load_config(const char *filename);
 
-int stringmatch(const char *p, const char *s, int nocase);
-
-long long memtoll(const char *p, int *err);
-
-int ll2string(char *s, size_t len, long long value);
-
-int string2ll(const char *s, size_t slen, long long *value);
-
-int string2l(const char *s, size_t slen, long *value);
-
-int d2string(char *buf, size_t len, double value);
-
-int pathIsBaseName(char *path);
-
-char *ipproto_name(uint8_t proto_id);
-
-int parseipandport(const char *addr, char *ip, size_t len, uint16_t *port);
-
-int manage_interface_promisc_mode(const char *interface, int on);
-
-int create_l2_raw_socket(const char *if_name);
-
-char *format_traffic(float numBits, int bits, char *buf);
-
-char *format_packets(float numPkts, char *buf);
+void parse_options(int argc, char **argv);
 
 #ifdef __cplusplus
 }

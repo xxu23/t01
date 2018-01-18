@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/poll.h>
 #include <net/if.h>
 #include <sys/sysinfo.h>
@@ -41,19 +42,19 @@
 #include <sched.h>
 
 #include <ndpi_api.h>
-#include <cJSON.h>
 #include <event.h>
 #include <pcap.h>
 #include <pfring.h>
 #include <libhl/queue.h>
 
+#include "t01.h"
+#include "config.h"
 #include "ndpi_util.h"
 #include "pktgen.h"
 #include "rule.h"
 #include "anet.h"
 #include "logger.h"
 #include "ioengine.h"
-#include "t01.h"
 #include "http-server.h"
 #include "zmalloc.h"
 #include "util.h"
@@ -100,7 +101,7 @@ uint64_t pkts_ndpi_per_second = 0;
 struct event_base *base;
 struct evhttp *http;
 struct evhttp_bound_socket *handle;
-
+char **argv_;
 struct t01_config tconfig;
 
 static struct ndpi_workflow *workflow;
@@ -108,9 +109,6 @@ static queue_t *attack_queue;
 static queue_t *mirror_queue;
 static ZLIST_HEAD(hitslog_list);
 static struct timeval upstart_tv;
-static char master_address[64];
-static char hit_address[64];
-static char conffile[256];
 static struct backup_data backup_copy[MAX_BACKUP_DATA];
 static int bak_produce_idx = 0;
 static int bak_consume_idx = 0;
@@ -128,7 +126,6 @@ static NDPI_PROTOCOL_BITMASK ndpi_mask;
 static pthread_spinlock_t hitlog_lock;
 static char *bind_ip;
 static int bind_port;
-static char **argv_;
 static char errBuf[PCAP_ERRBUF_SIZE];
 static pcap_t *device;
 static pcap_t *out_device;
@@ -266,297 +263,6 @@ static void daemonize(void) {
     }
 }
 
-#define get_string_from_json(item, json, key, value)    \
-  item = cJSON_GetObjectItem(json, key);            \
-  if(item){                            \
-    strncpy(value, item->valuestring, sizeof(value));    \
-  }                                    \
-
-#define get_int_from_json(item, json, key, value)    \
-  item = cJSON_GetObjectItem(json, key);            \
-  if(item){                            \
-    value = item->valueint;                             \
-  }
-
-static void load_config(const char *filename) {
-    FILE *fp;
-    long size;
-    char *data;
-    cJSON *json, *item;
-    char wm[64], sm[64] = {0}, ethm[64];
-
-    /* Read content from file */
-    fp = fopen(filename, "r");
-    if (fp == NULL) {
-        t01_log(T01_WARNING,
-                "Cannot read config %s: %s, aborting now", filename, strerror(errno));
-        exit(1);
-    }
-    fseek(fp, 0, SEEK_END);
-    size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    data = (char *) zmalloc(size + 1);
-    if (!data) {
-        t01_log(T01_WARNING, "Out of memory!");
-        exit(1);
-    }
-    fread(data, 1, size, fp);
-    data[size] = '\0';
-    fclose(fp);
-
-    json = cJSON_Parse(data);
-    if (!json) {
-        t01_log(T01_WARNING, "Cannot parse json: %s", cJSON_GetErrorPtr());
-        exit(1);
-    }
-    zfree(data);
-
-    get_string_from_json(item, json, "ifname", tconfig.ifname);
-    get_string_from_json(item, json, "ofname", tconfig.ofname);
-    get_string_from_json(item, json, "mfname", tconfig.mfname);
-    get_string_from_json(item, json, "ruledb", tconfig.ruledb);
-    get_string_from_json(item, json, "logfile", tconfig.logfile);
-    get_string_from_json(item, json, "filter", tconfig.filter);
-    get_string_from_json(item, json, "engine", tconfig.engine);
-    get_string_from_json(item, json, "backup_engine", tconfig.backup_engine_opt);
-    get_string_from_json(item, json, "mirror_engine", tconfig.mirror_engine_opt);
-    get_int_from_json(item, json, "engine_reconnect", tconfig.engine_reconnect);
-    get_int_from_json(item, json, "restart_if_crash", tconfig.restart_if_crash);
-    get_int_from_json(item, json, "daemon", tconfig.daemon_mode);
-    get_string_from_json(item, json, "master_ip", tconfig.master_ip);
-    get_int_from_json(item, json, "master_port", tconfig.master_port);
-    get_string_from_json(item, json, "rule_ip", tconfig.rule_ip);
-    get_int_from_json(item, json, "rule_port", tconfig.rule_port);
-    get_string_from_json(item, json, "hit_ip", tconfig.hit_ip);
-    get_int_from_json(item, json, "hit_port", tconfig.hit_port);
-    get_int_from_json(item, json, "verbose", tconfig.verbose);
-    get_int_from_json(item, json, "id", tconfig.id);
-    get_int_from_json(item, json, "cpu_thread", tconfig.cpu_thread);
-    get_string_from_json(item, json, "work_mode", wm);
-    get_string_from_json(item, json, "eth_mode", ethm);
-    get_string_from_json(item, json, "send_mode", sm);
-    get_string_from_json(item, json, "this_mac", tconfig.this_mac_addr);
-    get_string_from_json(item, json, "next_mac", tconfig.next_mac_addr);
-    get_string_from_json(item, json, "detected_protocol", tconfig.detected_protocol);
-
-    if (strcasecmp(wm, "slave") == 0)
-        tconfig.work_mode = SLAVE_MODE;
-    else if (strcasecmp(wm, "master") == 0)
-        tconfig.work_mode = MASTER_MODE;
-    else
-        tconfig.work_mode = SLAVE_MODE;
-
-    if (strcasecmp(ethm, "netmap") == 0)
-        tconfig.eth_mode = NETMAP_MODE;
-    else if (strcasecmp(ethm, "libpcap") == 0)
-        tconfig.eth_mode = LIBPCAP_MODE;
-    else if (strcasecmp(ethm, "pfring") == 0)
-        tconfig.eth_mode = PFRING_MODE;
-    else
-        tconfig.eth_mode = LIBPCAP_MODE;
-
-    if (sm[0] == 0 || strcasecmp(sm, "netmap") == 0)
-        tconfig.raw_socket = 0;
-    else if (strcasecmp(sm, "socket") == 0)
-        tconfig.raw_socket = 1;
-
-
-    cJSON_Delete(json);
-}
-
-static void usage() {
-    const char *cmd = "t01";
-    fprintf(stderr,
-            "Usage: %s [options]\n"
-                    "\nOptions:\n"
-                    "\t-c filename               configuration file\n"
-                    "\t-i interface              interface that captures incoming traffic\n"
-                    "\t-o interface              interface that sends outcoming traffic (default same as incoming interface)\n"
-                    "\t-r ruledb                 rule db file that saving rule and hit record\n"
-                    "\t-b ip                     ip address binded for rule management\n"
-                    "\t-p port                   port listening for rule management (default 9899)\n"
-                    "\t-C cpu_thread             which core do you want to bind to receiveing thread\n"
-                    "\t-S | -M                   slave or master mode for rule management\n"
-                    "\t-d                        run in daemon mode or not\n"
-                    "\t-j ip:port                master address for rule management cluster (eg 192.168.1.2:9898)\n"
-                    "\t-H ip:port                udp server address for rule hits\n"
-                    "\t-F filter                 filter strategy for mirroring netflow (eg 80/tcp,53/udp)\n"
-                    "\t-e engine                 backend/mirror engine to store network flow data\n"
-                    "\t-m mirror_eigine          arguments attached to mirror engine\n"
-                    "\t-B backup_eigine          arguments attached to backup engine\n"
-                    "\t-v verbosity              logger levels (0:debug, 1:verbose, 2:notice, 3:warning)\n"
-                    "\t-l log_file               logger into file or screen\n"
-                    "", cmd);
-
-    exit(0);
-}
-
-static int mac_str_to_n(const char *addr, unsigned char mac0[6]) {
-    unsigned int mac[6];
-    int i;
-    if (sscanf(addr, "%2x:%2x:%2x:%2x:%2x:%2x",
-               mac, mac + 1, mac + 2, mac + 3, mac + 4, mac + 5) != 6)
-        return -1;
-
-    for (i = 0; i < 6; i++)
-        mac0[i] = mac[i];
-    return 0;
-}
-
-static void parse_options(int argc, char **argv) {
-    int opt;
-
-    while ((opt =
-                    getopt(argc, argv, "SMdhc:i:o:r:e:b:p:C:m:B:v:l:F:j:H:")) != EOF) {
-        switch (opt) {
-            case 'S':
-                tconfig.work_mode |= SLAVE_MODE;
-                break;
-
-            case 'M':
-                tconfig.work_mode |= MASTER_MODE;
-                break;
-
-            case 'd':
-                tconfig.daemon_mode = 1;
-                break;
-
-            case 'i':
-                strncpy(tconfig.ifname, optarg, sizeof(tconfig.ifname));
-                break;
-
-            case 'o':
-                strncpy(tconfig.ofname, optarg, sizeof(tconfig.ofname));
-                break;
-
-            case 'j':
-                strncpy(master_address, optarg, sizeof(master_address));
-                break;
-
-            case 'H':
-                strncpy(hit_address, optarg, sizeof(hit_address));
-                break;
-
-            case 'p':
-                tconfig.rule_port = atoi(optarg);
-                break;
-
-            case 'C':
-                tconfig.cpu_thread = atoi(optarg);
-                break;
-
-            case 'b':
-                strncpy(tconfig.rule_ip, optarg,
-                        sizeof(tconfig.rule_ip));
-                break;
-
-            case 'r':
-                strncpy(tconfig.ruledb, optarg, sizeof(tconfig.ruledb));
-                break;
-
-            case 'c':
-                strncpy(conffile, optarg, sizeof(conffile));
-                break;
-
-            case 'v':
-                tconfig.verbose = atoi(optarg);
-                break;
-
-            case 'l':
-                strncpy(tconfig.logfile, optarg,
-                        sizeof(tconfig.logfile));
-                break;
-
-            case 'F':
-                strncpy(tconfig.filter, optarg, sizeof(tconfig.filter));
-                break;
-
-            case 'e':
-                strcpy(tconfig.engine, optarg);
-                break;
-
-            case 'm':
-                strcpy(tconfig.mirror_engine_opt, optarg);
-                break;
-
-            case 'B':
-                strcpy(tconfig.backup_engine_opt, optarg);
-                break;
-
-            case 'h':
-                usage();
-                break;
-
-            default:
-                usage();
-                break;
-        }
-    }
-
-    if (conffile[0])
-        load_config(conffile);
-
-    if (tconfig.cpu_thread > 0) {
-        int core = get_nprocs();
-        if (tconfig.cpu_thread > core)
-            tconfig.cpu_thread = 1;
-    }
-
-    // check parameters
-    if (master_address[0]) {
-        parseipandport(master_address, tconfig.master_ip,
-                       sizeof(tconfig.master_ip), &tconfig.master_port);
-    }
-    if (hit_address[0]) {
-        parseipandport(hit_address, tconfig.hit_ip,
-                       sizeof(tconfig.hit_ip), &tconfig.hit_port);
-    }
-    if (tconfig.this_mac_addr[0]) {
-        char *addr = tconfig.this_mac_addr;
-        if (mac_str_to_n(addr, tconfig.this_mac) != 0) {
-            fprintf(stderr, "%s is not a valid mac address\n", addr);
-            exit(-1);
-        }
-    }
-    if (tconfig.next_mac_addr[0]) {
-        char *addr = tconfig.next_mac_addr;
-        if (mac_str_to_n(addr, tconfig.next_mac) != 0) {
-            fprintf(stderr, "%s is not a valid mac address\n", addr);
-            exit(-1);
-        }
-    }
-    if (tconfig.work_mode & SLAVE_MODE && tconfig.work_mode & MASTER_MODE) {
-        fprintf(stderr, "Both master and slave mode is not support\n");
-        usage();
-    }
-    if ((tconfig.work_mode & SLAVE_MODE || tconfig.work_mode & MASTER_MODE)
-        && tconfig.master_ip[0] == 0) {
-        fprintf(stderr,
-                "Master address should be specified in master/slave mode\n");
-        usage();
-    }
-
-    if (tconfig.work_mode & SLAVE_MODE && tconfig.ifname[0] == 0
-        && tconfig.ruledb[0] == 0) {
-        fprintf(stderr,
-                "Incoming interface should be specified in slave mode\n");
-        usage();
-    }
-    if (tconfig.ruledb[0] == 0)
-        strcpy(tconfig.ruledb, DEFAULT_RULEDB);
-    if (tconfig.rule_port == 0)
-        tconfig.rule_port = DEFAULT_RULE_PORT;
-
-    {
-        argv_ = malloc(sizeof(char *) * (argc + 1));
-        argv_[argc] = NULL;
-        while (argc > 0) {
-            argv_[argc - 1] = strdup(argv[argc - 1]);
-            argc--;
-        }
-    }
-}
-
 static void segv_handler(int sig, siginfo_t *info, void *secret) {
     int childpid;
 
@@ -609,52 +315,6 @@ static void signal_hander(int sig) {
         }
     }
     event_base_loopexit(base, NULL);
-}
-
-static char *format_traffic(float numBits, int bits, char *buf) {
-    char unit;
-
-    if (bits)
-        unit = 'b';
-    else
-        unit = 'B';
-
-    if (numBits < 1024) {
-        snprintf(buf, 32, "%lu %c", (unsigned long) numBits, unit);
-    } else if (numBits < 1048576) {
-        snprintf(buf, 32, "%.2f K%c", (float) (numBits) / 1024, unit);
-    } else {
-        float tmpMBits = ((float) numBits) / 1048576;
-
-        if (tmpMBits < 1024) {
-            snprintf(buf, 32, "%.2f M%c", tmpMBits, unit);
-        } else {
-            tmpMBits /= 1024;
-
-            if (tmpMBits < 1024) {
-                snprintf(buf, 32, "%.2f G%c", tmpMBits, unit);
-            } else {
-                snprintf(buf, 32, "%.2f T%c",
-                         (float) (tmpMBits) / 1024, unit);
-            }
-        }
-    }
-
-    return (buf);
-}
-
-static char *format_packets(float numPkts, char *buf) {
-
-    if (numPkts < 1000) {
-        snprintf(buf, 32, "%.2f", numPkts);
-    } else if (numPkts < 1000000) {
-        snprintf(buf, 32, "%.2f K", numPkts / 1000);
-    } else {
-        numPkts /= 1000000;
-        snprintf(buf, 32, "%.2f M", numPkts);
-    }
-
-    return (buf);
 }
 
 static void on_protocol_discovered(struct ndpi_workflow *workflow,
@@ -1066,15 +726,15 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
 
     printf("\nTraffic statistics:\n");
     if (tconfig.eth_mode & NETMAP_MODE) {
-        printf("\tNetmap recv/drop:     %llu/%llu\n", nmr->st.ps_recv, nmr->st.ps_drop);
+        printf("\tNetmap recv/drop:     %llu / %llu\n", nmr->st.ps_recv, nmr->st.ps_drop);
     } else if (tconfig.eth_mode & LIBPCAP_MODE) {
         struct pcap_stat pstat;
         pcap_stats(device, &pstat);
-        printf("\tLibpcap recv/drop:     %llu/%llu\n", pstat.ps_recv, pstat.ps_drop);
+        printf("\tLibpcap recv/drop:     %llu / %llu\n", pstat.ps_recv, pstat.ps_drop);
     } else if (tconfig.eth_mode & PFRING_MODE) {
         pfring_stat pfstat;
         pfring_stats(in_ring, &pfstat);
-        printf("\tPFRING recv/drop:      %llu/%llu\n", pfstat.recv, pfstat.drop);
+        printf("\tPFRING recv/drop:       %llu / %llu\n", pfstat.recv, pfstat.drop);
     }
     printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
     printf("\tIP bytes:              %-13llu\n", curr_total_ip_bytes);
@@ -1451,7 +1111,7 @@ static void *pfring_thread(void *args) {
 }
 
 static void main_thread() {
-    int err, i, j = 0;
+    int i, j = 0;
     int affinity[MAX_THREADS] = {0};
     int nthreads = 0;
 
@@ -1612,7 +1272,13 @@ static void init_libpcap() {
         }
     }
 
-    t01_log(T01_NOTICE, "Using PF_RING v%d.%d", pcap_lib_version());
+    t01_log(T01_NOTICE, "Using Libpcap v%s", pcap_lib_version());
+
+    if (tconfig.bpf != NULL && tconfig.bpf[0] != 0) {
+        struct bpf_program filter;
+        pcap_compile(device, &filter, tconfig.bpf, 0, 0);
+        pcap_setfilter(device, &filter);
+    }
 
     workflow = setup_detection();
 }
@@ -1643,6 +1309,10 @@ static void init_pfring() {
         t01_log(T01_WARNING, "Unable to enable ring :-(");
         pfring_close(in_ring);
         exit(1);
+    }
+
+    if (tconfig.bpf != NULL && tconfig.bpf[0] != 0) {
+        pfring_set_bpf_filter(device, tconfig.bpf);
     }
 
     workflow = setup_detection();
