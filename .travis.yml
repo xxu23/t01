@@ -12,5 +12,4 @@ before_install:
   - sudo apt-get -qq install cmake
 
 script:
-  - mkdir build && cd build && cmake -DLIBPCAP_PFRING=OFF ../ && make
-  - mkdir build2 && cd build2 && cmake -DLIBPCAP_PFRING=ON ../ && make
+  - mkdir build && cd build && cmake ../ && make
