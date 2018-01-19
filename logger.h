@@ -31,6 +31,10 @@
 #ifndef __LOGGER_H__
 #define __LOGGER_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Log levels */
 #define T01_DEBUG 0
 #define T01_VERBOSE 1
@@ -40,15 +44,23 @@
 #define T01_DEFAULT_VERBOSITY T01_NOTICE
 
 void t01_log(int level, const char *fmt, ...);
+
 void t01_lograw(int level, const char *msg);
+
 void t01_log_from_handler(int level, const char *msg);
+
 void init_log(int verbosity, const char *logfile);
 
 /* Debugging stuff */
 void _t01_assert(char *estr, char *file, int line);
+
 void _t01_panic(char *msg, char *file, int line);
 
 #define t01_assert(_e) ((_e)?(void)0 : (_t01_assert(#_e,__FILE__,__LINE__),_exit(1)))
 #define t01_panic(_e) _t01_panic(#_e,__FILE__,__LINE__),_exit(1)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __LOGGER_H__ */

@@ -62,6 +62,12 @@ char *format_traffic(float numBits, int bits, char *buf);
 
 char *format_packets(float numPkts, char *buf);
 
+char *etheraddr_string(const unsigned char *ep, char *buf);
+
+int get_interface_mac(const char* device, unsigned char mac[6]);
+
+int ethtool_get_interface_speed(const char *device);
+
 #ifdef __cplusplus
 }
 #endif

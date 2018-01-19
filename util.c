@@ -42,6 +42,7 @@
 #include <sys/ioctl.h>
 #include <linux/if_ether.h>
 #include <netpacket/packet.h>
+#include <linux/sockios.h>
 
 #include "util.h"
 #include "zmalloc.h"
@@ -685,4 +686,97 @@ char *format_packets(float numPkts, char *buf) {
     }
 
     return (buf);
+}
+
+char *etheraddr_string(const unsigned char *ep, char *buf) {
+    char *hex = "0123456789ABCDEF";
+    u_int i, j;
+    char *cp;
+
+    cp = buf;
+    if((j = *ep >> 4) != 0)
+        *cp++ = hex[j];
+    else
+        *cp++ = '0';
+
+    *cp++ = hex[*ep++ & 0xf];
+
+    for(i = 5; (int)--i >= 0;) {
+        *cp++ = ':';
+        if((j = *ep >> 4) != 0)
+            *cp++ = hex[j];
+        else
+            *cp++ = '0';
+
+        *cp++ = hex[*ep++ & 0xf];
+    }
+
+    *cp = '\0';
+    return (buf);
+}
+
+struct ethtool_cmd {
+    __u32   cmd;
+    __u32   supported;      /* Features this interface supports */
+    __u32   advertising;    /* Features this interface advertises */
+    __u16   speed;          /* The forced speed, 10Mb, 100Mb, gigabit */
+    __u8    duplex;         /* Duplex, half or full */
+    __u8    port;           /* Which connector port */
+    __u8    phy_address;
+    __u8    transceiver;    /* Which transceiver to use */
+    __u8    autoneg;        /* Enable or disable autonegotiation */
+    __u32   maxtxpkt;       /* Tx pkts before generating tx int */
+    __u32   maxrxpkt;       /* Rx pkts before generating rx int */
+    __u32   reserved[4];
+};
+
+int get_interface_mac(const char* device, unsigned char mac[6]) {
+    struct ifreq tmp;
+    int fd;
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == -1) {
+        perror("create socket fail\n");
+        return -1;
+    }
+
+    memset(&tmp, 0, sizeof(tmp));
+    strncpy(tmp.ifr_name, device, sizeof(tmp.ifr_name)-1);
+    if ((ioctl(fd, SIOCGIFHWADDR, &tmp)) < 0){
+        printf("ioctl");
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+    memcpy(mac, tmp.ifr_hwaddr.sa_data, 6);
+    return 0;
+}
+
+int ethtool_get_interface_speed(const char *device) {
+    struct ifreq ifr;
+    int err;
+    struct ethtool_cmd ep;
+    int fd;
+
+    /* Open control socket. */
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        perror("socket");
+        return -1;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    strcpy(ifr.ifr_name, device);
+    ep.cmd = 0x00000001;
+    ifr.ifr_data = (caddr_t)&ep;
+    err = ioctl(fd, SIOCETHTOOL, &ifr);
+    if (err != 0) {
+        perror("ioctl");
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+    return ep.speed;
 }

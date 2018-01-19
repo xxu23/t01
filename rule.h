@@ -35,6 +35,10 @@
 
 #define HITS_THRESHOLD_PER_SECOND 3000
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern uint64_t version;
 
 struct log_rz
@@ -168,5 +172,9 @@ int create_rule(const char *body, int body_len, char **out, size_t *out_len);
 int sync_rules(const char *body, int body_len);
 
 void background_save_done_handler(int exitcode, int bysignal);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #endif /* __RULE_H__ */

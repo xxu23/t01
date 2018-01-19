@@ -30,9 +30,17 @@
 #ifndef __PKTGEN_H__
 #define __PKTGEN_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct rule;
 
 int make_packet(const struct rule *rule, const char *hdr,
-		char *packet, int len, void *flow);
+				char *packet, int len, void *flow);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __PKTGEN_H__ */

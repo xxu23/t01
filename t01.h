@@ -42,6 +42,10 @@
 #define PCAP_TIMEOUT 0
 #define MAX_PKT_LEN 1536
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum t01_work_mode {
     SLAVE_MODE = 0x01, MASTER_MODE = 0x02
 };
@@ -109,5 +113,9 @@ extern uint64_t pkts_per_second_in;
 extern uint64_t pkts_per_second_out;
 
 void close_listening_sockets();
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -47,33 +47,64 @@
 #undef ip_len
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct sockaddr;
 
 int anetTcpConnect(char *err, char *addr, int port);
+
 int anetTcpNonBlockConnect(char *err, char *addr, int port);
+
 int anetUnixConnect(char *err, char *path);
+
 int anetUnixNonBlockConnect(char *err, char *path);
+
 int anetRead(int fd, char *buf, int count);
+
 int anetResolve(char *err, char *host, char *ipbuf, size_t ipbuf_len);
+
 int anetResolveIP(char *err, char *host, char *ipbuf, size_t ipbuf_len);
+
 int anetTcpServer(char *err, int port, char *bindaddr, int backlog);
+
 int anetTcp6Server(char *err, int port, char *bindaddr, int backlog);
+
 int anetUnixServer(char *err, char *path, mode_t perm, int backlog);
+
 int anetTcpAccept(char *err, int serversock, char *ip, size_t ip_len, int *port);
+
 int anetUnixAccept(char *err, int serversock);
+
 int anetWrite(int fd, char *buf, int count);
+
 int anetNonBlock(char *err, int fd);
+
 int anetBlock(char *err, int fd);
+
 int anetEnableTcpNoDelay(char *err, int fd);
+
 int anetDisableTcpNoDelay(char *err, int fd);
+
 int anetTcpKeepAlive(char *err, int fd);
+
 int anetSendTimeout(char *err, int fd, long long ms);
+
 int anetPeerToString(int fd, char *ip, size_t ip_len, int *port);
+
 int anetKeepAlive(char *err, int fd, int interval);
+
 int anetSockName(int fd, char *ip, size_t ip_len, int *port);
 
-int anetCreateUdpSocket(char *err, char *ip, int port, struct sockaddr* addr, size_t addr_len);
-int anetUdpWrite(int fd, char *buf, int count, struct sockaddr* addr, size_t addr_len);
+int anetCreateUdpSocket(char *err, char *ip, int port, struct sockaddr *addr, size_t addr_len);
+
+int anetUdpWrite(int fd, char *buf, int count, struct sockaddr *addr, size_t addr_len);
+
 int anetUdpServer(char *err, int port, char *bindaddr);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

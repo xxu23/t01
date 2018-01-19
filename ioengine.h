@@ -36,6 +36,10 @@
 #include <stdint.h>
 #include "list.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct ioengine_ops;
 
 struct ioengine_data {
@@ -88,5 +92,9 @@ extern void register_ioengine(struct ioengine_ops *ops);
 extern void unregister_ioengine(struct ioengine_ops *ops);
 
 extern int fio_show_ioengine_help(const char *engine);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

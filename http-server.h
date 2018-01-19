@@ -33,10 +33,18 @@
 #include <event2/event.h>
 #include <event2/http.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void http_server_request_cb(struct evhttp_request *req, void *arg);
 
 int slave_registry_master(const char *master_ip, int master_port, int port);
 
 int master_check_slaves();
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

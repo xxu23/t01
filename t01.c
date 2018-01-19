@@ -734,7 +734,7 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
     } else if (tconfig.eth_mode & PFRING_MODE) {
         pfring_stat pfstat;
         pfring_stats(in_ring, &pfstat);
-        printf("\tPFRING recv/drop:       %llu / %llu\n", pfstat.recv, pfstat.drop);
+        printf("\tPFRING recv/drop:      %llu / %llu\n", pfstat.recv, pfstat.drop);
     }
     printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
     printf("\tIP bytes:              %-13llu\n", curr_total_ip_bytes);
@@ -1219,9 +1219,17 @@ static void init_system() {
 static void init_netmap() {
     struct nmreq req;
     char interface[64];
+    unsigned char mac_address[6];
+    char buf[32];
+    int rc;
+
+    rc = get_interface_mac(tconfig.ifname, mac_address);
+    t01_log(T01_NOTICE, "Capturing from %s [mac: %s][speed: %uMb/s]",
+            tconfig.ifname, rc == 0 ? etheraddr_string(mac_address, buf) : "unknown",
+            ethtool_get_interface_speed(tconfig.ifname));
 
     manage_interface_promisc_mode(tconfig.ifname, 1);
-    t01_log(T01_DEBUG,
+    t01_log(T01_NOTICE,
             "Please disable all types of offload for this NIC manually: ethtool -K %s gro off gso off tso off lro off",
             tconfig.ifname);
 
@@ -1276,6 +1284,13 @@ static void init_libpcap() {
 
     t01_log(T01_NOTICE, "Using %s", pcap_lib_version());
 
+    unsigned char mac_address[6];
+    char buf[32];
+    int rc = get_interface_mac(tconfig.ifname, mac_address);
+    t01_log(T01_NOTICE, "Capturing from %s [mac: %s][speed: %uMb/s]",
+            tconfig.ifname, rc == 0 ? etheraddr_string(mac_address, buf) : "unknown",
+            ethtool_get_interface_speed(tconfig.ifname));
+
     if (tconfig.bpf != NULL && tconfig.bpf[0] != 0) {
         struct bpf_program filter;
         pcap_compile(device, &filter, tconfig.bpf, 0, 0);
@@ -1313,8 +1328,17 @@ static void init_pfring() {
         exit(1);
     }
 
+    int ifindex = -1;
+    unsigned char mac_address[6];
+    char buf[32];
+    int rc = pfring_get_bound_device_address(in_ring, mac_address);
+    pfring_get_bound_device_ifindex(in_ring, &ifindex);
+    t01_log(T01_NOTICE, "Capturing from %s [mac: %s][speed: %uMb/s]",
+            tconfig.ifname, rc == 0 ? etheraddr_string(mac_address, buf) : "unknown",
+            pfring_get_interface_speed(in_ring));
+
     if (tconfig.bpf != NULL && tconfig.bpf[0] != 0) {
-        pfring_set_bpf_filter(device, tconfig.bpf);
+        pfring_set_bpf_filter(in_ring, tconfig.bpf);
     }
 
     workflow = setup_detection();
