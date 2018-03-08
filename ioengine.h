@@ -51,6 +51,9 @@ struct ioengine_data {
     int flag;
     int count;
     uint64_t ts;
+    uint64_t stat_ts;
+    int stat_count;
+    uint64_t stat_bytes;
     struct ioengine_ops *io_ops;
 };
 

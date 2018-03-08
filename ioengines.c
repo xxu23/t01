@@ -115,11 +115,21 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
         td->count = 0;
         td->ts = ts;
     }
+    td->stat_count++;
+    td->stat_bytes += len;
 
     if (!write || td->flag == 0)
         return -1;
     ret = write(td, data, len, flush);
     td->flag = ret > 0;
+    int interval = ts - td->stat_ts;
+    if (interval >= 5000) {
+        t01_log(T01_NOTICE, "ioengine producing %d pkt/s, %d bytes/s",
+                td->stat_count*1000/interval, td->stat_bytes*1000/interval);
+        td->stat_count = 0;
+        td->stat_bytes = 0;
+        td->stat_ts = ts;
+    }
     return ret;
 }
 
