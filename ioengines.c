@@ -69,12 +69,19 @@ void close_ioengine(struct ioengine_data *td) {
     }
 }
 
+static uint64_t t01_clock() {
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return tv.tv_sec * 1000LLU + tv.tv_usec / 1000;
+}
+
 int init_ioengine(struct ioengine_data *td, const char *args) {
     t01_log(T01_NOTICE, "init ioengine %s with opt %s", td->io_ops->name,
             args);
 
     td->total_param = zstrdup(args);
     td->io_ops->init(td, args);
+    td->stat_ts = td->ts = t01_clock();
 
     if (td->io_ops->connect) {
         int ret = td->io_ops->connect(td);
@@ -110,10 +117,11 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
     write_engine write = td->io_ops->write;
     int ret;
     int flush = 0;
-    if (++td->count >= MAX_FLUSH_ITEM || ts - td->ts >= 200) {
+    uint64_t now = t01_clock();
+    if (++td->count >= MAX_FLUSH_ITEM || now - td->ts >= 200) {
         flush = td->count;
         td->count = 0;
-        td->ts = ts;
+        td->ts = now;
     }
     td->stat_count++;
     td->stat_bytes += len;
@@ -122,13 +130,13 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
         return -1;
     ret = write(td, data, len, flush);
     td->flag = ret > 0;
-    int interval = ts - td->stat_ts;
+    int interval = now - td->stat_ts;
     if (interval >= 5000) {
         t01_log(T01_NOTICE, "ioengine producing %d pkt/s, %d bytes/s",
                 td->stat_count*1000/interval, td->stat_bytes*1000/interval);
         td->stat_count = 0;
         td->stat_bytes = 0;
-        td->stat_ts = ts;
+        td->stat_ts = now;
     }
     return ret;
 }
@@ -137,11 +145,12 @@ int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
                                const char *protocol, const char *packet, int pkt_len) {
     struct ndpi_flow_info *flow = (struct ndpi_flow_info *) flow_;
     write_engine write = td->io_ops->write;
-    u_int64_t ts = flow->last_seen;
+    u_int64_t now = t01_clock();
     int flush = 0;
-    if (++td->count >= MAX_FLUSH_ITEM || ts - td->ts >= 200) {
+    if (++td->count >= MAX_FLUSH_ITEM || now - td->ts >= 200) {
         flush = td->count;
         td->count = 0;
+        td->ts = now;
     }
 
     if (!write || td->flag == 0)
@@ -244,7 +253,7 @@ int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
 
     msgpack_pack_str(&pk, 4);
     msgpack_pack_str_body(&pk, "when", 4);
-    msgpack_pack_uint32(&pk, ts / 1000);
+    msgpack_pack_uint32(&pk, now / 1000);
 
     len = write(td, sbuf.data, sbuf.size, flush);
     clean:

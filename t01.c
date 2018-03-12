@@ -1211,7 +1211,9 @@ static void init_system() {
         exit(0);
     }
 
-    init_log(tconfig.verbose, tconfig.logfile);
+    if (tconfig.daemon_mode) {
+        init_log(tconfig.verbose, tconfig.logfile);
+    }
     lastsave = upstart = time(NULL);
     gettimeofday(&upstart_tv, NULL);
 }

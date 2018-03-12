@@ -35,16 +35,15 @@ static int kafka_init(struct ioengine_data *td, const char *param)
     int i = 0;
     char *s[3] = {0};
 
-    while((result = strtok_r(input, ":", &state)) != NULL)
+    while((result = strtok_r(input, ";", &state)) != NULL)
     {
-        if (i == 3)
+        if (i == 2)
             break;
         s[i++] = result;
         input = NULL;
     }
     td->host = i > 0 ? zstrdup(s[0]) : NULL;
-    td->port = i > 1 ? atoi(s[1]) : port;
-    td->topic = i > 2 ? zstrdup(s[2]) : "raw_queue";
+    td->topic = i > 1 ? zstrdup(s[1]) : "raw_queue";
     zfree(args);
 
     return 0;
@@ -55,18 +54,13 @@ static int kafka_connect(struct ioengine_data *td)
 	struct kafka_data *kd = zmalloc(sizeof(*kd));
 	char *total_param = td->total_param;
 	char *host = td->host;
-	int port = td->port;
 	char brokers[512];
 	char tmp[16];
 	char errstr[512];
 
 	bzero(kd, sizeof(*kd));
 
-    if (strchr(total_param, ',')) {
-        snprintf(brokers, sizeof(brokers), "%s", total_param);
-    } else {
-        snprintf(brokers, sizeof(brokers), "%s:%d", host, port);
-    }
+    snprintf(brokers, sizeof(brokers), "%s", host);
 
     /* Kafka configuration */
     kd->conf = rd_kafka_conf_new();
@@ -78,8 +72,17 @@ static int kafka_connect(struct ioengine_data *td)
     snprintf(tmp, sizeof(tmp), "%i", SIGIO);
     rd_kafka_conf_set(kd->conf, "internal.termination.signal", tmp, NULL, 0);
 
+    /* Producer config */
+    rd_kafka_conf_set(kd->conf, "queue.buffering.max.messages", "500000",
+                      NULL, 0);
+    rd_kafka_conf_set(kd->conf, "message.send.max.retries", "3", NULL, 0);
+    rd_kafka_conf_set(kd->conf, "retry.backoff.ms", "500", NULL, 0);
+
     /* Topic configuration */
     kd->topic_conf = rd_kafka_topic_conf_new();
+
+    rd_kafka_topic_conf_set(kd->topic_conf, "request.required.acks",
+                                0, errstr, sizeof(errstr));
 
 	/* Create Kafka handle */
 	if (!(kd->rk = rd_kafka_new(RD_KAFKA_PRODUCER, kd->conf, errstr, sizeof(errstr)))) {
@@ -132,9 +135,9 @@ static int kafka_ping(struct ioengine_data *td) {
 
 static int kafka_show_help()
 {
-	printf("--engine-opt=hostname[:port]\n"
-		"hostname   : Hostname for kafka broke\n"
-		"port       : Port of kafka broke\n");
+	printf("--engine-opt=hostname[;topic]\n"
+		"hostlist   : Hostname for kafka broke\n"
+		"topic      : kafka topic\n");
 	return 0;
 }
 
@@ -143,6 +146,7 @@ static int kafka_write(struct ioengine_data *td, const char *buffer, int len, in
 	struct kafka_data *kd = (struct kafka_data*)td->private;
 	int partition = RD_KAFKA_PARTITION_UA;
 	int ret;
+	int count = 0;
 
     if(!kd->rkt) {
 		/* Create topic */
@@ -151,19 +155,36 @@ static int kafka_write(struct ioengine_data *td, const char *buffer, int len, in
 	}
 
 	/* Send/Produce message. */
-    ret = rd_kafka_produce(kd->rkt, partition, RD_KAFKA_MSG_F_COPY,
+    ret = rd_kafka_produce(kd->rkt, partition, 0,
                            (void*)buffer, len, NULL, 0, NULL);
 	if(ret == -1) {
         rd_kafka_resp_err_t err = rd_kafka_last_error();
-		t01_log(T01_WARNING, "Failed to produce to topic %s partition %i: %s\n",
-			rd_kafka_topic_name(kd->rkt), partition,
-			rd_kafka_err2str(err));
-        if (err != RD_KAFKA_RESP_ERR__QUEUE_FULL)
-		    return -1;
+		if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
+			/* If the internal queue is full, wait for
+             * messages to be delivered and then retry.
+             * The internal queue represents both
+             * messages to be sent and messages that have
+             * been sent or failed, awaiting their
+             * delivery report callback to be called.
+             *
+             * The internal queue is limited by the
+             * configuration property
+             * queue.buffering.max.messages */
+            rd_kafka_poll(kd->rk, 10);
+            return len;
+		} else {
+            t01_log(T01_WARNING, "Failed to produce to topic %s partition %i: %s\n",
+                    rd_kafka_topic_name(kd->rkt), partition,
+                    rd_kafka_err2str(err));
+            return -1;
+		}
 	}
-	/* Poll to handle delivery reports */
-    if (flush)
-        rd_kafka_poll(kd->rk, 1);
+
+	/* A producer application should continually serve
+	 * the delivery report queue by calling rd_kafka_poll()
+	 * at frequent intervals.
+	 * */
+	rd_kafka_poll(kd->rk, 0/*non-blocking*/);
 
 	return len;
 }
