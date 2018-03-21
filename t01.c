@@ -201,10 +201,12 @@ static inline int netflow_data_filter(struct ndpi_flow_info *flow, void *packet)
     int i;
     for (i = 0; i < n_filters; i++) {
         if (filters[i].protocol == 0) {
-            if (filters[i].port == flow->dst_port)
+            if (filters[i].port == 0)
+                return 1;
+            else if (filters[i].port == flow->dst_port)
                 return 1;
         } else if (filters[i].protocol == flow->protocol &&
-                   filters[i].port == flow->dst_port)
+                (filters[i].port == 0 || filters[i].port == flow->dst_port))
             return 1;
     }
     return 0;
