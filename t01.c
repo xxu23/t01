@@ -90,6 +90,8 @@ uint64_t pkts_per_second_in = 0;
 uint64_t pkts_per_second_out = 0;
 uint64_t cur_bytes_per_second_in = 0;
 uint64_t cur_pkts_per_second_in = 0;
+uint64_t total_mirrored_pkts = 0;
+uint64_t last_mirrored_pkts = 0;
 uint64_t total_pkts_ndpi = 0;
 uint64_t last_pkts_ndpi = 0;
 uint64_t pkts_ndpi_per_second = 0;
@@ -231,6 +233,7 @@ static void netflow_data_clone(void *data, uint32_t n,
     fb->dport = dport;
 
     myqueue_push(mirror_queues[round], fb);
+    total_mirrored_pkts++;
     if (++round >= tconfig.engine_threads)
         round = 0;
 }
@@ -385,6 +388,12 @@ static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow) {
             prot = NDPI_PROTOCOL_SOCKS;
         else if (strcasecmp(p, "ipsec") == 0)
             prot = NDPI_PROTOCOL_IP_IPSEC;
+        else if (strcasecmp(p, "pop") == 0)
+            prot = NDPI_PROTOCOL_MAIL_POP;
+        else if (strcasecmp(p, "smtp") == 0)
+            prot = NDPI_PROTOCOL_MAIL_SMTP;
+        else if (strcasecmp(p, "imap") == 0)
+            prot = NDPI_PROTOCOL_MAIL_IMAP;
 
         if (prot > 0) {
             t01_log(T01_NOTICE, "Add procotol %s into ndpi mask", p);
@@ -617,6 +626,7 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
     uint64_t curr_udp_count = stat->udp_count - udp_count;
     uint64_t curr_hits;
     uint64_t curr_pkts_ndpi = total_pkts_ndpi - last_pkts_ndpi;
+    uint64_t curr_mirrored_pkts = total_mirrored_pkts - last_mirrored_pkts;
 
     gettimeofday(&curr_ts, NULL);
     tot_usec =
@@ -634,6 +644,7 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
     tcp_count = stat->tcp_count;
     udp_count = stat->udp_count;
     last_pkts_ndpi = total_pkts_ndpi;
+    last_mirrored_pkts = total_mirrored_pkts;
     total_hits = calc_totalhits();
 
     if (since_usec > 0) {
@@ -673,14 +684,19 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
         cur_bytes_per_second_in =
                 curr_total_wire_bytes * 8 * 1000000.0 / tot_usec;
         pkts_ndpi_per_second = curr_pkts_ndpi * 1000000.0 / tot_usec;
-        printf("\tTraffic duration:      %.3f sec\n",
-               tot_usec / 1000000.0);
+        printf("\tTraffic duration:      %.3f sec (total %.3f sec)\n",
+               tot_usec / 1000000.0, since_usec / 1000000.0);
         printf("\tTraffic throughput:    %s pps / %s/sec\n",
                format_packets(curr_ip_packet_count, buf),
                format_traffic(cur_bytes_per_second_in, 1, buf1));
-        printf("\tnDPI throughput:       %s pps (total %s pps)\n",
+        printf("\tnDPI throughput:       %s pps (total %s pkt)\n",
                format_packets(pkts_ndpi_per_second, buf),
                format_packets(total_pkts_ndpi, buf1));
+        if (mirror) {
+            uint64_t bmps = curr_mirrored_pkts * 1000000.0 / tot_usec;
+            printf("\tMirroring throughput:  %s pps\n",
+                   format_packets(bmps, buf));
+        }
         printf("\tIncoming throughput:   %s pps / %s/sec\n",
                format_packets(pkts_per_second_in, buf),
                format_traffic(bytes_per_second_in, 1, buf1));
