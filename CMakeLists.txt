@@ -51,7 +51,7 @@ target_link_libraries(t01-pfring ${T01_PFRING_LINK_LIB} ${EXTRA_LIBS})
 
 SET(T01_LINK_LIB ${MAIN_LINK_LIB}
         ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/libpcap.a)
-add_executable(t01 ${MAIN_SRC} crc32.h crc32.c)
+add_executable(t01 ${MAIN_SRC})
 target_link_libraries(t01 ${T01_LINK_LIB} ${EXTRA_LIBS})
 
 add_executable(tests_rule tests/tests_rule.c logger.c zmalloc.c rule.c crc64.c util.c ${THIRD_SRC})
