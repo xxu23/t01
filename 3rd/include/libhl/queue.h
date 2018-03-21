@@ -7,6 +7,10 @@
 #ifndef HL_QUEUE_H
 #define HL_QUEUE_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Callback that, if provided, will be called to release the value resources
  *        when an item is being removed from the queue
@@ -105,6 +109,10 @@ int queue_pop_right(queue_t *q, void **v);
  * @return 1 on success and 0 on failure
  */
 int queue_pop_left(queue_t *q, void **v);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 
