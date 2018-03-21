@@ -1120,8 +1120,9 @@ static void init_system() {
         create_pidfile();
     }
 
-    //zmalloc_enable_thread_safeness();
-    //event_set_mem_functions(zmalloc, zrealloc, zfree);
+    t01_log(T01_NOTICE, "Using malloc version %s", ZMALLOC_LIB);
+    t01_log(T01_NOTICE, "Using libevent version %s", event_get_version());
+    t01_log(T01_NOTICE, "Using nDPI version %s", ndpi_revision());
 
     attack_queue = myqueue_create();
     if (!attack_queue) {

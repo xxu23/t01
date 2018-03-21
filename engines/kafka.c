@@ -202,6 +202,8 @@ static struct ioengine_ops ioengine = {
 static void io_init io_kafka_register(void)
 {
 	register_ioengine(&ioengine);
+    t01_log(T01_NOTICE, "Using librdkafka version %s",
+            rd_kafka_version_str());
 }
 
 static void io_exit io_kafka_unregister(void)

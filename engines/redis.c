@@ -123,6 +123,8 @@ static struct ioengine_ops ioengine = {
 static void io_init io_redis_register(void)
 {
 	register_ioengine(&ioengine);
+	t01_log(T01_NOTICE, "Using libhiredis version %d.%d.%d",
+			HIREDIS_MAJOR, HIREDIS_MINOR, HIREDIS_PATCH);
 }
 
 static void io_exit io_redis_unregister(void)
