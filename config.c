@@ -100,9 +100,9 @@ void load_config(const char *filename) {
     get_string_from_json(item, json, "logfile", tconfig.logfile);
     get_string_from_json(item, json, "filter", tconfig.filter);
     get_string_from_json(item, json, "engine", tconfig.engine);
-    get_string_from_json(item, json, "backup_engine", tconfig.backup_engine_opt);
     get_string_from_json(item, json, "mirror_engine", tconfig.mirror_engine_opt);
     get_int_from_json(item, json, "engine_reconnect", tconfig.engine_reconnect);
+    get_int_from_json(item, json, "engine_threads", tconfig.engine_threads);
     get_int_from_json(item, json, "restart_if_crash", tconfig.restart_if_crash);
     get_int_from_json(item, json, "daemon", tconfig.daemon_mode);
     get_string_from_json(item, json, "master_ip", tconfig.master_ip);
@@ -124,6 +124,10 @@ void load_config(const char *filename) {
 
     if (strcasecmp(wm, "slave") == 0)
         tconfig.work_mode = SLAVE_MODE;
+    else if (strcasecmp(wm, "attack") == 0)
+        tconfig.work_mode = ATTACK_MODE;
+    else if (strcasecmp(wm, "mirror") == 0)
+        tconfig.work_mode = MIRROR_MODE;
     else if (strcasecmp(wm, "master") == 0)
         tconfig.work_mode = MASTER_MODE;
     else
@@ -194,7 +198,7 @@ void parse_options(int argc, char **argv) {
     char config_file[256];
 
     while ((opt = getopt(argc, argv,
-                         "SMdhc:i:o:r:e:b:p:C:m:B:v:l:F:j:H:")) != EOF) {
+                         "SMdhc:i:o:r:e:b:p:C:m:v:l:F:j:H:")) != EOF) {
         switch (opt) {
             case 'S':
                 tconfig.work_mode |= SLAVE_MODE;
@@ -266,10 +270,6 @@ void parse_options(int argc, char **argv) {
                 strcpy(tconfig.mirror_engine_opt, optarg);
                 break;
 
-            case 'B':
-                strcpy(tconfig.backup_engine_opt, optarg);
-                break;
-
             case 'h':
                 usage();
                 break;
@@ -280,14 +280,18 @@ void parse_options(int argc, char **argv) {
         }
     }
 
+    int core = get_cpu_cores();
+
     if (config_file[0])
         load_config(config_file);
 
     if (tconfig.cpu_thread > 0) {
-        int core = get_nprocs();
         if (tconfig.cpu_thread > core)
             tconfig.cpu_thread = 1;
     }
+
+    if (tconfig.engine_threads == 0)
+        tconfig.engine_threads = 1;
 
     // check parameters
     if (master_address[0]) {

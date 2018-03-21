@@ -100,13 +100,13 @@ static int kafka_connect(struct ioengine_data *td)
 		return -2;
 	}
 
-	td->private = kd;
+	td->private_data = kd;
 	return 0;
 }
 
 static int kafka_disconnect(struct ioengine_data *td)
 {
-	struct kafka_data *kd = (struct kafka_data*)td->private;
+	struct kafka_data *kd = (struct kafka_data*)td->private_data;
 	int run = 5;
 
     /* Destroy topic */
@@ -143,7 +143,7 @@ static int kafka_show_help()
 
 static int kafka_write(struct ioengine_data *td, const char *buffer, int len, int flush)
 {
-	struct kafka_data *kd = (struct kafka_data*)td->private;
+	struct kafka_data *kd = (struct kafka_data*)td->private_data;
 	int partition = RD_KAFKA_PARTITION_UA;
 	int ret;
 	int count = 0;

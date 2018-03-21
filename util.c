@@ -43,6 +43,7 @@
 #include <linux/if_ether.h>
 #include <netpacket/packet.h>
 #include <linux/sockios.h>
+#include <sys/sysinfo.h>
 
 #include "util.h"
 #include "zmalloc.h"
@@ -779,4 +780,20 @@ int ethtool_get_interface_speed(const char *device) {
 
     close(fd);
     return ep.speed;
+}
+
+int get_cpu_cores() {
+    return get_nprocs();
+}
+
+uint64_t get_total_ram() {
+    static uint64_t total = 0;
+
+    if (total == 0) {
+        struct sysinfo si;
+        sysinfo(&si);
+        total = si.totalram;
+    }
+
+    return total;
 }

@@ -48,19 +48,19 @@ static int redis_connect(struct ioengine_data *td)
 			host, port, c->errstr);
 		return -1;
 	}
-	td->private = c;
+	td->private_data = c;
 	return 0;
 }
 
 static int redis_disconnect(struct ioengine_data *td)
 {
-	redisContext *c = (redisContext *) td->private;
+	redisContext *c = (redisContext *) td->private_data;
 	redisFree(c);
 	return 0;
 }
 
 static int redis_ping(struct ioengine_data *td) {
-	redisContext *c = (redisContext *)td->private;
+	redisContext *c = (redisContext *)td->private_data;
 	redisReply *reply = (redisReply*)redisCommand(c, "ping");  
 	if(reply == NULL) {
 		return -1;
@@ -80,7 +80,7 @@ static int redis_show_help()
 
 static int redis_write(struct ioengine_data *td, const char *buffer, int len, int flush)
 {
-	redisContext *c = (redisContext *) td->private;
+	redisContext *c = (redisContext *) td->private_data;
 	redisReply *reply;
 	const char *v[3];
 	size_t vlen[3];

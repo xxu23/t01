@@ -31,7 +31,7 @@
 #ifndef __RULE_H__
 #define __RULE_H__
 
-#include "list.h" 
+#include "list.h"
 
 #define HITS_THRESHOLD_PER_SECOND 3000
 

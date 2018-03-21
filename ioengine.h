@@ -43,7 +43,7 @@ extern "C" {
 struct ioengine_ops;
 
 struct ioengine_data {
-    void *private;
+    void *private_data;
     char *total_param;
     char *host;
     int port;
@@ -79,9 +79,6 @@ extern int load_ioengine(struct ioengine_data *ed, const char *name);
 extern int init_ioengine(struct ioengine_data *ed, const char *args);
 
 extern void close_ioengine(struct ioengine_data *ed);
-
-extern int store_payload_via_ioengine(struct ioengine_data *ed, void *flow,
-                                      const char *protocol, const char *data, int len);
 
 extern int store_raw_via_ioengine(struct ioengine_data *ed, const char *data,
                                   int len, uint8_t protocol, uint64_t ts,

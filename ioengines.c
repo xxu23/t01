@@ -37,10 +37,9 @@
 
 #include "ioengine.h"
 #include "ndpi_api.h"
-#include "ndpi_util.h"
-#include "msgpack.h"
 #include "zmalloc.h"
 #include "logger.h"
+#include "util.h"
 
 static ZLIST_HEAD(engine_list);
 
@@ -60,7 +59,7 @@ void close_ioengine(struct ioengine_data *td) {
     t01_log(T01_DEBUG, "close ioengine %s", td->io_ops->name);
     if (td->io_ops->disconnect) {
         td->io_ops->disconnect(td);
-        td->private = NULL;
+        td->private_data = NULL;
         zfree(td->total_param);
         zfree(td->host);
         td->total_param = NULL;
@@ -132,134 +131,15 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
     td->flag = ret > 0;
     int interval = now - td->stat_ts;
     if (interval >= 5000) {
-        t01_log(T01_NOTICE, "ioengine producing %d pkt/s, %d bytes/s",
-                td->stat_count*1000/interval, td->stat_bytes*1000/interval);
+        char buf[64];
+        t01_log(T01_NOTICE, "ioengine producing %d pkt/s, %s/s",
+                td->stat_count*1000/interval,
+                format_traffic((float)td->stat_bytes*8000.0f/interval, 1, buf));
         td->stat_count = 0;
         td->stat_bytes = 0;
         td->stat_ts = now;
     }
     return ret;
-}
-
-int store_payload_via_ioengine(struct ioengine_data *td, void *flow_,
-                               const char *protocol, const char *packet, int pkt_len) {
-    struct ndpi_flow_info *flow = (struct ndpi_flow_info *) flow_;
-    write_engine write = td->io_ops->write;
-    u_int64_t now = t01_clock();
-    int flush = 0;
-    if (++td->count >= MAX_FLUSH_ITEM || now - td->ts >= 200) {
-        flush = td->count;
-        td->count = 0;
-        td->ts = now;
-    }
-
-    if (!write || td->flag == 0)
-        return -1;
-
-    u_int32_t src_ip = flow->src_ip;
-    u_int32_t dst_ip = flow->dst_ip;
-    int src_port = flow->src_port;
-    int dst_port = flow->dst_port;
-    u_int detected_protocol;
-    int map_size = 6, len;
-
-    msgpack_sbuffer sbuf;
-    msgpack_sbuffer_init(&sbuf);
-    msgpack_packer pk;
-    msgpack_packer_init(&pk, &sbuf, msgpack_sbuffer_write);
-
-    if (flow->detected_protocol.master_protocol)
-        detected_protocol = flow->detected_protocol.master_protocol;
-    else
-        detected_protocol = flow->detected_protocol.protocol;
-
-    if (detected_protocol == NDPI_PROTOCOL_HTTP) {
-        const char *payload = packet + flow->payload_offset;
-        pkt_len -= flow->payload_offset;
-        if (pkt_len <= 0)
-            goto clean;
-
-        map_size += 2;
-        msgpack_pack_map(&pk, map_size);
-
-        msgpack_pack_str(&pk, 4);
-        msgpack_pack_str_body(&pk, "host", 4);
-        len = strlen(flow->host_server_name);
-        msgpack_pack_str(&pk, len);
-        msgpack_pack_str_body(&pk, flow->host_server_name, len);
-
-        msgpack_pack_str(&pk, 4);
-        msgpack_pack_str_body(&pk, "body", 4);
-        //len = strlen(payload);
-        msgpack_pack_str(&pk, pkt_len);
-        msgpack_pack_str_body(&pk, payload, pkt_len);
-    } else if (detected_protocol == NDPI_PROTOCOL_DNS ||
-               detected_protocol == NDPI_PROTOCOL_SSL) {
-        char *host = NULL;
-        map_size += 1;
-        msgpack_pack_map(&pk, map_size);
-
-        if (detected_protocol == NDPI_PROTOCOL_DNS) {
-            host = flow->host_server_name;
-        } else {
-            if (flow->ssl.client_certificate[0])
-                host = flow->ssl.client_certificate;
-            else if (flow->ssl.server_certificate[0])
-                host = flow->ssl.server_certificate;
-        }
-
-        msgpack_pack_str(&pk, 4);
-        msgpack_pack_str_body(&pk, "host", 4);
-        if (host) {
-            len = strlen(host);
-            msgpack_pack_str(&pk, len);
-            msgpack_pack_str_body(&pk, host, len);
-        } else {
-            msgpack_pack_nil(&pk);
-        }
-    } else {
-        msgpack_pack_map(&pk, map_size);
-    }
-
-    char l[48], u[48];
-    inet_ntop(AF_INET, &src_ip, l, sizeof(l));
-    inet_ntop(AF_INET, &dst_ip, u, sizeof(u));
-
-    msgpack_pack_str(&pk, 8);
-    msgpack_pack_str_body(&pk, "protocol", 8);
-    len = strlen(protocol);
-    msgpack_pack_str(&pk, len);
-    msgpack_pack_str_body(&pk, protocol, len);
-
-    msgpack_pack_str(&pk, 8);
-    msgpack_pack_str_body(&pk, "src_ip", 8);
-    len = strlen(l);
-    msgpack_pack_str(&pk, len);
-    msgpack_pack_str_body(&pk, l, len);
-
-    msgpack_pack_str(&pk, 8);
-    msgpack_pack_str_body(&pk, "dst_ip", 8);
-    len = strlen(u);
-    msgpack_pack_str(&pk, len);
-    msgpack_pack_str_body(&pk, u, len);
-
-    msgpack_pack_str(&pk, 10);
-    msgpack_pack_str_body(&pk, "src_port", 10);
-    msgpack_pack_int(&pk, src_port);
-
-    msgpack_pack_str(&pk, 10);
-    msgpack_pack_str_body(&pk, "dst_port", 10);
-    msgpack_pack_int(&pk, dst_port);
-
-    msgpack_pack_str(&pk, 4);
-    msgpack_pack_str_body(&pk, "when", 4);
-    msgpack_pack_uint32(&pk, now / 1000);
-
-    len = write(td, sbuf.data, sbuf.size, flush);
-    clean:
-    msgpack_sbuffer_destroy(&sbuf);
-    td->flag = len > 0;
-    return len;
 }
 
 static struct ioengine_ops *find_ioengine(const char *name) {

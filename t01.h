@@ -36,7 +36,6 @@
 #define DEFAULT_RULE_PORT 9899
 #define DEFAULT_RULEDB "/var/lib/t01/dump.tdb"
 #define DEFAULT_PID_FILE "/var/run/t01.pid"
-#define MAX_BACKUP_DATA 65536
 #define MAX_PCAP_DATA 65535
 #define PCAP_PROMISC 1
 #define PCAP_TIMEOUT 0
@@ -47,7 +46,7 @@ extern "C" {
 #endif
 
 enum t01_work_mode {
-    SLAVE_MODE = 0x01, MASTER_MODE = 0x02
+    MASTER_MODE = 0x01, ATTACK_MODE = 0x02, MIRROR_MODE = 0x04, SLAVE_MODE = 0x06
 };
 
 enum t01_eth_mode {
@@ -72,8 +71,8 @@ struct t01_config {
     char filter[MAX_FILTERS * 16];
     char engine[64];
     char mirror_engine_opt[256];
-    char backup_engine_opt[256];
     int engine_reconnect;
+    int engine_threads;
     int daemon_mode;
     char master_ip[32];
     uint16_t master_port;

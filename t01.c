@@ -37,7 +37,6 @@
 #include <errno.h>
 #include <sys/poll.h>
 #include <net/if.h>
-#include <sys/sysinfo.h>
 #include <sys/wait.h>
 #include <sched.h>
 
@@ -45,7 +44,6 @@
 #include <event.h>
 #include <pcap.h>
 #include <pfring.h>
-#include <libhl/queue.h>
 
 #include "t01.h"
 #include "config.h"
@@ -58,14 +56,11 @@
 #include "http-server.h"
 #include "zmalloc.h"
 #include "util.h"
+#include "myqueue.h"
 
-#define MAX_THREADS 6
 
-struct backup_data {
-    char *buffer;
-    int len;
-    struct ndpi_flow_info *flow;
-};
+#define MAX_THREADS 64
+#define MAX_ENGINE_THREADS 8
 
 struct attack_data {
     struct ndpi_flow_info *flow;
@@ -105,20 +100,15 @@ char **argv_;
 struct t01_config tconfig;
 
 static struct ndpi_workflow *workflow;
-static queue_t *attack_queue;
-static queue_t *mirror_queue;
+static myqueue attack_queue;
 static ZLIST_HEAD(hitslog_list);
 static struct timeval upstart_tv;
-static struct backup_data backup_copy[MAX_BACKUP_DATA];
-static int bak_produce_idx = 0;
-static int bak_consume_idx = 0;
 static int udp_logfd;
 static struct nm_desc *nmr, *out_nmr;
 static int sendfd;
 static uint8_t shutdown_app = 0;
-static struct ioengine_data backup_engine;
-static struct ioengine_data mirror_engine;
-static int backup = 0;
+static myqueue mirror_queues[MAX_ENGINE_THREADS];
+static struct ioengine_data mirror_engines[MAX_ENGINE_THREADS];
 static int mirror = 0;
 static int enable_all_protocol = 1;
 static struct timeval last_report_ts;
@@ -132,6 +122,8 @@ static pcap_t *out_device;
 static pfring *in_ring;
 static pfring *out_ring;
 static pthread_t threads[MAX_THREADS];
+static int affinity[MAX_THREADS] = {0};
+static int nthreads;
 
 
 static struct filter_strategy {
@@ -202,9 +194,11 @@ static int mirror_filter_from_rule(struct ndpi_flow_info *flow, void *packet) {
     return 1;
 }
 
-static int netflow_data_filter(struct ndpi_flow_info *flow, void *packet) {
-    int i;
+static inline int netflow_data_filter(struct ndpi_flow_info *flow, void *packet) {
+    if (n_filters == 0)
+        return 1;
 
+    int i;
     for (i = 0; i < n_filters; i++) {
         if (filters[i].protocol == 0) {
             if (filters[i].port == flow->dst_port)
@@ -220,6 +214,7 @@ static void netflow_data_clone(void *data, uint32_t n,
                                uint8_t protocol, uint64_t ts,
                                uint32_t saddr, uint16_t sport,
                                uint32_t daddr, uint16_t dport) {
+    static int round = 0;
     struct filter_buffer *fb = zmalloc(sizeof(struct filter_buffer) + n);
     if (!fb)
         return;
@@ -233,7 +228,9 @@ static void netflow_data_clone(void *data, uint32_t n,
     fb->daddr = daddr;
     fb->dport = dport;
 
-    queue_push_right(mirror_queue, fb);
+    myqueue_push(mirror_queues[round], fb);
+    if (++round >= tconfig.engine_threads)
+        round = 0;
 }
 
 static void create_pidfile(void) {
@@ -331,27 +328,6 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
         flow->detected_protocol.master_protocol = NDPI_PROTOCOL_UNKNOWN;
     }
 
-    if (backup) {
-        int next_idx = bak_produce_idx + 1;
-        if (next_idx >= MAX_BACKUP_DATA)
-            next_idx -= MAX_BACKUP_DATA;
-        if (likely(next_idx != bak_consume_idx)) {
-            struct backup_data *d = &backup_copy[bak_produce_idx];
-            struct nm_pkthdr *h = (struct nm_pkthdr *) header;
-
-            d->len = h->len;
-            d->buffer = zmalloc(h->len);
-            if (d->buffer == NULL)
-                return;
-            memcpy(d->buffer, packet, h->len);
-            d->flow = flow;
-            next:
-            bak_produce_idx++;
-            if (bak_produce_idx == MAX_BACKUP_DATA)
-                bak_produce_idx = 0;
-        }
-    }
-
     total_pkts_ndpi++;
     struct rule *rule = match_rule_after_detected(flow);
     if (!rule)
@@ -372,7 +348,7 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
     attack->flow = flow;
     memcpy(attack->smac, (uint8_t *) packet + 6, 6);
     memcpy(attack->dmac, (uint8_t *) packet, 6);
-    queue_push_right(attack_queue, attack);
+    myqueue_push(attack_queue, attack);
 
     total_ip_bytes_out += len;
     ip_packet_count_out++;
@@ -422,11 +398,10 @@ static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow) {
 struct ndpi_workflow *setup_detection() {
     struct ndpi_workflow *workflow;
     struct ndpi_workflow_prefs prefs;
-    struct sysinfo si;
+    uint64_t total_ram = get_total_ram();
     u_int32_t max_ndpi_flows;
 
-    sysinfo(&si);
-    max_ndpi_flows = si.totalram / 2 / sizeof(struct ndpi_flow_info);
+    max_ndpi_flows = total_ram / 2 / sizeof(struct ndpi_flow_info);
     if (max_ndpi_flows > MAX_NDPI_FLOWS)
         max_ndpi_flows = MAX_NDPI_FLOWS;
 
@@ -461,8 +436,10 @@ struct ndpi_workflow *setup_detection() {
 
 static void setup_cpuaffinity(int index, const char *name) {
     cpu_set_t m;
+
+    index = affinity[index] + tconfig.cpu_thread;
     CPU_ZERO(&m);
-    CPU_SET(index - 1, &m);
+    CPU_SET(index, &m);
 
     if (-1 == pthread_setaffinity_np(pthread_self(), sizeof(m), &m)) {
         t01_log(T01_WARNING, "failed to bind cpu %d to thread %s: %s",
@@ -480,13 +457,13 @@ static void *attack_thread(void *args) {
 
     t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
-    if (core > 0)
+    if (core >= 0)
         setup_cpuaffinity(core, __FUNCTION__);
     pthread_setname_np(pthread_self(), __FUNCTION__);
 
     while (!shutdown_app) {
         struct attack_data *attack = NULL;
-        queue_pop_left(attack_queue, (void**)&attack);
+        myqueue_pop(attack_queue, (void**)&attack);
         if (attack == NULL) {
             nanosleep(&ts, NULL);
             continue;
@@ -586,23 +563,25 @@ static void *attack_thread(void *args) {
 
 static void *mirror_thread(void *args) {
     struct timespec ts = {.tv_sec = 0, .tv_nsec = 1};
-    int core = *((int *) args);
+    int index = *((int *) args);
     time_t last = time(NULL);
+    struct ioengine_data *mirror_engine = &mirror_engines[index];
+    myqueue mirror_queue = mirror_queues[index];
 
-    if (core > 0)
-        setup_cpuaffinity(core, __FUNCTION__);
+    if (index >= 0)
+        setup_cpuaffinity(index, __FUNCTION__);
 
     t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
     while (!shutdown_app) {
         struct filter_buffer *fb = NULL;
-        queue_pop_left(mirror_queue, (void**)&fb);
+        myqueue_pop(mirror_queue, (void**)&fb);
         if (fb == NULL) {
             nanosleep(&ts, NULL);
             continue;
         }
 
-        if (store_raw_via_ioengine(&mirror_engine, fb->buffer,
+        if (store_raw_via_ioengine(mirror_engine, fb->buffer,
                                    fb->len, fb->protocol, fb->ts,
                                    fb->saddr, fb->sport, fb->daddr,
                                    fb->dport) < 0) {
@@ -610,70 +589,11 @@ static void *mirror_thread(void *args) {
             if (now - last >= 5) {
                 t01_log(T01_WARNING,
                         "failed to write mirror ioengine, reconnect every 5 seconds");
-                check_ioengine(&mirror_engine);
+                check_ioengine(mirror_engine);
                 last = now;
             }
         }
         zfree(fb);
-    }
-
-    t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
-    return NULL;
-}
-
-static void *backup_thread(void *args) {
-    struct timespec ts = {.tv_sec = 0, .tv_nsec = 1};
-    char protocol[64];
-    int core = *((int *) args);
-    time_t last = time(NULL);
-
-    t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
-
-    if (core > 0)
-        setup_cpuaffinity(core, __FUNCTION__);
-    pthread_setname_np(pthread_self(), "backup_thread");
-
-    while (!shutdown_app) {
-        if (bak_consume_idx == bak_produce_idx) {
-            nanosleep(&ts, NULL);
-            continue;
-        }
-        struct backup_data *d = &backup_copy[bak_consume_idx];
-        struct ndpi_flow_info *flow = (struct ndpi_flow_info *) d->flow;
-
-        /*Whether the flow info is deleted? */
-        if (flow->magic != NDPI_FLOW_MAGIC
-            || flow->last_seen + MAX_IDLE_TIME < workflow->last_time)
-            goto next;
-
-        if (flow->detected_protocol.master_protocol)
-            ndpi_protocol2name(workflow->ndpi_struct,
-                               flow->detected_protocol, protocol,
-                               sizeof(protocol));
-        else
-            strcpy(protocol,
-                   ndpi_get_proto_name(workflow->ndpi_struct,
-                                       flow->detected_protocol.
-                                               protocol));
-
-
-        if (store_payload_via_ioengine(&backup_engine, flow, protocol,
-                                       d->buffer, d->len) < 0) {
-            time_t now = time(NULL);
-            if (now - last < 5)
-                continue;
-
-            t01_log(T01_WARNING,
-                    "failed to write backup ioengine, reconnect every 5 seconds");
-            check_ioengine(&backup_engine);
-            last = now;
-        }
-
-        next:
-        zfree(d->buffer);
-        bak_consume_idx++;
-        if (bak_consume_idx == MAX_BACKUP_DATA)
-            bak_consume_idx = 0;
     }
 
     t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
@@ -848,7 +768,7 @@ static void *hitslog_thread(void *args) {
 
     t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
-    if (core > 0)
+    if (core >= 0)
         setup_cpuaffinity(core, __FUNCTION__);
     pthread_setname_np(pthread_self(), "hitslog_thread");
     if (tconfig.hit_ip[0] && tconfig.hit_port) {
@@ -929,7 +849,7 @@ static void *libevent_thread(void *args) {
 
     t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
-    if (core > 0)
+    if (core >= 0)
         setup_cpuaffinity(core, __FUNCTION__);
     pthread_setname_np(pthread_self(), __FUNCTION__);
     /* initialize libevent */
@@ -962,7 +882,7 @@ static void *libevent_thread(void *args) {
         event_assign(&ev2, base, -1, EV_PERSIST, statistics_cb,
                      (void *) &ev2);
         evutil_timerclear(&tv2);
-        tv2.tv_sec = 2;
+        tv2.tv_sec = 5;
         event_add(&ev2, &tv2);
     }
 
@@ -1025,7 +945,7 @@ static void *netmap_thread(void *args) {
     t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
     pthread_setname_np(pthread_self(), __FUNCTION__);
-    if (core > 0)
+    if (core >= 0)
         setup_cpuaffinity(core, __FUNCTION__);
     memset(pfd, 0, sizeof(pfd));
     pfd[0].fd = nmr->fd;
@@ -1073,7 +993,7 @@ static void *libpcap_get_thread(void *args) {
 
     t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
-    if (core > 0)
+    if (core >= 0)
         setup_cpuaffinity(core, __FUNCTION__);
     pthread_setname_np(pthread_self(), "libpcap_thread");
 
@@ -1100,7 +1020,7 @@ static void *pfring_thread(void *args) {
 
     t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
 
-    if (core > 0)
+    if (core >= 0)
         setup_cpuaffinity(core, __FUNCTION__);
     pthread_setname_np(pthread_self(), "pfring_thread");
 
@@ -1112,15 +1032,30 @@ static void *pfring_thread(void *args) {
 
 static void main_thread() {
     int i, j = 0;
-    int affinity[MAX_THREADS] = {0};
-    int nthreads = 0;
+    int cores = get_cpu_cores();
+    int max_threads = MAX_THREADS >= cores ? MAX_THREADS : cores;
 
-    for (i = 0; i < MAX_THREADS; i++) {
+    for (i = 0; i < max_threads; i++) {
         if (tconfig.cpu_thread > 0)
-            affinity[i] = tconfig.cpu_thread + i;
+            affinity[i] = i;
+        else
+            affinity[i] = -1;
     }
 
     gettimeofday(&last_report_ts, NULL);
+
+    if (mirror) {
+        int i;
+        for (i = 0; i < tconfig.engine_threads; i++) {
+            if (pthread_create(&threads[nthreads++], NULL, mirror_thread,
+                               &affinity[j++]) != 0) {
+                t01_log(T01_WARNING, "Can't create mirror thread: %s",
+                        strerror(errno));
+                mirror = 0;
+                nthreads--;
+            }
+        }
+    }
 
     if (tconfig.work_mode & SLAVE_MODE) {
         if (tconfig.eth_mode & NETMAP_MODE &&
@@ -1146,7 +1081,7 @@ static void main_thread() {
         sleep(1);
     }
 
-    if (tconfig.work_mode & SLAVE_MODE &&
+    if (tconfig.work_mode & ATTACK_MODE &&
         pthread_create(&threads[nthreads++], NULL, attack_thread,
                        &affinity[j++]) != 0) {
         t01_log(T01_WARNING, "Can't create attack thread: %s",
@@ -1154,7 +1089,7 @@ static void main_thread() {
         exit(1);
     }
 
-    if ((tconfig.work_mode & SLAVE_MODE ||
+    if ((tconfig.work_mode & ATTACK_MODE &&
          (tconfig.hit_ip[0] && tconfig.hit_port)) &&
         pthread_create(&threads[nthreads++], NULL, hitslog_thread,
                        &affinity[j++]) != 0) {
@@ -1170,24 +1105,6 @@ static void main_thread() {
         exit(1);
     }
 
-    if (backup
-        && pthread_create(&threads[nthreads++], NULL, backup_thread,
-                          &affinity[j++]) != 0) {
-        t01_log(T01_WARNING, "Can't create backup thread: %s",
-                strerror(errno));
-        backup = 0;
-        nthreads--;
-    }
-
-    if (mirror
-        && pthread_create(&threads[nthreads++], NULL, mirror_thread,
-                          &affinity[j++]) != 0) {
-        t01_log(T01_WARNING, "Can't create mirror thread: %s",
-                strerror(errno));
-        mirror = 0;
-        nthreads--;
-    }
-
     for (i = 0; i < nthreads; i++) {
         pthread_join(threads[i], NULL);
     }
@@ -1196,20 +1113,29 @@ static void main_thread() {
 }
 
 static void init_system() {
+    int i;
+
     if (tconfig.daemon_mode) {
         daemonize();
         create_pidfile();
     }
 
-    zmalloc_enable_thread_safeness();
+    //zmalloc_enable_thread_safeness();
     //event_set_mem_functions(zmalloc, zrealloc, zfree);
 
-    attack_queue = queue_create();
-    mirror_queue = queue_create();
-    if (!attack_queue || !mirror_queue) {
-        t01_log(T01_WARNING, "failed to initialize queue");
+    attack_queue = myqueue_create();
+    if (!attack_queue) {
+        t01_log(T01_WARNING, "failed to initialize attack queue");
         exit(0);
     }
+    for (i = 0; i < tconfig.engine_threads; i++) {
+        mirror_queues[i] = myqueue_create();
+        if (!mirror_queues[i]) {
+            t01_log(T01_WARNING, "failed to initialize mirror queue");
+            exit(0);
+        }
+    }
+
 
     if (tconfig.daemon_mode) {
         init_log(tconfig.verbose, tconfig.logfile);
@@ -1350,6 +1276,7 @@ static void init_engine() {
     if (tconfig.filter[0]) {
         char *temp = zstrdup(tconfig.filter), *p, *last = NULL;
         p = strtok_r(temp, ",", &last);
+        n_filters = 0;
         while (p != NULL) {
             char protocol[64] = {0}, port[10] = {
                     0};
@@ -1380,33 +1307,24 @@ static void init_engine() {
         zfree(temp);
     }
 
-    if (tconfig.engine[0] && tconfig.mirror_engine_opt[0]) {
-            if (load_ioengine(&mirror_engine, tconfig.engine) < 0) {
+    if (tconfig.work_mode & MIRROR_MODE &&
+            tconfig.engine[0] && tconfig.mirror_engine_opt[0]) {
+        int i;
+        if (tconfig.engine_threads > MAX_ENGINE_THREADS)
+            tconfig.engine_threads = MAX_ENGINE_THREADS;
+        for (i = 0; i < tconfig.engine_threads; i++) {
+            if (load_ioengine(&mirror_engines[i], tconfig.engine) < 0) {
                 t01_log(T01_WARNING, "Unable to load mirror engine %s",
-                    tconfig.engine);
+                        tconfig.engine);
             }
 
-            if (init_ioengine(&mirror_engine, tconfig.mirror_engine_opt) < 0) {
+            if (init_ioengine(&mirror_engines[i], tconfig.mirror_engine_opt) < 0) {
                 t01_log(T01_WARNING, "Unable to init mirror engine %s",
                         tconfig.engine);
                 mirror = tconfig.engine_reconnect > 0;
             } else {
                 mirror = 1;
             }
-    }
-
-    if (tconfig.engine[0] && tconfig.backup_engine_opt[0]) {
-        if (load_ioengine(&backup_engine, tconfig.engine) < 0) {
-            t01_log(T01_WARNING, "Unable to load backup engine %s",
-                    tconfig.engine);
-        }
-
-        if (init_ioengine(&backup_engine, tconfig.backup_engine_opt) < 0) {
-            t01_log(T01_WARNING, "Unable to init backup engine %s",
-                    tconfig.engine);
-            backup = tconfig.engine_reconnect > 0;
-        } else {
-            backup = 1;
         }
     }
 }

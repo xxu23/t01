@@ -68,6 +68,10 @@ int get_interface_mac(const char* device, unsigned char mac[6]);
 
 int ethtool_get_interface_speed(const char *device);
 
+int get_cpu_cores();
+
+uint64_t get_total_ram();
+
 #ifdef __cplusplus
 }
 #endif
