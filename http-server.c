@@ -36,7 +36,6 @@
 #include <unistd.h>
 #include <errno.h>
 #include <inttypes.h>
-#include <sys/sysinfo.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -49,6 +48,7 @@
 #include "zmalloc.h"
 #include "logger.h"
 #include "cJSON.h"
+#include "util.h"
 
 static void sync_slaves_rules(const char *path, int method,
 			      const char *body, size_t len);
@@ -623,13 +623,11 @@ static int client_get_server_info(struct cmd *cmd)
 	cJSON *root = cJSON_CreateObject();
 	char *result;
 	uint64_t total_rules, enabled_rules;
-	struct sysinfo si;
-	sysinfo(&si);
 
 	cJSON_AddNumberToObject(root, "upstart", upstart);
 	cJSON_AddNumberToObject(root, "now", time(NULL));
 	cJSON_AddNumberToObject(root, "used_memory", zmalloc_used_memory());
-	cJSON_AddNumberToObject(root, "total_memory", si.totalram);
+	cJSON_AddNumberToObject(root, "total_memory", get_total_ram());
 	cJSON_AddNumberToObject(root, "version", version);
 	cJSON_AddNumberToObject(root, "crc64", calc_crc64_rules());
 
@@ -637,7 +635,7 @@ static int client_get_server_info(struct cmd *cmd)
 	cJSON_AddNumberToObject(root, "total_rules", total_rules);
 	cJSON_AddNumberToObject(root, "enabled_rules", enabled_rules);
 
-	if (tconfig.work_mode & NETMAP_MODE) {
+	if (tconfig.work_mode & SLAVE_MODE) {
 		cJSON_AddStringToObject(root, "iface", tconfig.ifname);
 		cJSON_AddStringToObject(root, "oface",
 					tconfig.ofname[0] ? tconfig.
