@@ -19,8 +19,8 @@ include_directories( "./3rd/include/" )
 include_directories( "./3rd/include/pcap/" )
 include_directories( "./3rd/include/libhl/" )
 include_directories( "./3rd/include/pfring/" )
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wformat=0")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.2 -mpclmul -Wformat=0")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.2 -mpclmul -std=c++11")
 
 if (USE_JEMALLOC)
 add_definitions(-DUSE_JEMALLOC)
@@ -34,13 +34,13 @@ endif(USE_CXXQUEUE)
 SET(THIRD_SRC_DIR 3rd/src/)
 SET(CJSON_SRC_DIR ${THIRD_SRC_DIR}/cJSON)
 SET(THIRD_SRC ${CJSON_SRC_DIR}/cJSON.c)
-SET(MAIN_SRC t01.c myqueue.cpp logger.c config.c zmalloc.c ndpi_util.c pktgen.c rule.c crc32.c crc64.c util.c anet.c http-server.c ioengines.c engines/redis.c engines/kafka.c ${THIRD_SRC})
+SET(MAIN_SRC t01.c myqueue.cpp logger.c config.c zmalloc.c ndpi_util.c pktgen.c rule.c crc64.c util.c anet.c http-server.c ioengines.c engines/redis.c engines/kafka.c ${THIRD_SRC})
 SET(MAIN_LINK_LIB m pthread
         ${PROJECT_SOURCE_DIR}/3rd/lib/libndpi.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libhiredis.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/librdkafka.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a
-        z
+        ${PROJECT_SOURCE_DIR}/3rd/lib/libz.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libpcap/pfring/libpfring.a
         ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
 
@@ -57,7 +57,7 @@ target_link_libraries(t01 ${T01_LINK_LIB} ${EXTRA_LIBS})
 add_executable(tests_rule tests/tests_rule.c logger.c zmalloc.c rule.c crc64.c util.c ${THIRD_SRC})
 target_link_libraries(tests_rule m pthread)
 target_link_libraries(tests_rule ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
-target_link_libraries(tests_rule z)
+target_link_libraries(tests_rule ${PROJECT_SOURCE_DIR}/3rd/lib/libz.a)
 target_link_libraries(tests_rule ${EXTRA_LIBS})
 
 add_executable(t01log t01log.c anet.c logger.c util.c zmalloc.c)
@@ -66,5 +66,6 @@ target_link_libraries(t01log m pthread)
 target_link_libraries(t01log ${EXTRA_LIBS})
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libmysqlclient.a)
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
-target_link_libraries(t01log z m)
+target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libz.a)
+target_link_libraries(t01log m)
 

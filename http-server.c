@@ -129,12 +129,12 @@ static struct http_query *get_query_param(const char *at, int *count)
 			queries = zrealloc(queries, n * sizeof(struct http_query));
 			memset(&queries[n-1], 0, sizeof(struct http_query));
 
-			queries[n-1].key = zcalloc(key_len + 1, 1);
+			queries[n-1].key = tcalloc(key_len + 1, 1);
 			memcpy(queries[n-1].key + queries[n-1].key_sz, key, key_len);
 			queries[n-1].key_sz = key_len + 1;
 			queries[n-1].key[queries[n-1].key_sz] = 0;
 
-			queries[n-1].val = zcalloc(val_len + 1, 1);
+			queries[n-1].val = tcalloc(val_len + 1, 1);
 			memcpy(queries[n-1].val + queries[n-1].val_sz, val, val_len);
 			queries[n-1].val_sz = val_len + 1;
 			queries[n-1].val[queries[n-1].val_sz] = 0;
@@ -163,14 +163,14 @@ static void mark_slave_offline(const char *ip, int port)
 static struct cmd *cmd_new(struct evhttp_request *req, int count,
 			   const char *body, size_t body_len)
 {
-	struct cmd *c = zcalloc(1, sizeof(struct cmd));
+	struct cmd *c = tcalloc(1, sizeof(struct cmd));
 	if (!c)
 		return NULL;
 
 	c->req = req;
 	c->count = count;
-	c->argv = zcalloc(count, sizeof(char *));
-	c->argv_len = zcalloc(count, sizeof(size_t));
+	c->argv = tcalloc(count, sizeof(char *));
+	c->argv_len = tcalloc(count, sizeof(size_t));
 	c->body = body;
 	c->body_len = body_len;
 	c->query_count = 0;
@@ -862,7 +862,7 @@ static int slave_registry_cluster(struct cmd *cmd)
 		}
 	}
 	if (!slave) {
-		slave = zcalloc(1, sizeof(*slave));
+		slave = tcalloc(1, sizeof(*slave));
 		strncpy(slave->ip, cmd->ip, sizeof(slave->ip));
 		slave->port = slave_port;
 		list_add_tail(&slave->list, &slave_list);

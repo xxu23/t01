@@ -155,7 +155,7 @@ static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
     if (tconfig.work_mode & SLAVE_MODE ||
         (tconfig.hit_ip[0] && tconfig.hit_port)) {
         /* Send log to master or log server */
-        struct hits_log_rz *hl = zcalloc(1, sizeof(*hl));
+        struct hits_log_rz *hl = tcalloc(1, sizeof(*hl));
         if (!hl)
             return;
         rule->hits++;
