@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 2.6)
 project(t01)
 
-option(USE_JEMALLOC "used jemalloc as replacement for libc malloc" ON)
-option(USE_CXXQUEUE "used moodycamel::ConcurrentQueue" ON)
+option(USE_JEMALLOC "used jemalloc as replacement for libc malloc" OFF)
+option(USE_TCMALLOC "used tcmalloc as replacement for libc malloc" ON)
+option(USE_CXXQUEUE "used moodycamel::ConcurrentQueue" OFF)
+option(USE_CXX_BOUNDEDQUEUE "used lock-free circular buffers queue" ON)
 
 set(CMAKE_BUILD_TYPE Release)
 
@@ -19,17 +21,28 @@ include_directories( "./3rd/include/" )
 include_directories( "./3rd/include/pcap/" )
 include_directories( "./3rd/include/libhl/" )
 include_directories( "./3rd/include/pfring/" )
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.2 -mpclmul -Wformat=0")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.2 -mpclmul -std=c++11")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.2 -mpclmul -g -Wformat=0")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.2 -mpclmul -g -std=c++11")
 
+if (USE_TCMALLOC)
+    add_definitions(-DUSE_TCMALLOC)
+    include_directories( "./3rd/include/jemalloc/" )
+    set(EXTRA_LIBS ${EXTRA_LIBS} ${PROJECT_SOURCE_DIR}/3rd/lib/libtcmalloc.a
+            ${EXTRA_LIBS} ${PROJECT_SOURCE_DIR}/3rd/lib/libunwind.a
+            ${EXTRA_LIBS} ${PROJECT_SOURCE_DIR}/3rd/lib/liblzma.a
+            dl pthread)
+endif (USE_TCMALLOC)
 if (USE_JEMALLOC)
-add_definitions(-DUSE_JEMALLOC)
-include_directories( "./3rd/include/jemalloc/" )
-set(EXTRA_LIBS ${EXTRA_LIBS} ${PROJECT_SOURCE_DIR}/3rd/lib/libjemalloc.a dl pthread)
+    add_definitions(-DUSE_JEMALLOC)
+    include_directories( "./3rd/include/jemalloc/" )
+    set(EXTRA_LIBS ${EXTRA_LIBS} ${PROJECT_SOURCE_DIR}/3rd/lib/libjemalloc.a dl pthread)
 endif (USE_JEMALLOC)
 if (USE_CXXQUEUE)
     add_definitions(-DUSE_CXXQUEUE)
 endif(USE_CXXQUEUE)
+if (USE_CXX_BOUNDEDQUEUE)
+    add_definitions(-DUSE_CXX_BOUNDEDQUEUE)
+endif (USE_CXX_BOUNDEDQUEUE)
 
 SET(THIRD_SRC_DIR 3rd/src/)
 SET(CJSON_SRC_DIR ${THIRD_SRC_DIR}/cJSON)
@@ -58,7 +71,7 @@ add_executable(tests_rule tests/tests_rule.c logger.c zmalloc.c rule.c crc64.c u
 target_link_libraries(tests_rule m pthread)
 target_link_libraries(tests_rule ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
 target_link_libraries(tests_rule ${PROJECT_SOURCE_DIR}/3rd/lib/libz.a)
-target_link_libraries(tests_rule ${EXTRA_LIBS})
+target_link_libraries(tests_rule ${EXTRA_LIBS} stdc++)
 
 add_executable(t01log t01log.c anet.c logger.c util.c zmalloc.c)
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
@@ -67,5 +80,5 @@ target_link_libraries(t01log ${EXTRA_LIBS})
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libmysqlclient.a)
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libz.a)
-target_link_libraries(t01log m)
+target_link_libraries(t01log m stdc++)
 

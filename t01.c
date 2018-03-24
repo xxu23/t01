@@ -56,6 +56,7 @@
 #include "http-server.h"
 #include "zmalloc.h"
 #include "util.h"
+#include "atomicvar.h"
 #include "myqueue.h"
 
 
@@ -90,8 +91,6 @@ uint64_t pkts_per_second_in = 0;
 uint64_t pkts_per_second_out = 0;
 uint64_t cur_bytes_per_second_in = 0;
 uint64_t cur_pkts_per_second_in = 0;
-uint64_t total_mirrored_pkts = 0;
-uint64_t last_mirrored_pkts = 0;
 uint64_t total_pkts_ndpi = 0;
 uint64_t last_pkts_ndpi = 0;
 uint64_t pkts_ndpi_per_second = 0;
@@ -111,7 +110,8 @@ static int sendfd;
 static uint8_t shutdown_app = 0;
 static myqueue mirror_queues[MAX_ENGINE_THREADS];
 static struct ioengine_data mirror_engines[MAX_ENGINE_THREADS];
-static int mirror = 0;
+static int is_mirror = 0;
+static int is_attack = 0;
 static int enable_all_protocol = 1;
 static struct timeval last_report_ts;
 static NDPI_PROTOCOL_BITMASK ndpi_mask;
@@ -126,7 +126,10 @@ static pfring *out_ring;
 static pthread_t threads[MAX_THREADS];
 static int affinity[MAX_THREADS] = {0};
 static int nthreads;
-
+static uint64_t total_out_mqueue;
+static uint64_t total_in_mqueue;
+static uint64_t last_out_mqueue;
+static uint64_t last_in_mqueue;
 
 static struct filter_strategy {
     uint8_t protocol;
@@ -138,10 +141,6 @@ struct filter_buffer {
     uint64_t ts;
     int len;
     int protocol;
-    uint32_t saddr;
-    uint32_t daddr;
-    uint16_t sport;
-    uint16_t dport;
     char buffer[0];
 };
 
@@ -215,9 +214,7 @@ static inline int netflow_data_filter(struct ndpi_flow_info *flow, void *packet)
 }
 
 static void netflow_data_clone(void *data, uint32_t n,
-                               uint8_t protocol, uint64_t ts,
-                               uint32_t saddr, uint16_t sport,
-                               uint32_t daddr, uint16_t dport) {
+                               uint8_t protocol, uint64_t ts) {
     static int round = 0;
     struct filter_buffer *fb = zmalloc(sizeof(struct filter_buffer) + n);
     if (!fb)
@@ -227,15 +224,14 @@ static void netflow_data_clone(void *data, uint32_t n,
     fb->len = n;
     fb->protocol = protocol;
     fb->ts = ts;
-    fb->saddr = saddr;
-    fb->sport = sport;
-    fb->daddr = daddr;
-    fb->dport = dport;
 
-    myqueue_push(mirror_queues[round], fb);
-    total_mirrored_pkts++;
-    if (++round >= tconfig.engine_threads)
-        round = 0;
+    if (myqueue_push(mirror_queues[round], fb) != 0) {
+        zfree(fb);
+    } else {
+        total_in_mqueue++;
+        if (++round >= tconfig.engine_threads)
+            round = 0;
+    }
 }
 
 static void create_pidfile(void) {
@@ -334,6 +330,9 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
     }
 
     total_pkts_ndpi++;
+    if (is_attack == 0)
+        return;
+
     struct rule *rule = match_rule_after_detected(flow);
     if (!rule)
         return;
@@ -353,10 +352,12 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
     attack->flow = flow;
     memcpy(attack->smac, (uint8_t *) packet + 6, 6);
     memcpy(attack->dmac, (uint8_t *) packet, 6);
-    myqueue_push(attack_queue, attack);
-
-    total_ip_bytes_out += len;
-    ip_packet_count_out++;
+    if (myqueue_push(attack_queue, attack) < 0) {
+        zfree(attack);
+    } else {
+        total_ip_bytes_out += len;
+        ip_packet_count_out++;
+    }
 }
 
 static void setup_ndpi_protocol_mask(struct ndpi_workflow *workflow) {
@@ -429,8 +430,8 @@ struct ndpi_workflow *setup_detection() {
                                              (void *) (uintptr_t) workflow);
     ndpi_set_mirror_data_callback(workflow,
                                   mirror_filter_from_rule,
-                                  mirror ? netflow_data_clone : NULL,
-                                  mirror ? netflow_data_filter : NULL);
+                                  is_mirror ? netflow_data_clone : NULL,
+                                  is_mirror ? netflow_data_filter : NULL);
 
     setup_ndpi_protocol_mask(workflow);
 
@@ -591,11 +592,10 @@ static void *mirror_thread(void *args) {
             nanosleep(&ts, NULL);
             continue;
         }
+        atomicIncr(total_out_mqueue, 1);
 
         if (store_raw_via_ioengine(mirror_engine, fb->buffer,
-                                   fb->len, fb->protocol, fb->ts,
-                                   fb->saddr, fb->sport, fb->daddr,
-                                   fb->dport) < 0) {
+                                   fb->len, fb->protocol, fb->ts) < 0) {
             time_t now = time(NULL);
             if (now - last >= 5) {
                 t01_log(T01_WARNING,
@@ -616,17 +616,15 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
     struct timeval curr_ts;
     uint64_t tot_usec, since_usec;
     uint64_t total_hits = 0;
-    uint64_t curr_raw_packet_count =
-            stat->raw_packet_count - raw_packet_count;
     uint64_t curr_ip_packet_count = stat->ip_packet_count - ip_packet_count;
     uint64_t curr_total_wire_bytes =
             stat->total_wire_bytes - total_wire_bytes;
-    uint64_t curr_total_ip_bytes = stat->total_ip_bytes - total_ip_bytes;
     uint64_t curr_tcp_count = stat->tcp_count - tcp_count;
     uint64_t curr_udp_count = stat->udp_count - udp_count;
     uint64_t curr_hits;
     uint64_t curr_pkts_ndpi = total_pkts_ndpi - last_pkts_ndpi;
-    uint64_t curr_mirrored_pkts = total_mirrored_pkts - last_mirrored_pkts;
+    uint64_t curr_mirrored_in = total_in_mqueue - last_in_mqueue;
+    uint64_t curr_mirrored_out = total_out_mqueue - last_out_mqueue;
 
     gettimeofday(&curr_ts, NULL);
     tot_usec =
@@ -644,7 +642,8 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
     tcp_count = stat->tcp_count;
     udp_count = stat->udp_count;
     last_pkts_ndpi = total_pkts_ndpi;
-    last_mirrored_pkts = total_mirrored_pkts;
+    last_in_mqueue = total_in_mqueue;
+    last_out_mqueue = total_out_mqueue;
     total_hits = calc_totalhits();
 
     if (since_usec > 0) {
@@ -670,10 +669,6 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
         printf("\tPFRING recv/drop:      %llu / %llu\n", pfstat.recv, pfstat.drop);
     }
     printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
-    printf("\tIP bytes:              %-13llu\n", curr_total_ip_bytes);
-    printf
-            ("\tIP packets:            %-13llu of %llu packets total\n",
-             curr_ip_packet_count, curr_raw_packet_count);
     printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
     printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
 
@@ -692,10 +687,11 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
         printf("\tnDPI throughput:       %s pps (total %s pkt)\n",
                format_packets(pkts_ndpi_per_second, buf),
                format_packets(total_pkts_ndpi, buf1));
-        if (mirror) {
-            uint64_t bmps = curr_mirrored_pkts * 1000000.0 / tot_usec;
-            printf("\tMirroring throughput:  %s pps\n",
-                   format_packets(bmps, buf));
+        if (is_mirror) {
+            uint64_t qin = curr_mirrored_in * 1000000.0 / tot_usec;
+            uint64_t qout = curr_mirrored_out * 1000000.0 / tot_usec;
+            printf("\tMirroring throughput:  in %s pps / out %s pps\n",
+                   format_packets(qin, buf), format_packets(qout, buf1));
         }
         printf("\tIncoming throughput:   %s pps / %s/sec\n",
                format_packets(pkts_per_second_in, buf),
@@ -1005,7 +1001,7 @@ void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *pac
     ndpi_workflow_clean_idle_flows(workflow, 0);
 }
 
-static void *libpcap_get_thread(void *args) {
+static void *libpcap_thread(void *args) {
     int core = *((int *) args);
     int pcap_id = 0;
 
@@ -1062,14 +1058,14 @@ static void main_thread() {
 
     gettimeofday(&last_report_ts, NULL);
 
-    if (mirror) {
+    if (is_mirror) {
         int i;
         for (i = 0; i < tconfig.engine_threads; i++) {
             if (pthread_create(&threads[nthreads++], NULL, mirror_thread,
                                &affinity[j++]) != 0) {
                 t01_log(T01_WARNING, "Can't create mirror thread: %s",
                         strerror(errno));
-                mirror = 0;
+                is_mirror = 0;
                 nthreads--;
             }
         }
@@ -1083,7 +1079,7 @@ static void main_thread() {
                     strerror(errno));
             exit(1);
         } else if (tconfig.eth_mode & LIBPCAP_MODE &&
-                pthread_create(&threads[nthreads++], NULL, libpcap_get_thread,
+                pthread_create(&threads[nthreads++], NULL, libpcap_thread,
                        &affinity[j++]) != 0) {
             t01_log(T01_WARNING, "Can't create libpcap_get thread: %s",
                     strerror(errno));
@@ -1155,12 +1151,13 @@ static void init_system() {
         }
     }
 
-
     if (tconfig.daemon_mode) {
         init_log(tconfig.verbose, tconfig.logfile);
     }
     lastsave = upstart = time(NULL);
     gettimeofday(&upstart_tv, NULL);
+    is_attack = tconfig.work_mode & ATTACK_MODE;
+    is_mirror = tconfig.work_mode & MIRROR_MODE;
 }
 
 static void init_netmap() {
@@ -1340,9 +1337,9 @@ static void init_engine() {
             if (init_ioengine(&mirror_engines[i], tconfig.mirror_engine_opt) < 0) {
                 t01_log(T01_WARNING, "Unable to init mirror engine %s",
                         tconfig.engine);
-                mirror = tconfig.engine_reconnect > 0;
+                is_mirror = tconfig.engine_reconnect > 0;
             } else {
-                mirror = 1;
+                is_mirror = 1;
             }
         }
     }

@@ -110,9 +110,7 @@ int check_ioengine(struct ioengine_data *td) {
 typedef int (*write_engine)(struct ioengine_data *, const char *, int, int);
 
 int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
-                           int len, uint8_t protocol, uint64_t ts,
-                           uint32_t saddr, uint16_t sport,
-                           uint32_t daddr, uint16_t dport) {
+                           int len, uint8_t protocol, uint64_t ts) {
     write_engine write = td->io_ops->write;
     int ret;
     int flush = 0;

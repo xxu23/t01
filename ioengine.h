@@ -81,9 +81,7 @@ extern int init_ioengine(struct ioengine_data *ed, const char *args);
 extern void close_ioengine(struct ioengine_data *ed);
 
 extern int store_raw_via_ioengine(struct ioengine_data *ed, const char *data,
-                                  int len, uint8_t protocol, uint64_t ts,
-                                  uint32_t saddr, uint16_t sport,
-                                  uint32_t daddr, uint16_t dport);
+                                  int len, uint8_t protocol, uint64_t ts);
 
 extern int check_ioengine(struct ioengine_data *ed);
 

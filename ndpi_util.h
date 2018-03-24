@@ -113,7 +113,7 @@ struct ndpi_workflow;
 /** workflow, flow, user data */
 typedef void (*ndpi_workflow_callback_ptr)(struct ndpi_workflow *, struct ndpi_flow_info *, void *, void *);
 
-typedef void (*data_clone_callback_ptr)(void *, uint32_t, uint8_t, uint64_t, uint32_t, uint16_t, uint32_t, uint16_t);
+typedef void (*data_clone_callback_ptr)(void *, uint32_t, uint8_t, uint64_t);
 
 typedef int (*data_filter_callback_ptr)(struct ndpi_flow_info *, void *);
 

@@ -6,7 +6,29 @@
 
 #include "myqueue.h"
 
-#ifdef USE_CXXQUEUE
+#if defined(USE_CXX_BOUNDEDQUEUE)
+
+#include <iostream>
+#include "spsc-bounded-queue.hpp"
+
+typedef spsc_bounded_queue_t<void*> queue;
+
+myqueue myqueue_create() {
+    queue *q = new queue(1<<17);
+    return q;
+}
+
+int myqueue_push(myqueue q, void *item) {
+    queue *q2 = (queue*)q;
+    return q2->enqueue(item) ? 0 : -1;
+}
+
+int myqueue_pop(myqueue q, void **item) {
+    queue *q2 = (queue*)q;
+    return q2->dequeue(*item) ? 0 : -1;
+}
+
+#elif defined(USE_CXXQUEUE)
 
 #include "concurrentqueue.h"
 

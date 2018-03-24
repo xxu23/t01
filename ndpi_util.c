@@ -453,9 +453,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
           && workflow->__data_clone_callback) {
           workflow->__data_clone_callback(workflow->__packet_data, 
                                           workflow->__packet_header->len, 
-                                          newflow->protocol, workflow->last_time,
-                                          newflow->src_ip, newflow->src_port,
-                                          newflow->dst_ip, newflow->dst_port);
+                                          newflow->protocol, workflow->last_time);
       }
 
       return newflow;
@@ -476,9 +474,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
         workflow->__data_clone_callback) {
         workflow->__data_clone_callback(workflow->__packet_data, 
                                         workflow->__packet_header->len, 
-                                        flow->protocol, workflow->last_time,
-                                        flow->src_ip, flow->src_port,
-                                        flow->dst_ip, flow->dst_port);
+                                        flow->protocol, workflow->last_time);
     }
 
     if(flag == 0) flow->src_ipid = id, flow->src_ttl = ttl;
