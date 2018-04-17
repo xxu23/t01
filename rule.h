@@ -115,8 +115,10 @@ struct rule {
 #define T01_WHICH_HOST 			1
 #define T01_WHICH_URL			2
 
-#define T01_MATCH_MATCH 			1
+#define T01_MATCH_MATCH 		1
 #define T01_MATCH_REGEX			2
+
+int init_rules(int hsize);
 
 int load_rules(const char *filename);
 
@@ -134,6 +136,8 @@ void calc_rules(uint64_t *total, uint64_t *enabled);
 
 struct ndpi_flow_info;
 struct rule *match_rule_after_detected(struct ndpi_flow_info *flow);
+
+struct rule *match_rule_from_htable_after_detected(struct ndpi_flow_info *flow);
 
 struct rule *match_rule_before_mirrored(struct ndpi_flow_info *flow);
 

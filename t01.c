@@ -333,7 +333,7 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
     if (is_attack == 0)
         return;
 
-    struct rule *rule = match_rule_after_detected(flow);
+    struct rule *rule = match_rule_from_htable_after_detected(flow);
     if (!rule)
         return;
 
@@ -1347,6 +1347,8 @@ static void init_engine() {
 
 static void init_rulemgmt() {
     char err[ANET_ERR_LEN];
+
+    init_rules(0);
 
     if (tconfig.ruledb[0]) {
         int rule_num = load_rules(tconfig.ruledb);
