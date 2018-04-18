@@ -204,10 +204,12 @@ static inline int netflow_data_filter(struct ndpi_flow_info *flow, void *packet)
         if (filters[i].protocol == 0) {
             if (filters[i].port == 0)
                 return 1;
-            else if (filters[i].port == flow->dst_port)
+            else if (filters[i].port == flow->dst_port ||
+                    filters[i].port == flow->src_port)
                 return 1;
         } else if (filters[i].protocol == flow->protocol &&
-                (filters[i].port == 0 || filters[i].port == flow->dst_port))
+                (filters[i].port == 0 || filters[i].port == flow->dst_port ||
+                        filters[i].port == flow->src_port))
             return 1;
     }
     return 0;
@@ -619,6 +621,7 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
     uint64_t curr_ip_packet_count = stat->ip_packet_count - ip_packet_count;
     uint64_t curr_total_wire_bytes =
             stat->total_wire_bytes - total_wire_bytes;
+    uint64_t curr_total_ip_bytes = stat->total_ip_bytes - total_ip_bytes;
     uint64_t curr_tcp_count = stat->tcp_count - tcp_count;
     uint64_t curr_udp_count = stat->udp_count - udp_count;
     uint64_t curr_hits;
@@ -668,7 +671,8 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
         pfring_stats(in_ring, &pfstat);
         printf("\tPFRING recv/drop:      %llu / %llu\n", pfstat.recv, pfstat.drop);
     }
-    printf("\tEthernet bytes:        %-13llu\n", curr_total_wire_bytes);
+    printf("\tIP bytes:              %-13llu (avg pkt size %u bytes)\n",
+           curr_total_ip_bytes, stat->total_ip_bytes/raw_packet_count);
     printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
     printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
 
@@ -677,7 +681,7 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
         cur_pkts_per_second_in =
                 curr_ip_packet_count * 1000000.0 / tot_usec;
         cur_bytes_per_second_in =
-                curr_total_wire_bytes * 8 * 1000000.0 / tot_usec;
+                curr_total_ip_bytes * 8 * 1000000.0 / tot_usec;
         pkts_ndpi_per_second = curr_pkts_ndpi * 1000000.0 / tot_usec;
         printf("\tTraffic duration:      %.3f sec (total %.3f sec)\n",
                tot_usec / 1000000.0, since_usec / 1000000.0);

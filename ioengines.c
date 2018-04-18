@@ -129,10 +129,10 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
     td->flag = ret > 0;
     int interval = now - td->stat_ts;
     if (interval >= 5000) {
-        char buf[64];
-        t01_log(T01_NOTICE, "ioengine producing %d pkt/s, %s/s",
-                td->stat_count*1000/interval,
-                format_traffic((float)td->stat_bytes*8000.0f/interval, 1, buf));
+        char buf1[64], buf2[64];
+        t01_log(T01_NOTICE, "ioengine producing %s pps/s, %s/s",
+                format_packets(td->stat_count*1000.0f/interval, buf1),
+                format_traffic((float)td->stat_bytes*8000.0f/interval, 1, buf2));
         td->stat_count = 0;
         td->stat_bytes = 0;
         td->stat_ts = now;
