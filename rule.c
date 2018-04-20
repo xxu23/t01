@@ -375,7 +375,7 @@ int transform_one_rule(struct rule *rule) {
 #define get_string_from_json(item, json, key, value)    \
   item = cJSON_GetObjectItem(json, key);            \
   if(item){                            \
-    strncpy(value, item->valuestring, sizeof(value));    \
+    strncpy(value, item->valuestring, sizeof(value)-1);    \
   }                                    \
 
 #define get_int_from_json(item, json, key, value)    \
@@ -387,7 +387,7 @@ int transform_one_rule(struct rule *rule) {
 #define get_string_from_arrayjson(item, json, j, value)    \
   item = cJSON_GetArrayItem(json, j);                \
   if(item) {                                \
-    strncpy(value, item->valuestring, sizeof(value));    \
+    strncpy(value, item->valuestring, sizeof(value)-1);    \
   }                                        \
 
 
