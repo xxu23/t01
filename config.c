@@ -41,6 +41,7 @@
 #include "util.h"
 #include "logger.h"
 #include "zmalloc.h"
+#include "config.h"
 
 #define copy_string_from_json(item, json, key, value)   \
     item = cJSON_GetObjectItem(json, key);              \
@@ -51,7 +52,7 @@
 #define get_string_from_json(item, json, key, value)    \
     item = cJSON_GetObjectItem(json, key);              \
     if(item){                                           \
-        strncpy(value, item->valuestring, sizeof(value)); \
+        strncpy(value, item->valuestring, sizeof(value)-1); \
     }
 
 #define get_int_from_json(item, json, key, value)       \
@@ -146,8 +147,6 @@ void load_config(const char *filename) {
         tconfig.raw_socket = 0;
     else if (strcasecmp(sm, "socket") == 0)
         tconfig.raw_socket = 1;
-
-
     cJSON_Delete(json);
 }
 
@@ -337,6 +336,8 @@ void parse_options(int argc, char **argv) {
         strcpy(tconfig.ruledb, DEFAULT_RULEDB);
     if (tconfig.rule_port == 0)
         tconfig.rule_port = DEFAULT_RULE_PORT;
+
+    tconfig.max_clients = CONFIG_DEFAULT_MAX_CLIENTS;
 
     {
         argv_ = malloc(sizeof(char *) * (argc + 1));

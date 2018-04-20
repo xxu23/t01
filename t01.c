@@ -39,6 +39,7 @@
 #include <net/if.h>
 #include <sys/wait.h>
 #include <sched.h>
+#include <sys/resource.h>
 
 #include <ndpi_api.h>
 #include <event.h>
@@ -1130,6 +1131,80 @@ static void main_thread() {
     t01_log(T01_NOTICE, "See you next time :-)");
 }
 
+static void adjust_openfiles_limit() {
+    rlim_t maxfiles = tconfig.max_clients + CONFIG_MIN_RESERVED_FDS;;
+    struct rlimit limit;
+
+    if (getrlimit(RLIMIT_NOFILE,&limit) == -1) {
+        t01_log(T01_WARNING, "Unable to obtain the current NOFILE limit (%s), assuming 1024 and setting the max clients configuration accordingly.",
+                strerror(errno));
+    } else {
+        rlim_t oldlimit = limit.rlim_cur;
+
+        /* Set the max number of files if the current limit is not enough
+         * for our needs. */
+        if (oldlimit < maxfiles) {
+            rlim_t bestlimit;
+            int setrlimit_error = 0;
+
+            /* Try to set the file limit to match 'maxfiles' or at least
+             * to the higher value supported less than maxfiles. */
+            bestlimit = maxfiles;
+            while(bestlimit > oldlimit) {
+                rlim_t decr_step = 16;
+
+                limit.rlim_cur = bestlimit;
+                limit.rlim_max = bestlimit;
+                if (setrlimit(RLIMIT_NOFILE,&limit) != -1) break;
+                setrlimit_error = errno;
+
+                /* We failed to set file limit to 'bestlimit'. Try with a
+                 * smaller limit decrementing by a few FDs per iteration. */
+                if (bestlimit < decr_step) break;
+                bestlimit -= decr_step;
+            }
+
+            /* Assume that the limit we get initially is still valid if
+             * our last try was even lower. */
+            if (bestlimit < oldlimit) bestlimit = oldlimit;
+
+
+            if (bestlimit < maxfiles) {
+                unsigned int old_maxclients = tconfig.max_clients;
+                tconfig.max_clients = bestlimit-CONFIG_MIN_RESERVED_FDS;
+                /* maxclients is unsigned so may overflow: in order
+                 * to check if maxclients is now logically less than 1
+                 * we test indirectly via bestlimit. */
+                if (bestlimit <= CONFIG_MIN_RESERVED_FDS) {
+                    t01_log(T01_WARNING,"Your current 'ulimit -n' "
+                                    "of %llu is not enough for the server to start. "
+                                    "Please increase your open file limit to at least "
+                                    "%llu. Exiting.",
+                            (unsigned long long) oldlimit,
+                            (unsigned long long) maxfiles);
+                    return;
+                }
+                t01_log(T01_WARNING,"You requested maxclients of %d "
+                                "requiring at least %llu max file descriptors.",
+                        old_maxclients,
+                        (unsigned long long) maxfiles);
+                t01_log(T01_WARNING,"Server can't set maximum open files "
+                                "to %llu because of OS error: %s.",
+                        (unsigned long long) maxfiles, strerror(setrlimit_error));
+                t01_log(T01_WARNING,"Current maximum open files is %llu. "
+                                "maxclients has been reduced to %d to compensate for "
+                                "low ulimit. "
+                                "If you need higher maxclients increase 'ulimit -n'.",
+                        (unsigned long long) bestlimit, tconfig.max_clients);
+            } else {
+                t01_log(T01_NOTICE, "Increased maximum number of open files to %llu (it was originally set to %llu).",
+                        (unsigned long long) maxfiles,
+                        (unsigned long long) oldlimit);
+            }
+        }
+    }
+}
+
 static void init_system() {
     int i;
 
@@ -1137,6 +1212,8 @@ static void init_system() {
         daemonize();
         create_pidfile();
     }
+
+    adjust_openfiles_limit();
 
     t01_log(T01_NOTICE, "Using malloc version %s", ZMALLOC_LIB);
     t01_log(T01_NOTICE, "Using libevent version %s", event_get_version());

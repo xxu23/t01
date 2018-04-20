@@ -34,6 +34,9 @@
 extern "C" {
 #endif
 
+#define CONFIG_MIN_RESERVED_FDS 32
+#define CONFIG_DEFAULT_MAX_CLIENTS 10000
+
 void load_config(const char *filename);
 
 void parse_options(int argc, char **argv);

@@ -82,6 +82,7 @@ struct t01_config {
     uint16_t hit_port;
     int verbose;
     int id;
+    int max_clients;
     int cpu_thread;
     int raw_socket;
     int restart_if_crash;
