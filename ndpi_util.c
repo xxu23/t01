@@ -446,10 +446,8 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       *src = newflow->src_id, *dst = newflow->dst_id;
 
       data_filter_callback_ptr callback1 = workflow->__filter_callback;
-      data_filter_callback_ptr callback2 = workflow->__rules_filter_callback;
 
-      if(( (callback1 && callback1(newflow, workflow->__packet_data)) ||
-           (callback2 && callback2(newflow, workflow->__packet_data)) ) 
+      if(callback1 && callback1(newflow, workflow->__packet_data)
           && workflow->__data_clone_callback) {
           workflow->__data_clone_callback(workflow->__packet_data, 
                                           workflow->__packet_header->len, 
@@ -468,9 +466,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       *src = flow->dst_id, *dst = flow->src_id;
 
     data_filter_callback_ptr callback1 = workflow->__filter_callback;
-    data_filter_callback_ptr callback2 = workflow->__rules_filter_callback;
-    if(((callback1 && callback1(flow, workflow->__packet_data)) ||
-        (callback2 && callback2(flow, workflow->__packet_data))) && 
+    if(callback1 && callback1(flow, workflow->__packet_data) &&
         workflow->__data_clone_callback) {
         workflow->__data_clone_callback(workflow->__packet_data, 
                                         workflow->__packet_header->len, 

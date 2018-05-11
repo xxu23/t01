@@ -1463,7 +1463,6 @@ struct rule *match_rule_from_hashtable(struct ndpi_flow_info *flow, int index) {
 
         if (rule->used == 0 ||
             rule->disabled ||
-            rule->action == T01_ACTION_MIRROR ||
             flow->protocol == NDPI_PROTOCOL_UNKNOWN ||
             flow->protocol != rule->protocol) {
             tmp = tmp->next;
@@ -1551,7 +1550,6 @@ struct rule *match_rule_after_detected(struct ndpi_flow_info *flow) {
 
         if (rule->used == 0 ||
             rule->disabled ||
-            rule->action == T01_ACTION_MIRROR ||
             flow->protocol == NDPI_PROTOCOL_UNKNOWN ||
             flow->protocol != rule->protocol)
             continue;

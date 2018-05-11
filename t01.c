@@ -340,6 +340,12 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
     if (!rule)
         return;
 
+    if (is_mirror && rule->action == T01_ACTION_MIRROR) {
+        netflow_data_clone(packet, workflow->__packet_header->len,
+                           flow->protocol, workflow->last_time);
+        return;
+    }
+
     struct attack_data *attack = zmalloc(sizeof(*attack));
     if (!attack)
         return;
@@ -432,7 +438,6 @@ struct ndpi_workflow *setup_detection() {
                                              on_protocol_discovered,
                                              (void *) (uintptr_t) workflow);
     ndpi_set_mirror_data_callback(workflow,
-                                  mirror_filter_from_rule,
                                   is_mirror ? netflow_data_clone : NULL,
                                   is_mirror ? netflow_data_filter : NULL);
 

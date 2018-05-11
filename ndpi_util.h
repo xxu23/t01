@@ -130,7 +130,6 @@ typedef struct ndpi_workflow {
 
     data_clone_callback_ptr __data_clone_callback;
     data_filter_callback_ptr __filter_callback;
-    data_filter_callback_ptr __rules_filter_callback;
     ndpi_workflow_callback_ptr __flow_detected_callback;
     void *__flow_detected_udata;
     void *__packet_data;
@@ -171,10 +170,8 @@ static inline void ndpi_workflow_set_flow_detected_callback(struct ndpi_workflow
 
 /* flow callbacks: ndpi_flow_info will be freed right after */
 static inline void ndpi_set_mirror_data_callback(struct ndpi_workflow *workflow,
-                                                 data_filter_callback_ptr callback0,
                                                  data_clone_callback_ptr callback1,
                                                  data_filter_callback_ptr callback2) {
-    workflow->__rules_filter_callback = callback0;
     workflow->__data_clone_callback = callback1;
     workflow->__filter_callback = callback2;
 }
