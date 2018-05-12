@@ -112,6 +112,8 @@ void load_config(const char *filename) {
     get_int_from_json(item, json, "rule_port", tconfig.rule_port);
     get_string_from_json(item, json, "hit_ip", tconfig.hit_ip);
     get_int_from_json(item, json, "hit_port", tconfig.hit_port);
+    get_string_from_json(item, json, "remote_ip", tconfig.remote_ip);
+    get_int_from_json(item, json, "remote_port", tconfig.remote_port);
     get_int_from_json(item, json, "verbose", tconfig.verbose);
     get_int_from_json(item, json, "id", tconfig.id);
     get_int_from_json(item, json, "cpu_thread", tconfig.cpu_thread);
@@ -336,6 +338,10 @@ void parse_options(int argc, char **argv) {
         strcpy(tconfig.ruledb, DEFAULT_RULEDB);
     if (tconfig.rule_port == 0)
         tconfig.rule_port = DEFAULT_RULE_PORT;
+
+    if (tconfig.remote_ip[0] != 0 && tconfig.remote_port != 0) {
+        tconfig.raw_socket = 2;
+    }
 
     tconfig.max_clients = CONFIG_DEFAULT_MAX_CLIENTS;
 

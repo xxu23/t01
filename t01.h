@@ -80,6 +80,8 @@ struct t01_config {
     uint16_t rule_port;
     char hit_ip[32];
     uint16_t hit_port;
+    char remote_ip[32];
+    uint16_t remote_port;
     int verbose;
     int id;
     int max_clients;

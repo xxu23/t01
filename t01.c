@@ -64,6 +64,21 @@
 #define MAX_THREADS 64
 #define MAX_ENGINE_THREADS 8
 
+struct attack_header {
+    char magic[8];
+    uint32_t sip;
+    uint32_t dip;
+    uint16_t sport;
+    uint16_t dport;
+    int self_len;
+    int data_len;
+};
+
+#define MAGIC "\x7aT\x85@\xaf$\xd0$"
+
+#define INIT_HEADER(sip, dip, sport, dport, len) \
+    {MAGIC, sip, dip, sport, dport, sizeof(struct attack_header), len};
+
 struct attack_data {
     struct ndpi_flow_info *flow;
     struct rule *rule;
@@ -470,6 +485,35 @@ static void setup_cpuaffinity(int index, const char *name) {
             index, name);
 }
 
+static void send_via_socket(uint32_t sip, uint32_t dip, uint16_t src_port, uint16_t dst_port,
+                            const char *data, int len) {
+    if (sendfd <= 0)
+        return;
+
+    struct pollfd pfds[1];
+    pfds[0].fd = sendfd;
+    pfds[0].events = POLLIN | POLLOUT;
+    poll(pfds, 1, 0);
+    if (pfds[0].revents & POLLIN) {
+        char buffer[1024];
+        int n = read(sendfd, buffer, 1024);
+        if (n == 0) {
+            t01_log(T01_WARNING, "Disconnect from remote socket");
+            close(sendfd);
+            sendfd = -1;
+            return;
+        }
+    } else if (pfds[0].revents & POLLOUT) {
+        struct attack_header header = INIT_HEADER(sip, dip, src_port, dst_port, len);
+        int n;
+        if ( ((n=anetWrite(sendfd, &header, sizeof(header))) < 0
+              || (n=anetWrite(sendfd, data, len)) < 0) && tconfig.raw_socket == 2) {
+            close(sendfd);
+            sendfd = -1;
+        }
+    }
+}
+
 static void *attack_thread(void *args) {
     struct timespec ts = {.tv_sec = 0, .tv_nsec = 1};
     int core = *((int *) args);
@@ -507,12 +551,18 @@ static void *attack_thread(void *args) {
         if (eth_mode & NETMAP_MODE) {
             if (out_nmr)
                 nm_inject(out_nmr, result, len);
-            else
-                write(sendfd, result, len);
+            else if (sendfd > 0)
+                send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
         } else if (eth_mode & LIBPCAP_MODE) {
-            pcap_inject(out_device, result, len);
+            if (out_device)
+                pcap_inject(out_device, result, len);
+            else if (sendfd > 0)
+                send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
         } else if (eth_mode & PFRING_MODE) {
-            pfring_send(out_ring, result, len, 0);
+            if (out_ring)
+                pfring_send(out_ring, result, len, 0);
+            else if (sendfd > 0)
+                send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
         }
 
         if (tconfig.verbose) {
@@ -678,7 +728,7 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
         printf("\tPFRING recv/drop:      %llu / %llu\n", pfstat.recv, pfstat.drop);
     }
     printf("\tIP bytes:              %-13llu (avg pkt size %u bytes)\n",
-           curr_total_ip_bytes, stat->total_ip_bytes/raw_packet_count);
+           curr_total_ip_bytes, stat->total_ip_bytes/(raw_packet_count == 0 ? 1 : raw_packet_count));
     printf("\tTCP Packets:           %-13lu\n", curr_tcp_count);
     printf("\tUDP Packets:           %-13lu\n", curr_udp_count);
 
@@ -1054,6 +1104,36 @@ static void *pfring_thread(void *args) {
     return NULL;
 }
 
+static void *remote_check_thread(void *args) {
+    char err[ANET_ERR_LEN];
+    int core = *((int *) args);
+    struct timespec ts = {.tv_sec = 0, .tv_nsec = 2*1000*1000};
+
+    t01_log(T01_NOTICE, "Enter thread %s", __FUNCTION__);
+    if (core >= 0)
+        setup_cpuaffinity(core, __FUNCTION__);
+    pthread_setname_np(pthread_self(), __FUNCTION__);
+
+    while (!shutdown_app) {
+        if (sendfd > 0) {
+            nanosleep(&ts, NULL);
+            continue;
+        }
+
+        int fd = anetTcpConnect(err, tconfig.remote_ip, tconfig.remote_port);
+        if (fd < 0) {
+            nanosleep(&ts, NULL);
+        } else {
+            t01_log(T01_WARNING, "Succeed to connect to remote socket %s:%d",
+                    tconfig.remote_ip, tconfig.remote_port);
+            sendfd = fd;
+        }
+    }
+
+    t01_log(T01_NOTICE, "Leave thread %s", __FUNCTION__);
+    return NULL;
+}
+
 static void main_thread() {
     int i, j = 0;
     int cores = get_cpu_cores();
@@ -1128,6 +1208,16 @@ static void main_thread() {
                 strerror(errno));
         exit(1);
     }
+
+    if ((tconfig.work_mode & ATTACK_MODE &&
+         tconfig.remote_ip[0] && tconfig.remote_port) &&
+        pthread_create(&threads[nthreads++], NULL, remote_check_thread,
+                       &affinity[j++]) != 0) {
+        t01_log(T01_WARNING, "Can't create remote_check thread: %s",
+                strerror(errno));
+        exit(1);
+    }
+
 
     for (i = 0; i < nthreads; i++) {
         pthread_join(threads[i], NULL);
@@ -1275,8 +1365,11 @@ static void init_netmap() {
     if (tconfig.ofname[0] == 0
         || strcmp(tconfig.ifname, tconfig.ofname) == 0) {
         out_nmr = nmr;
-    } else if (tconfig.raw_socket) {
+    } else if (tconfig.raw_socket == 1) {
         sendfd = create_l2_raw_socket(tconfig.ofname);
+    } else if (tconfig.raw_socket == 2) {
+        char err[ANET_ERR_LEN];
+        sendfd = anetTcpConnect(err, tconfig.remote_ip, tconfig.remote_port);
     } else {
         manage_interface_promisc_mode(tconfig.ofname, 1);
         t01_log(T01_DEBUG,
@@ -1304,6 +1397,11 @@ static void init_libpcap() {
     }
     if (tconfig.ofname[0] == 0 || strcmp(tconfig.ifname, tconfig.ofname) == 0) {
         out_device = device;
+    } else if (tconfig.raw_socket == 1) {
+        sendfd = create_l2_raw_socket(tconfig.ofname);
+    } else if (tconfig.raw_socket == 2) {
+        char err[ANET_ERR_LEN];
+        sendfd = anetTcpConnect(err, tconfig.remote_ip, tconfig.remote_port);
     } else {
         out_device = pcap_open_live(tconfig.ofname, MAX_PCAP_DATA, PCAP_PROMISC, PCAP_TIMEOUT, errBuf);
         if (!out_device) {
@@ -1338,6 +1436,11 @@ static void init_pfring() {
     }
     if (tconfig.ofname[0] == 0 || strcmp(tconfig.ifname, tconfig.ofname) == 0) {
         out_ring = in_ring;
+    } else if (tconfig.raw_socket == 1) {
+        sendfd = create_l2_raw_socket(tconfig.ofname);
+    } else if (tconfig.raw_socket == 2) {
+        char err[ANET_ERR_LEN];
+        sendfd = anetTcpConnect(err, tconfig.remote_ip, tconfig.remote_port);
     } else {
         out_ring = pfring_open(tconfig.ofname, MAX_PKT_LEN, PF_RING_PROMISC);
         if (!out_device) {
