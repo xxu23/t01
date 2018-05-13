@@ -44,6 +44,7 @@
 #include <netpacket/packet.h>
 #include <linux/sockios.h>
 #include <sys/sysinfo.h>
+#include <errno.h>
 
 #include "util.h"
 #include "zmalloc.h"
@@ -630,7 +631,7 @@ int create_l2_raw_socket(const char *if_name) {
 
     int fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     if (fd < 0) {
-        t01_log(T01_WARNING, "failed to create L2 socket");
+        t01_log(T01_WARNING, "failed to create L2 socket %s", strerror(errno));
         exit(1);
     }
 

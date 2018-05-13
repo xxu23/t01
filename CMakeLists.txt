@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 2.6)
 project(t01)
 
-option(USE_JEMALLOC "used jemalloc as replacement for libc malloc" OFF)
-option(USE_TCMALLOC "used tcmalloc as replacement for libc malloc" ON)
+option(USE_JEMALLOC "used jemalloc as replacement for libc malloc" ON)
+option(USE_TCMALLOC "used tcmalloc as replacement for libc malloc" OFF)
 option(USE_CXXQUEUE "used moodycamel::ConcurrentQueue" OFF)
 option(USE_CXX_BOUNDEDQUEUE "used lock-free circular buffers queue" ON)
 
@@ -82,3 +82,6 @@ target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libhl.a)
 target_link_libraries(t01log ${PROJECT_SOURCE_DIR}/3rd/lib/libz.a)
 target_link_libraries(t01log m stdc++)
 
+add_executable(t01sender t01sender.c logger.c anet.c util.c zmalloc.c)
+target_link_libraries(t01sender ${PROJECT_SOURCE_DIR}/3rd/lib/libevent.a)
+target_link_libraries(t01sender ${EXTRA_LIBS})
