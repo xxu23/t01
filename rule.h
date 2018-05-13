@@ -117,6 +117,8 @@ struct rule {
 
 #define T01_MATCH_MATCH 		1
 #define T01_MATCH_REGEX			2
+#define T01_MATCH_STARTSWITH	3
+#define T01_MATCH_ENDSWITH		4
 
 int init_rules(int hsize);
 

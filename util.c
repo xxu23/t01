@@ -50,6 +50,50 @@
 #include "zmalloc.h"
 #include "logger.h"
 
+
+int startswith(const char *self, const char *sub) {
+    int i;
+    if (!self) {
+        if (!sub || *sub == 0)
+            return 0;
+        return -1;
+    } else if (!sub) {
+       return 0;
+    }
+    int self_len = strlen(self);
+    int slen = strlen(sub);
+    if (slen > self_len)
+        return -1;
+    for (i = 0; i < slen; ++i) {
+        if (self[i] != sub[i])
+            return -1;
+    }
+    return 0;
+}
+
+int endswith(const char *haystack, const char *needle)
+{
+    if (!haystack) {
+        if (!needle || *needle == 0)
+            return 0;
+        return -1;
+    } else if (!needle) {
+        return 0;
+    }
+
+    int haystackLen = strlen(haystack);
+    const int slen = strlen(needle);
+    int pos = haystackLen - slen;
+    if (pos < 0)
+        return -1;
+    int i;
+    for (i = 0; i < slen; i++) {
+        if (haystack[pos+i] != needle[i])
+            return -1;
+    }
+    return 0;
+}
+
 /* Glob-style pattern matching. */
 int stringmatchlen(const char *pattern, int patternLen,
         const char *string, int stringLen, int nocase)

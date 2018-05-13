@@ -34,6 +34,10 @@
 extern "C" {
 #endif
 
+int startswith(const char *src, const char *dst);
+
+int endswith(const char *src, const char* dst);
+
 int stringmatchlen(const char *p, int plen, const char *s, int slen, int nocase);
 
 int stringmatch(const char *p, const char *s, int nocase);

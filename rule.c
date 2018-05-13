@@ -97,6 +97,10 @@ static inline uint8_t get_match(const char *match) {
         return T01_MATCH_MATCH;
     else if (strcmp(match, "regex") == 0)
         return T01_MATCH_REGEX;
+    else if (strcmp(match, "startswith") == 0)
+        return T01_MATCH_STARTSWITH;
+    else if (strcmp(match, "endswith") == 0)
+        return T01_MATCH_ENDSWITH;
     return 0;
 }
 
@@ -110,10 +114,16 @@ static inline uint8_t get_which(const char *which) {
 
 static inline int match_payload(int match, const char *payload,
                                 const char *dst, const char *self) {
-    if (match == T01_MATCH_MATCH)
+    if (match == T01_MATCH_MATCH) {
         return strcmp(payload, dst) == 0
                && strcmp(self, dst) != 0;
-    else if (match == T01_MATCH_REGEX) {
+    } else if (match == T01_MATCH_STARTSWITH) {
+        return startswith(dst, payload) == 0
+               && strcmp(self, dst) != 0;
+    } else if (match == T01_MATCH_ENDSWITH) {
+        return endswith(dst, payload) == 0
+               && strcmp(self, dst) != 0;
+    } else if (match == T01_MATCH_REGEX) {
         regmatch_t pm[1];
         regex_t reg;
         int st;
