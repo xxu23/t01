@@ -71,7 +71,7 @@ struct ioengine_ops {
 
     int (*show_help)();
 
-    int (*write)(struct ioengine_data *, const char *, int, int);
+    int (*write)(struct ioengine_data *, const char *, int, uint32_t, int);
 };
 
 extern int load_ioengine(struct ioengine_data *ed, const char *name);
@@ -81,7 +81,7 @@ extern int init_ioengine(struct ioengine_data *ed, const char *args);
 extern void close_ioengine(struct ioengine_data *ed);
 
 extern int store_raw_via_ioengine(struct ioengine_data *ed, const char *data,
-                                  int len, uint8_t protocol, uint64_t ts);
+                                  int len, uint32_t, uint8_t protocol, uint64_t ts);
 
 extern int check_ioengine(struct ioengine_data *ed);
 

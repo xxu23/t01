@@ -157,6 +157,7 @@ struct filter_buffer {
     uint64_t ts;
     int len;
     int protocol;
+    uint32_t hash_idx;
     char buffer[0];
 };
 
@@ -231,7 +232,7 @@ static inline int netflow_data_filter(struct ndpi_flow_info *flow, void *packet)
     return 0;
 }
 
-static void netflow_data_clone(void *data, uint32_t n,
+static void netflow_data_clone(void *data, uint32_t n, uint32_t hash_idx,
                                uint8_t protocol, uint64_t ts) {
     static int round = 0;
     struct filter_buffer *fb = zmalloc(sizeof(struct filter_buffer) + n);
@@ -240,6 +241,7 @@ static void netflow_data_clone(void *data, uint32_t n,
 
     memcpy(fb->buffer, data, n);
     fb->len = n;
+    fb->hash_idx = hash_idx;
     fb->protocol = protocol;
     fb->ts = ts;
 
@@ -356,7 +358,7 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
         return;
 
     if (is_mirror && rule->action == T01_ACTION_MIRROR) {
-        netflow_data_clone(packet, workflow->__packet_header->len,
+        netflow_data_clone(packet, workflow->__packet_header->len, flow->hash_idx,
                            flow->protocol, workflow->last_time);
         return;
     }
@@ -667,8 +669,8 @@ static void *mirror_thread(void *args) {
         }
         atomicIncr(total_out_mqueue, 1);
 
-        if (store_raw_via_ioengine(mirror_engine, fb->buffer,
-                                   fb->len, fb->protocol, fb->ts) < 0) {
+        if (store_raw_via_ioengine(mirror_engine, fb->buffer, fb->len,
+                                   fb->hash_idx, fb->protocol, fb->ts) < 0) {
             time_t now = time(NULL);
             if (now - last >= 5) {
                 t01_log(T01_WARNING,

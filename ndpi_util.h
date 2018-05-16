@@ -56,6 +56,7 @@ typedef struct ndpi_flow_info {
     u_int32_t upper_ip;
     u_int16_t lower_port;
     u_int16_t upper_port;
+    u_int32_t hash_idx;
     u_int32_t src_ip;
     u_int32_t dst_ip;
     u_int16_t src_ipid;
@@ -113,7 +114,7 @@ struct ndpi_workflow;
 /** workflow, flow, user data */
 typedef void (*ndpi_workflow_callback_ptr)(struct ndpi_workflow *, struct ndpi_flow_info *, void *, void *);
 
-typedef void (*data_clone_callback_ptr)(void *, uint32_t, uint8_t, uint64_t);
+typedef void (*data_clone_callback_ptr)(void *, uint32_t, uint32_t, uint8_t, uint64_t);
 
 typedef int (*data_filter_callback_ptr)(struct ndpi_flow_info *, void *);
 

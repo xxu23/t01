@@ -4,6 +4,7 @@
  */
 #define _GNU_SOURCE
 #include <string.h>
+#include <stdlib.h>
 #include "../ioengine.h"
 #include "hiredis.h"
 #include "zmalloc.h"
@@ -78,7 +79,8 @@ static int redis_show_help()
 	return 0;
 }
 
-static int redis_write(struct ioengine_data *td, const char *buffer, int len, int flush)
+static int redis_write(struct ioengine_data *td, const char *buffer, int len,
+					   uint32_t hash_idx, int flush)
 {
 	redisContext *c = (redisContext *) td->private_data;
 	redisReply *reply;

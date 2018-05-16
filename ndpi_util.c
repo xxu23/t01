@@ -415,6 +415,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       newflow->src_ipid = id; 
       newflow->src_ttl = ttl;
       newflow->total_vlan = total_vlan;
+      newflow->hash_idx = idx;
       
       if(flag == 0){ newflow->src_ip = lower_ip; newflow->dst_ip = upper_ip; newflow->src_port = ntohs(lower_port); newflow->dst_port = ntohs(upper_port); }
       else{ newflow->src_ip = upper_ip; newflow->dst_ip = lower_ip; newflow->src_port = ntohs(upper_port); newflow->dst_port = ntohs(lower_port); }
@@ -450,7 +451,8 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       if(callback1 && callback1(newflow, workflow->__packet_data)
           && workflow->__data_clone_callback) {
           workflow->__data_clone_callback(workflow->__packet_data, 
-                                          workflow->__packet_header->len, 
+                                          workflow->__packet_header->len,
+                                          newflow->hash_idx,
                                           newflow->protocol, workflow->last_time);
       }
 
@@ -469,7 +471,8 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
     if(callback1 && callback1(flow, workflow->__packet_data) &&
         workflow->__data_clone_callback) {
         workflow->__data_clone_callback(workflow->__packet_data, 
-                                        workflow->__packet_header->len, 
+                                        workflow->__packet_header->len,
+                                        flow->hash_idx,
                                         flow->protocol, workflow->last_time);
     }
 

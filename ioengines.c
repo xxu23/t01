@@ -107,10 +107,10 @@ int check_ioengine(struct ioengine_data *td) {
     return 0;
 }
 
-typedef int (*write_engine)(struct ioengine_data *, const char *, int, int);
+typedef int (*write_engine)(struct ioengine_data *, const char *, int, uint32_t, int);
 
 int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
-                           int len, uint8_t protocol, uint64_t ts) {
+                           int len, uint32_t hash_idx, uint8_t protocol, uint64_t ts) {
     write_engine write = td->io_ops->write;
     int ret;
     int flush = 0;
@@ -125,7 +125,7 @@ int store_raw_via_ioengine(struct ioengine_data *td, const char *data,
 
     if (!write || td->flag == 0)
         return -1;
-    ret = write(td, data, len, flush);
+    ret = write(td, data, len, hash_idx, flush);
     td->flag = ret > 0;
     int interval = now - td->stat_ts;
     if (interval >= 5000) {

@@ -141,12 +141,12 @@ static int kafka_show_help()
 	return 0;
 }
 
-static int kafka_write(struct ioengine_data *td, const char *buffer, int len, int flush)
+static int kafka_write(struct ioengine_data *td, const char *buffer, int len,
+					   uint32_t hash_idx, int flush)
 {
 	struct kafka_data *kd = (struct kafka_data*)td->private_data;
 	int partition = RD_KAFKA_PARTITION_UA;
 	int ret;
-	int count = 0;
 
     if(!kd->rkt) {
 		/* Create topic */
@@ -156,7 +156,7 @@ static int kafka_write(struct ioengine_data *td, const char *buffer, int len, in
 
 	/* Send/Produce message. */
     ret = rd_kafka_produce(kd->rkt, partition, 0,
-                           (void*)buffer, len, NULL, 0, NULL);
+                           (void*)buffer, len, &hash_idx, sizeof(hash_idx), NULL);
 	if(ret == -1) {
         rd_kafka_resp_err_t err = rd_kafka_last_error();
 		if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
