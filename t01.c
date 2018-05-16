@@ -551,18 +551,33 @@ static void *attack_thread(void *args) {
         if (eth_mode & NETMAP_MODE) {
             if (out_nmr)
                 nm_inject(out_nmr, result, len);
-            else if (sendfd > 0)
-                send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+            else if (sendfd > 0) {
+                if (tconfig.raw_socket == 1) {
+                    anetWrite(sendfd, result, len);
+                } else {
+                    send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+                }
+            }
         } else if (eth_mode & LIBPCAP_MODE) {
             if (out_device)
                 pcap_inject(out_device, result, len);
-            else if (sendfd > 0)
-                send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+            else if (sendfd > 0) {
+                if (tconfig.raw_socket == 1) {
+                    anetWrite(sendfd, result, len);
+                } else {
+                    send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+                }
+            }
         } else if (eth_mode & PFRING_MODE) {
             if (out_ring)
                 pfring_send(out_ring, result, len, 0);
-            else if (sendfd > 0)
-                send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+            else if (sendfd > 0) {
+                if (tconfig.raw_socket == 1) {
+                    anetWrite(sendfd, result, len);
+                } else {
+                    send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+                }
+            }
         }
 
         if (tconfig.verbose) {
@@ -1124,7 +1139,7 @@ static void *remote_check_thread(void *args) {
         if (fd < 0) {
             nanosleep(&ts, NULL);
         } else {
-            t01_log(T01_WARNING, "Succeed to connect to remote socket %s:%d",
+            t01_log(T01_NOTICE, "Succeed to connect to remote socket %s:%d",
                     tconfig.remote_ip, tconfig.remote_port);
             sendfd = fd;
         }
