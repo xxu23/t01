@@ -48,6 +48,7 @@ struct ioengine_data {
     char *host;
     int port;
     char *topic;
+    int partitions;
     int flag;
     int count;
     uint64_t ts;

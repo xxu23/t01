@@ -5,6 +5,7 @@
 #define _GNU_SOURCE 
 #include <string.h>
 #include <signal.h>
+#include <stdlib.h>
 #include "../ioengine.h"
 #include "../zmalloc.h"
 #include "rdkafka.h"
@@ -30,20 +31,20 @@ static int kafka_init(struct ioengine_data *td, const char *param)
 {
     char *args = zstrdup(param), *input = args;
     char *state;
-    int port = 9092;
     char *result = NULL;
     int i = 0;
-    char *s[3] = {0};
+    char *s[4] = {0};
 
     while((result = strtok_r(input, ";", &state)) != NULL)
     {
-        if (i == 2)
+        if (i == 3)
             break;
         s[i++] = result;
         input = NULL;
     }
     td->host = i > 0 ? zstrdup(s[0]) : NULL;
     td->topic = i > 1 ? zstrdup(s[1]) : "raw_queue";
+	td->partitions = i > 2 ? atoi(s[2]) : 1;
     zfree(args);
 
     return 0;
@@ -145,7 +146,7 @@ static int kafka_write(struct ioengine_data *td, const char *buffer, int len,
 					   uint32_t hash_idx, int flush)
 {
 	struct kafka_data *kd = (struct kafka_data*)td->private_data;
-	int partition = RD_KAFKA_PARTITION_UA;
+	int partition = hash_idx % td->partitions;
 	int ret;
 
     if(!kd->rkt) {
@@ -156,7 +157,7 @@ static int kafka_write(struct ioengine_data *td, const char *buffer, int len,
 
 	/* Send/Produce message. */
     ret = rd_kafka_produce(kd->rkt, partition, 0,
-                           (void*)buffer, len, &hash_idx, sizeof(hash_idx), NULL);
+                           (void*)buffer, len, NULL, 0, NULL);
 	if(ret == -1) {
         rd_kafka_resp_err_t err = rd_kafka_last_error();
 		if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
