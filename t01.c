@@ -350,9 +350,6 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
     }
 
     total_pkts_ndpi++;
-    if (is_attack == 0)
-        return;
-
     struct rule *rule = match_rule_from_htable_after_detected(flow);
     if (!rule)
         return;
@@ -361,7 +358,8 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
         netflow_data_clone(packet, workflow->__packet_header->len, flow->hash_idx,
                            flow->protocol, workflow->last_time);
         return;
-    }
+    } else if (is_attack == 0)
+        return;
 
     struct attack_data *attack = zmalloc(sizeof(*attack));
     if (!attack)
