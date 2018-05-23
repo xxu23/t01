@@ -361,7 +361,8 @@ static void core_main() {
         exit(1);
     }
 
-    for (int i = 0; i < 2; i++) {
+    int i;
+    for (i = 0; i < 2; i++) {
         pthread_join(threads[i], NULL);
     }
 

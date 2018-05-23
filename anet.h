@@ -77,7 +77,7 @@ int anetTcpAccept(char *err, int serversock, char *ip, size_t ip_len, int *port)
 
 int anetUnixAccept(char *err, int serversock);
 
-int anetWrite(int fd, char *buf, int count);
+int anetWrite(int fd, const char *buf, int count);
 
 int anetNonBlock(char *err, int fd);
 

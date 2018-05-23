@@ -439,7 +439,7 @@ int anetUdpWrite(int fd, char *buf, int count, struct sockaddr* addr, size_t add
 
 /* Like write(2) but make sure 'count' is read before to return
  * (unless error is encountered) */
-int anetWrite(int fd, char *buf, int count)
+int anetWrite(int fd, const char *buf, int count)
 {
     int nwritten, totlen = 0;
     while(totlen != count) {
