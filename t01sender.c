@@ -66,9 +66,12 @@ struct attack_header {
 #pragma pack()
 
 #define MAGIC "\x7aT\x85@\xaf$\xd0$"
+#define HEADER_LEN sizeof(struct attack_header)
 
 struct my_param {
     int step;
+    struct attack_header hdr;
+    int hdr_offset;
     int data_len;
     int offset;
     char buf[1500];
@@ -202,21 +205,28 @@ static void server_on_read(struct bufferevent *bev, void *arg) {
 
     while (len > 0) {
         if (param->step == 0) {
-            struct attack_header header;
-            read_len = evbuffer_remove(input, &header, sizeof(header));
+            struct attack_header *hdr = &param->hdr;
+            int offset = param->hdr_offset;
+            read_len = evbuffer_remove(input, (char *) hdr + offset, HEADER_LEN - offset);
+            len -= read_len;
+            param->hdr_offset += read_len;
+            if (param->hdr_offset != HEADER_LEN) {
+                continue;
+            }
 
-            if (memcmp(header.magic, MAGIC, 8) != 0 || header.self_len != sizeof(header)
-                || header.data_len >= 1500) {
+            if (memcmp(hdr->magic, MAGIC, 8) != 0 || hdr->self_len != HEADER_LEN
+                || hdr->data_len >= 1500) {
                 t01_log(T01_WARNING, "Received an illegal header, drop it");
                 bufferevent_free(bev);
+                param->hdr_offset = 0;
                 zfree(param);
                 return;
             }
             param->step = 1;
-            param->data_len = header.data_len;
+            param->data_len = hdr->data_len;
             param->offset = 0;
+            param->hdr_offset = 0;
             param->count += 1;
-            len -= read_len;
         } else {
             int remain_len = param->data_len - param->offset;
             read_len = evbuffer_remove(input, param->buf + param->offset, remain_len);
@@ -227,6 +237,7 @@ static void server_on_read(struct bufferevent *bev, void *arg) {
                 param->step = 0;
                 param->offset = 0;
                 param->buf[0] = 0;
+                param->hdr_offset = 0;
             }
         }
     }
