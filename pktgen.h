@@ -39,6 +39,8 @@ struct rule;
 int make_packet(const struct rule *rule, const char *hdr,
 				char *packet, int len, void *flow);
 
+int make_fin_packet(const char *data, char *result);
+
 #ifdef __cplusplus
 }
 #endif

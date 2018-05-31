@@ -35,6 +35,9 @@
 #include <time.h>
 #include <regex.h>
 #include <sys/types.h>
+#include <net/ethernet.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
 
 #include "t01.h"
 #include "rule.h"
@@ -79,6 +82,7 @@ typedef struct hash_table {
 } hash_table;
 
 static hash_table ht;
+static hash_table ht_tcp;
 
 static inline uint8_t get_action(const char *action) {
     if (strcmp(action, "reject") == 0)
@@ -181,21 +185,29 @@ static inline uint8_t get_protocol(const char *protocol, uint8_t *master) {
     return prot;
 }
 
+//初始化哈希
 int init_rules(int hsize) {
     if (hsize <= 0) {
         hsize = HT_DEFAULT_SIZE;
     }
-
+ 
     ht.array_size = hsize;
     ht.array_size2 = hsize - 1;
     ht.array = tcalloc(hsize, sizeof(hash_entry *));
     ht.key_count = 0;
+   
+    ht_tcp.array_size = hsize;
+    ht_tcp.array_size2 = hsize - 1;
+    ht_tcp.array = tcalloc(hsize, sizeof(hash_entry *));
+    ht_tcp.key_count = 0;
 }
 
+//哈希散列方法函数
 static inline unsigned int ht_index(uint32_t saddr0) {
     return saddr0 == 0 ? 0 : (saddr0 % ht.array_size2 + 1);
 }
 
+//向哈希表中插入数据
 static hash_entry *he_create(uint32_t key, struct rule *value) {
     hash_entry *entry = zmalloc(sizeof(*entry));
     if (entry == NULL) {
@@ -208,40 +220,45 @@ static hash_entry *he_create(uint32_t key, struct rule *value) {
     return entry;
 }
 
-static void ht_insert_he(hash_entry *entry) {
+static void ht_insert_he(hash_entry *entry, hash_table *table) {
     hash_entry *tmp;
     unsigned int index;
-
+    
     entry->next = NULL;
     index = ht_index(entry->key);
-    tmp = ht.array[index];
+    tmp = table->array[index];
 
     // the first, no collision
     if (tmp == NULL) {
-        ht.array[index] = entry;
-        ht.key_count++;
+        table->array[index] = entry;
+        table->key_count++;
         return;
-    }
+    } 
     // not the first, and have slave value
     while (tmp->next != NULL) {
         tmp = tmp->next;
     }
     // else tack the new entry onto the end of the chain
     tmp->next = entry;
-    ht.key_count++;
+    table->key_count++;
 }
 
 static void ht_insert(uint32_t key, struct rule *value) {
     hash_entry *entry = he_create(key, value);
     if (entry) {
-        ht_insert_he(entry);
+        if (entry->value->protocol == 6 && entry->value->action == T01_ACTION_REJECT){
+            ht_insert_he(entry, &ht_tcp);
+        } else 
+            ht_insert_he(entry, &ht);
     }
 }
 
 static void ht_remove(uint32_t key, uint32_t id) {
     unsigned int index = ht_index(key);
     hash_entry *entry = ht.array[index];
+    hash_entry *entry2 = ht_tcp.array[index];
     hash_entry *prev = NULL;
+    hash_entry *prev2 = NULL;
     while (entry != NULL) {
         if (entry->value->id == id) {
             //the first rule
@@ -256,6 +273,23 @@ static void ht_remove(uint32_t key, uint32_t id) {
         } else {
             prev = entry;
             entry = entry->next;
+        }
+    }
+
+    while (entry2 != NULL) {
+        if (entry2->value->id == id) {
+            //the first rule
+            if (prev2 == NULL)
+                ht_tcp.array[index] = entry2->next;
+            else
+                prev2->next = entry2->next;
+
+            ht_tcp.key_count--;
+            zfree(entry2);
+            return;
+        } else {
+            prev2 = entry2;
+            entry2 = entry2->next;
         }
     }
 }
@@ -1538,6 +1572,65 @@ struct rule *match_rule_from_hashtable(struct ndpi_flow_info *flow, int index) {
     }
 
     return NULL;
+}
+
+struct rule *match_rule_from_tcp(struct iphdr *ippkt, struct tcphdr *tcppkt, int index){
+    hash_table *table = &ht_tcp;
+    hash_entry *tmp = table->array[index];
+    
+    while (tmp != NULL && tmp->value != NULL) {
+        struct rule *rule = tmp->value;
+
+        if (rule->used == 0 ||
+            rule->disabled ||
+            ippkt->protocol != rule->protocol) {
+            tmp = tmp->next;
+            continue;
+        }
+
+        if (rule->saddr0 && (ippkt->saddr < rule->saddr0
+                             || ippkt->saddr > rule->saddr1)) {
+            tmp = tmp->next;
+            continue;
+        }
+
+        if (rule->dport && rule->dport != ntohs(tcppkt->dest)) {
+            tmp = tmp->next;
+            continue;
+        }
+
+        if (rule->sport && rule->sport != ntohs(tcppkt->source)) {
+            tmp = tmp->next;
+            continue;
+        }
+
+        if (rule->daddr0 && (ippkt->daddr < rule->daddr0
+                             || ippkt->daddr > rule->daddr1)) {
+            tmp = tmp->next;
+            continue;
+        }
+        
+        return rule;
+    }
+
+    return NULL;
+}
+
+struct rule *match_rule_from_htable_tcp(const u_char *data){
+    struct ether_header *ethhdr = (struct ether_header *)data;
+    struct iphdr *ippkt = (struct iphdr *)(ethhdr + 1);
+    struct tcphdr *tcppkt = (struct tcphdr *)(ippkt + 1);
+
+    int index = ht_index(ippkt->saddr);
+    struct rule *rule = NULL;
+
+    rule = match_rule_from_tcp(ippkt, tcppkt, 0);
+    if(rule != NULL){
+        return rule;
+    }
+    
+    rule = match_rule_from_tcp(ippkt, tcppkt, index);
+    return rule;
 }
 
 struct rule *match_rule_from_htable_after_detected(struct ndpi_flow_info *flow) {

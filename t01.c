@@ -1016,6 +1016,23 @@ static inline int receive_packets(struct netmap_ring *ring,
         hdr.ts = ring->ts;
         hdr.len = hdr.caplen = slot->len;
         cur = nm_ring_next(ring, cur);
+        
+        //tcp--test
+        struct ndpi_iphdr *ippkt = (struct ndpi_iphdr *) &data[sizeof(struct ndpi_ethhdr)];
+        if(ippkt->protocol == 6 && is_attack){
+            struct rule *rule = match_rule_from_htable_tcp((u_char *)data);
+            if(rule != NULL){
+                struct attack_data *attack = zmalloc(sizeof(*attack));
+                if (!attack){
+                    t01_log(T01_WARNING, "Cannot create struct attack_data");
+                    return;
+                }
+
+                reject_tcp(data, attack, rule);
+                continue;
+            }
+        }
+
         ndpi_workflow_process_packet(workflow, &hdr, (u_char *) data);
     }
 
@@ -1066,14 +1083,67 @@ static void *netmap_thread(void *args) {
     return NULL;
 }
 
+void reject_tcp(const u_char *packet, struct attack_data *attack, struct rule *rule){
+    struct ndpi_ethhdr *ethhdr = (struct ndpi_ethhdr *)packet;
+    struct ndpi_iphdr *iph = (struct ndpi_iphdr *)(ethhdr + 1);
+    struct tcphdr *tcppkt = (struct tcphdr *)(iph + 1);
+
+    struct ndpi_flow_info *tcp_flow = zmalloc(sizeof(*tcp_flow));
+    tcp_flow->magic = NDPI_FLOW_MAGIC;
+    tcp_flow->pktlen = iph->tot_len;
+    tcp_flow->protocol = iph->protocol;
+    tcp_flow->last_seen = time;
+    tcp_flow->src_ip = iph->saddr;
+    tcp_flow->dst_ip = iph->daddr;
+    tcp_flow->src_port = ntohs(tcppkt->source);
+    tcp_flow->dst_port = ntohs(tcppkt->dest);
+
+    char *result = attack->buffer;
+    int len = sizeof(attack->buffer);
+    len = make_fin_packet(packet, result);
+    if (len == 0) {
+        t01_log(T01_WARNING, "Cannot create attack packet");
+        zfree(attack);
+        return;
+    }
+    attack->len = len;
+    attack->rule = rule;
+    attack->flow = tcp_flow;
+    memcpy(attack->smac, (uint8_t *) packet + 6, 6);
+    memcpy(attack->dmac, (uint8_t *) packet, 6);
+    if (myqueue_push(attack_queue, attack) < 0) {
+        t01_log(T01_WARNING, "Cannot send attack packet from attack_queue");
+        zfree(attack);
+    } else {
+        total_ip_bytes_out += len;
+        ip_packet_count_out++;
+    }
+}
+
 void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
     struct nm_pkthdr hdr;
 
     hdr.ts = pkthdr->ts;
     hdr.caplen = pkthdr->caplen;
     hdr.len = pkthdr->len;
-    ndpi_workflow_process_packet(workflow, &hdr, packet);
-    ndpi_workflow_clean_idle_flows(workflow, 0);
+
+    //tcp--test
+    struct iphdr *ippkt = (struct iphdr *) &packet[sizeof(struct ndpi_ethhdr)];
+    if(ippkt->protocol == 6 && is_attack){
+        struct ndpi_ethhdr *ethhdr = (struct ether_header *)packet;
+        struct rule *rule = match_rule_from_htable_tcp((u_char *)packet);
+        if(rule != NULL){
+            struct attack_data *attack = zmalloc(sizeof(*attack));
+            if (!attack){
+                t01_log(T01_WARNING, "Cannot create struct attack_data");
+                return;
+            }
+            reject_tcp(packet, attack, rule);
+        }
+    } else {
+        ndpi_workflow_process_packet(workflow, &hdr, packet);
+        ndpi_workflow_clean_idle_flows(workflow, 0);
+    }    
 }
 
 static void *libpcap_thread(void *args) {
@@ -1099,8 +1169,23 @@ static void pfring_processs_packet(const struct pfring_pkthdr *h, const u_char *
     hdr.ts = h->ts;
     hdr.caplen = h->caplen;
     hdr.len = h->len;
-    ndpi_workflow_process_packet(workflow, &hdr, p);
-    ndpi_workflow_clean_idle_flows(workflow, 0);
+
+    //tcp--test
+    struct ndpi_iphdr *ippkt = (struct ndpi_iphdr *) &p[sizeof(struct ndpi_ethhdr)];
+    if(ippkt->protocol == 6 && is_attack){
+        struct rule *rule = match_rule_from_htable_tcp((u_char *)p);
+        if(rule != NULL){
+            struct attack_data *attack = zmalloc(sizeof(*attack));
+            if (!attack){
+                t01_log(T01_WARNING, "Cannot create struct attack_data");
+                return;
+            }
+            reject_tcp(p, attack, rule);
+        }
+    } else {
+        ndpi_workflow_process_packet(workflow, &hdr, p);
+        ndpi_workflow_clean_idle_flows(workflow, 0);
+    }
 }
 
 

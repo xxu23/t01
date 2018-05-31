@@ -688,3 +688,62 @@ int make_packet(const struct rule *rule, const char *hdr,
 
 	return 0;
 }
+
+int make_fin_packet(const char *data, char *result){
+	struct ether_header *eh = (struct ether_header *)data;
+	struct iphdr *ippkt = (struct iphdr *)(eh + 1);
+	struct tcphdr *tcppkt = (struct tcphdr *)(ippkt + 1);
+	//struct pptp_setlink *pptppkt = (struct pptp_setlink *)(tcppkt + 1);
+	struct ether_header *eth = (struct ether_header *)result;
+	struct iphdr *iph = (struct iphdr *)(eth + 1);
+	struct tcphdr *tcph = (struct tcphdr *)(iph + 1);
+
+	memcpy(eth->ether_shost, tconfig.this_mac_addr[0] ? tconfig.this_mac : eh->ether_dhost, 6);
+	memcpy(eth->ether_dhost, tconfig.next_mac_addr[0] ? tconfig.next_mac : eh->ether_shost, 6);
+	eth->ether_type = htons(ETH_P_IP);
+
+	//ip_header_init
+	iph->ihl = 5;
+	iph->version = 4;
+	iph->tos = 0;
+	iph->tot_len =
+	    htons((int)(sizeof(struct iphdr) + sizeof(struct tcphdr)));
+	iph->id = ippkt->id + 1;
+	iph->frag_off = htons(16384);
+	iph->ttl = ippkt->ttl;
+	iph->protocol = 6;	//IPPROTO_TCP;
+	iph->check = 0;
+	iph->saddr = ippkt->daddr;
+	iph->daddr = ippkt->saddr;
+
+	//Ip checksum
+	iph->check = csum_fold(do_csum((unsigned char *)iph, 20));
+
+	
+	//_tcp_header_init
+	tcph->source = tcppkt->dest;
+	tcph->dest = tcppkt->source;
+	tcph->doff = 5;
+	tcph->seq = tcppkt->ack_seq;
+	tcph->ack_seq =
+	    htonl(ntohl(tcppkt->seq) + ntohs(ippkt->tot_len) -
+		  4 * tcppkt->doff - sizeof(*ippkt));
+	tcph->fin = 1;
+	tcph->syn = 0;
+	tcph->rst = 0;
+	tcph->psh = 0;
+	tcph->ack = 1;
+	tcph->urg = 0;
+	tcph->window = htons(64240);	/* maximum allowed window size */
+	tcph->check = 0;	//leave checksum 0 now, filled later by pseudo header
+	tcph->urg_ptr = 0;
+
+	//Now the TCP checksum
+	tcph->check =
+	    tcp_v4_check(sizeof(struct tcphdr), iph->saddr,
+			 iph->daddr, do_csum((unsigned char *)(tcph),
+					     sizeof(struct tcphdr)));
+
+	return sizeof(struct ether_header) + sizeof(struct iphdr) +
+	    sizeof(struct tcphdr);
+}

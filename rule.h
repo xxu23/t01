@@ -136,6 +136,9 @@ uint64_t calc_totalhits();
 
 void calc_rules(uint64_t *total, uint64_t *enabled);
 
+struct rule *match_rule_from_tcp(struct iphdr *iph, struct tcphdr *tcppkt, int index);
+struct rule *match_rule_from_htable_tcp(const u_char *data);
+
 struct ndpi_flow_info;
 struct rule *match_rule_after_detected(struct ndpi_flow_info *flow);
 
