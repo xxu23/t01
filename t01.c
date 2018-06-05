@@ -535,11 +535,14 @@ static void *attack_thread(void *args) {
 
         struct ndpi_flow_info *flow = attack->flow;
         struct rule *rule = attack->rule;
-        if (is_ndpi_flow_info_used(flow) == 0) {
+        if (flow && is_ndpi_flow_info_used(flow) == 0) {
             zfree(attack);
             continue;
         }
-        process_hitslog(rule, flow, attack->smac, attack->dmac);
+        if (flow)
+            process_hitslog(rule, flow, attack->smac, attack->dmac);
+        else 
+            rule->hits++;
 
         int len = attack->len;
         char *result = attack->buffer;
@@ -580,7 +583,7 @@ static void *attack_thread(void *args) {
             }
         }
 
-        if (tconfig.verbose) {
+        if (flow && tconfig.verbose) {
             char l[48], u[48];
             char msg[4096];
             int offset = 0;
@@ -1017,7 +1020,6 @@ static inline int receive_packets(struct netmap_ring *ring,
         hdr.len = hdr.caplen = slot->len;
         cur = nm_ring_next(ring, cur);
         
-        //tcp--test
         struct ndpi_iphdr *ippkt = (struct ndpi_iphdr *) &data[sizeof(struct ndpi_ethhdr)];
         if(ippkt->protocol == 6 && is_attack){
             struct rule *rule = match_rule_from_htable_tcp((u_char *)data);
@@ -1087,17 +1089,6 @@ void reject_tcp(const u_char *packet, struct attack_data *attack, struct rule *r
     struct ndpi_ethhdr *ethhdr = (struct ndpi_ethhdr *)packet;
     struct ndpi_iphdr *iph = (struct ndpi_iphdr *)(ethhdr + 1);
     struct tcphdr *tcppkt = (struct tcphdr *)(iph + 1);
-
-    struct ndpi_flow_info *tcp_flow = zmalloc(sizeof(*tcp_flow));
-    tcp_flow->magic = NDPI_FLOW_MAGIC;
-    tcp_flow->pktlen = iph->tot_len;
-    tcp_flow->protocol = iph->protocol;
-    tcp_flow->last_seen = time;
-    tcp_flow->src_ip = iph->saddr;
-    tcp_flow->dst_ip = iph->daddr;
-    tcp_flow->src_port = ntohs(tcppkt->source);
-    tcp_flow->dst_port = ntohs(tcppkt->dest);
-
     char *result = attack->buffer;
     int len = sizeof(attack->buffer);
     len = make_fin_packet(packet, result);
@@ -1108,7 +1099,7 @@ void reject_tcp(const u_char *packet, struct attack_data *attack, struct rule *r
     }
     attack->len = len;
     attack->rule = rule;
-    attack->flow = tcp_flow;
+    attack->flow = NULL;
     memcpy(attack->smac, (uint8_t *) packet + 6, 6);
     memcpy(attack->dmac, (uint8_t *) packet, 6);
     if (myqueue_push(attack_queue, attack) < 0) {
@@ -1127,7 +1118,6 @@ void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *pac
     hdr.caplen = pkthdr->caplen;
     hdr.len = pkthdr->len;
 
-    //tcp--test
     struct iphdr *ippkt = (struct iphdr *) &packet[sizeof(struct ndpi_ethhdr)];
     if(ippkt->protocol == 6 && is_attack){
         struct ndpi_ethhdr *ethhdr = (struct ether_header *)packet;
@@ -1170,7 +1160,6 @@ static void pfring_processs_packet(const struct pfring_pkthdr *h, const u_char *
     hdr.caplen = h->caplen;
     hdr.len = h->len;
 
-    //tcp--test
     struct ndpi_iphdr *ippkt = (struct ndpi_iphdr *) &p[sizeof(struct ndpi_ethhdr)];
     if(ippkt->protocol == 6 && is_attack){
         struct rule *rule = match_rule_from_htable_tcp((u_char *)p);
