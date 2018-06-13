@@ -232,6 +232,49 @@ static inline int netflow_data_filter(struct ndpi_flow_info *flow, void *packet)
     return 0;
 }
 
+static int mirror_match_filter(struct ndpi_workflow * workflow, struct nm_pkthdr *header, const u_char *packet){
+    workflow->stats.raw_packet_count++;
+
+    if (n_filters == 0)
+        return -1;
+
+    uint8_t protocol;
+    uint16_t src_port;
+    uint16_t dst_port;
+    struct iphdr *ippkt = (struct iphdr *) &packet[sizeof(struct ndpi_ethhdr)];
+    protocol = ippkt->protocol;
+    
+    if(protocol == 6){
+        workflow->stats.tcp_count++;
+        struct tcphdr *tcppkt = (struct tcphdr *)(ippkt + 1);
+        src_port = htons(tcppkt->source);
+        dst_port = htons(tcppkt->dest);
+    } else if(protocol == 17){
+        workflow->stats.udp_count++;
+        struct udphdr *udppkt = (struct udphdr *)(ippkt + 1);
+        src_port = htons(udppkt->source);
+        dst_port = htons(udppkt->dest);
+    } else{
+        return -1;
+    } 
+
+    workflow->stats.ip_packet_count++;
+    workflow->stats.total_wire_bytes += header->len + 24 /* CRC etc */, workflow->stats.total_ip_bytes += header->len;
+
+    int i;
+    for (i = 0; i < n_filters; i++) {
+        if (filters[i].protocol == 0) {
+            if (filters[i].port == 0)
+                return 0;
+            else if (filters[i].port == dst_port || filters[i].port == src_port)
+                return 0;
+        } else if (filters[i].protocol == protocol && (filters[i].port == 0 || filters[i].port == dst_port || filters[i].port == src_port)){
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void netflow_data_clone(void *data, uint32_t n, uint32_t hash_idx,
                                uint8_t protocol, uint64_t ts) {
     static int round = 0;
@@ -1010,6 +1053,7 @@ static inline int receive_packets(struct netmap_ring *ring,
                                   struct ndpi_workflow *workflow) {
     u_int cur, rx, n;
     struct nm_pkthdr hdr;
+    int only_mirror = (is_mirror == 1 && is_attack == 0) ? 1: 0;
     cur = ring->cur;
     n = nm_ring_space(ring);
 
@@ -1035,7 +1079,13 @@ static inline int receive_packets(struct netmap_ring *ring,
             }
         }
 
-        ndpi_workflow_process_packet(workflow, &hdr, (u_char *) data);
+       if(only_mirror){
+            if (mirror_match_filter(workflow, &hdr, data) == 0){
+                netflow_data_clone(data, hdr.len, NULL, ippkt->protocol, NULL);
+                ndpi_workflow_clean_idle_flows(workflow, 0);
+            }
+       } else
+            ndpi_workflow_process_packet(workflow, &hdr, (u_char *) data);
     }
 
     ring->head = ring->cur = cur;
@@ -1113,6 +1163,7 @@ void reject_tcp(const u_char *packet, struct attack_data *attack, struct rule *r
 
 void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
     struct nm_pkthdr hdr;
+    int only_mirror = (is_mirror == 1 && is_attack == 0) ? 1: 0;
 
     hdr.ts = pkthdr->ts;
     hdr.caplen = pkthdr->caplen;
@@ -1130,10 +1181,17 @@ void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *pac
             }
             reject_tcp(packet, attack, rule);
         }
-    } else {
+    } else if(only_mirror){
+        // mirror_match_filter(workflow, &hdr, packet);
+        // ndpi_workflow_clean_idle_flows(workflow, 0);
+        if (mirror_match_filter(workflow, &hdr, packet) == 0){
+            netflow_data_clone(packet, hdr.len, NULL, ippkt->protocol, NULL);
+            ndpi_workflow_clean_idle_flows(workflow, 0);
+        }
+    } else{
         ndpi_workflow_process_packet(workflow, &hdr, packet);
         ndpi_workflow_clean_idle_flows(workflow, 0);
-    }    
+    }   
 }
 
 static void *libpcap_thread(void *args) {
@@ -1155,6 +1213,7 @@ static void *libpcap_thread(void *args) {
 static void pfring_processs_packet(const struct pfring_pkthdr *h, const u_char *p,
                                    const u_char *user_bytes) {
     struct nm_pkthdr hdr;
+    int only_mirror = (is_mirror == 1 && is_attack == 0) ? 1: 0;
 
     hdr.ts = h->ts;
     hdr.caplen = h->caplen;
@@ -1171,7 +1230,12 @@ static void pfring_processs_packet(const struct pfring_pkthdr *h, const u_char *
             }
             reject_tcp(p, attack, rule);
         }
-    } else {
+    } else if(only_mirror){
+        if (mirror_match_filter(workflow, &hdr, p) == 0){
+            netflow_data_clone(p, hdr.len, NULL, ippkt->protocol, NULL);
+            ndpi_workflow_clean_idle_flows(workflow, 0);
+        }
+    } else{
         ndpi_workflow_process_packet(workflow, &hdr, p);
         ndpi_workflow_clean_idle_flows(workflow, 0);
     }
