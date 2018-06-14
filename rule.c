@@ -319,7 +319,7 @@ static void strrpl(char *pDstOut, const char *pSrcIn, const char *pSrcRpl,
     } while (p != NULL);
 }
 
-static inline get_ip(const char *ip, u_int32_t *start, u_int32_t *end) {
+static inline int get_ip(const char *ip, u_int32_t *start, u_int32_t *end) {
     if (strchr(ip, '*')) {
         char ip1[16], ip2[16];
         strrpl(ip1, ip, "*", "1");

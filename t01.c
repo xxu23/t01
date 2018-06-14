@@ -36,6 +36,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/poll.h>
+#include <sys/types.h>
 #include <net/if.h>
 #include <sys/wait.h>
 #include <sched.h>
@@ -45,6 +46,7 @@
 #include <event.h>
 #include <pcap.h>
 #include <pfring.h>
+#include <stdint.h>
 
 #include "t01.h"
 #include "config.h"
@@ -255,15 +257,12 @@ static void netflow_data_clone(void *data, uint32_t n, uint32_t hash_idx,
 }
 
 static void mirror_match_filter(struct ndpi_workflow * workflow, struct nm_pkthdr *header, const u_char *packet){
-    workflow->stats.raw_packet_count++;
     u_int64_t time = ((uint64_t) header->ts.tv_sec) * TICK_RESOLUTION + header->ts.tv_usec / (1000000 / TICK_RESOLUTION);
-    /* safety check */
     if(workflow->last_time > time) {
-        /* printf("\nWARNING: timestamp bug in the pcap file (ts delta: %llu, repairing)\n", ndpi_thread_info[thread_id].last_time - time); */
         time = workflow->last_time;
     }
-    /* update last time value */
     workflow->last_time = time;
+    workflow->stats.raw_packet_count++;
 
     if (n_filters == 0)
         return;
@@ -271,7 +270,6 @@ static void mirror_match_filter(struct ndpi_workflow * workflow, struct nm_pkthd
     uint8_t protocol;
     uint16_t src_port;
     uint16_t dst_port;
-    u_int32_t idx;
     struct iphdr *ippkt = (struct iphdr *) &packet[sizeof(struct ndpi_ethhdr)];
     protocol = ippkt->protocol;
     
@@ -309,9 +307,10 @@ static void mirror_match_filter(struct ndpi_workflow * workflow, struct nm_pkthd
         }
     }
 
-    idx = ippkt->saddr + ippkt->daddr + ippkt->protocol + src_port + dst_port;
-    if (matched)
-        netflow_data_clone(packet, header->len, idx, ippkt->protocol, workflow->last_time);
+    if (matched) {
+        uint32_t idx = ippkt->saddr + ippkt->daddr + ippkt->protocol + src_port + dst_port;
+        netflow_data_clone(packet, header->len, idx, protocol, workflow->last_time);
+    }
 }
 
 static void create_pidfile(void) {
@@ -1066,6 +1065,32 @@ static void *libevent_thread(void *args) {
     return NULL;
 }
 
+static void reject_tcp(const u_char *packet, struct attack_data *attack, struct rule *rule){
+    struct ndpi_ethhdr *ethhdr = (struct ndpi_ethhdr *)packet;
+    struct ndpi_iphdr *iph = (struct ndpi_iphdr *)(ethhdr + 1);
+    struct tcphdr *tcppkt = (struct tcphdr *)(iph + 1);
+    char *result = attack->buffer;
+    int len = sizeof(attack->buffer);
+    len = make_fin_packet(packet, result);
+    if (len == 0) {
+        t01_log(T01_WARNING, "Cannot create attack packet");
+        zfree(attack);
+        return;
+    }
+    attack->len = len;
+    attack->rule = rule;
+    attack->flow = NULL;
+    memcpy(attack->smac, (uint8_t *) packet + 6, 6);
+    memcpy(attack->dmac, (uint8_t *) packet, 6);
+    if (myqueue_push(attack_queue, attack) < 0) {
+        t01_log(T01_WARNING, "Cannot send attack packet from attack_queue");
+        zfree(attack);
+    } else {
+        total_ip_bytes_out += len;
+        ip_packet_count_out++;
+    }
+}
+
 static inline int receive_packets(struct netmap_ring *ring,
                                   struct ndpi_workflow *workflow) {
     u_int cur, rx, n;
@@ -1080,18 +1105,17 @@ static inline int receive_packets(struct netmap_ring *ring,
         hdr.ts = ring->ts;
         hdr.len = hdr.caplen = slot->len;
         cur = nm_ring_next(ring, cur);
-        
-        struct ndpi_iphdr *ippkt = (struct ndpi_iphdr *) &data[sizeof(struct ndpi_ethhdr)];
 
-        if(only_mirror)
+        if(only_mirror) {
             mirror_match_filter(workflow, &hdr, data);
-        else {
+        } else {
+            struct ndpi_iphdr *ippkt = (struct ndpi_iphdr *) &data[sizeof(struct ndpi_ethhdr)];
             int attack_flag = 0;
             if(ippkt->protocol == 6){
                 struct rule *rule = match_rule_from_htable_tcp((u_char *)data);
-                if(rule != NULL){
-                    attack_flag = 1;
+                if(rule != NULL) {
                     struct attack_data *attack = zmalloc(sizeof(*attack));
+                    attack_flag = 1;
                     if(attack){
                         reject_tcp(data, attack, rule);
                         continue;
@@ -1151,32 +1175,6 @@ static void *netmap_thread(void *args) {
     return NULL;
 }
 
-void reject_tcp(const u_char *packet, struct attack_data *attack, struct rule *rule){
-    struct ndpi_ethhdr *ethhdr = (struct ndpi_ethhdr *)packet;
-    struct ndpi_iphdr *iph = (struct ndpi_iphdr *)(ethhdr + 1);
-    struct tcphdr *tcppkt = (struct tcphdr *)(iph + 1);
-    char *result = attack->buffer;
-    int len = sizeof(attack->buffer);
-    len = make_fin_packet(packet, result);
-    if (len == 0) {
-        t01_log(T01_WARNING, "Cannot create attack packet");
-        zfree(attack);
-        return;
-    }
-    attack->len = len;
-    attack->rule = rule;
-    attack->flow = NULL;
-    memcpy(attack->smac, (uint8_t *) packet + 6, 6);
-    memcpy(attack->dmac, (uint8_t *) packet, 6);
-    if (myqueue_push(attack_queue, attack) < 0) {
-        t01_log(T01_WARNING, "Cannot send attack packet from attack_queue");
-        zfree(attack);
-    } else {
-        total_ip_bytes_out += len;
-        ip_packet_count_out++;
-    }
-}
-
 void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
     struct nm_pkthdr hdr;
     int only_mirror = (is_mirror == 1 && is_attack == 0) ? 1: 0;
@@ -1185,12 +1183,11 @@ void get_packet(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *pac
     hdr.caplen = pkthdr->caplen;
     hdr.len = pkthdr->len;
 
-    struct iphdr *ippkt = (struct iphdr *) &packet[sizeof(struct ndpi_ethhdr)];
-
     if(only_mirror) {
         mirror_match_filter(workflow, &hdr, packet);
     } else { 
         int attack_flag = 0;
+        struct iphdr *ippkt = (struct iphdr *) &packet[sizeof(struct ndpi_ethhdr)];
         if(ippkt->protocol == 6) {
             struct rule *rule = match_rule_from_htable_tcp((u_char *)packet);
             if(rule != NULL) {
@@ -1233,12 +1230,11 @@ static void pfring_processs_packet(const struct pfring_pkthdr *h, const u_char *
     hdr.caplen = h->caplen;
     hdr.len = h->len;
 
-    struct ndpi_iphdr *ippkt = (struct ndpi_iphdr *) &p[sizeof(struct ndpi_ethhdr)];
-
     if(only_mirror) {
         mirror_match_filter(workflow, &hdr, p);
     } else { 
         int attack_flag = 0;
+        struct ndpi_iphdr *ippkt = (struct ndpi_iphdr *) &p[sizeof(struct ndpi_ethhdr)];
         if(ippkt->protocol == 6) {
             struct rule *rule = match_rule_from_htable_tcp((u_char *)p);
             if(rule != NULL) {
