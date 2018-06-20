@@ -1554,11 +1554,22 @@ static void init_netmap() {
 }
 
 static void init_libpcap() {
-    device = pcap_open_live(tconfig.ifname, MAX_PCAP_DATA, PCAP_PROMISC, PCAP_TIMEOUT, errBuf);
-    if (!device) {
-        t01_log(T01_WARNING, "error device pcap_open_live(): %s", errBuf);
-        exit(1);
+    if((device = pcap_open_live(tconfig.ifname, MAX_PCAP_DATA, PCAP_PROMISC,
+                                PCAP_TIMEOUT, errBuf)) == NULL) {
+        t01_log(T01_WARNING, "Could not open device %s: %s, try to read it as pcap file",
+                tconfig.ifname, errBuf);
+        /* trying to open a pcap file */
+        if((device = pcap_open_offline(tconfig.ifname, errBuf)) == NULL) {
+            t01_log(T01_WARNING, "Could not open pcap file %s: %s", tconfig.ifname, errBuf);
+            exit(-1);
+        } else {
+            t01_log(T01_NOTICE, "Reading packets from pcap file %s...", tconfig.ifname);
+        }
+
+    } else {
+        t01_log(T01_NOTICE, "Capturing live traffic from device %s...", tconfig.ifname);
     }
+
     if (tconfig.ofname[0] == 0 || strcmp(tconfig.ifname, tconfig.ofname) == 0) {
         out_device = device;
     } else if (tconfig.raw_socket == 1) {

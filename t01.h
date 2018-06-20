@@ -36,7 +36,7 @@
 #define DEFAULT_RULE_PORT 9899
 #define DEFAULT_RULEDB "/var/lib/t01/dump.tdb"
 #define DEFAULT_PID_FILE "/var/run/t01.pid"
-#define MAX_PCAP_DATA 65535
+#define MAX_PCAP_DATA 1600
 #define PCAP_PROMISC 1
 #define PCAP_TIMEOUT 0
 #define MAX_PKT_LEN 1536
