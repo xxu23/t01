@@ -35,6 +35,8 @@
 #include "ndpi_main.h"
 #include "ndpi_util.h"
 #include "zmalloc.h"
+#include "t01.h"
+#include "logger.h"
 
 #ifndef ETH_P_IP
 #define ETH_P_IP               0x0800 	/* IPv4 */
@@ -247,7 +249,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
 						 const u_int8_t version,
 						 u_int16_t* vlan_ids,
 						 u_int8_t total_vlan,
-                                                 const struct ndpi_iphdr *iph,
+                         const struct ndpi_iphdr *iph,
 						 const struct ndpi_ipv6hdr *iph6,
 						 u_int16_t ip_offset,
 						 u_int16_t ipsize,
@@ -555,8 +557,16 @@ static unsigned int packet_processing(struct ndpi_workflow * workflow,
 			       &payload, &payload_len, &src_to_dst_direction);
 
   if(flow != NULL) {
-    workflow->stats.ip_packet_count++;
-    workflow->stats.total_wire_bytes += rawsize + 24 /* CRC etc */, workflow->stats.total_ip_bytes += rawsize;
+    struct ndpi_stats* stats = &workflow->stats;
+    stats->ip_packet_count++;
+    stats->total_wire_bytes += rawsize + 24 /* CRC etc */, stats->total_ip_bytes += rawsize;
+    stats->port_counter[dport]++;
+    stats->port_counter_bytes[dport] += rawsize;
+    if (tconfig.verbose && stats->ip_packet_count % tconfig.sampling == 0) {
+        flow->log_flag = 1;
+        t01_log(T01_NOTICE, "Before nDPI: %x:%d <--> %x:%d", flow->src_ip, flow->src_port,
+                flow->dst_ip, flow->dst_port);
+    }
     ndpi_flow = flow->ndpi_flow;
     flow->packets++, flow->bytes += rawsize;
     flow->last_seen = time;

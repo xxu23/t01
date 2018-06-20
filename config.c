@@ -114,6 +114,7 @@ void load_config(const char *filename) {
     get_int_from_json(item, json, "hit_port", tconfig.hit_port);
     get_string_from_json(item, json, "remote_ip", tconfig.remote_ip);
     get_int_from_json(item, json, "remote_port", tconfig.remote_port);
+    get_int_from_json(item, json, "sampling", tconfig.sampling);
     get_int_from_json(item, json, "verbose", tconfig.verbose);
     get_int_from_json(item, json, "id", tconfig.id);
     get_int_from_json(item, json, "cpu_thread", tconfig.cpu_thread);
@@ -149,6 +150,9 @@ void load_config(const char *filename) {
         tconfig.raw_socket = 0;
     else if (strcasecmp(sm, "socket") == 0)
         tconfig.raw_socket = 1;
+
+    if (tconfig.sampling <= 0)
+        tconfig.sampling = (1<<16);
     cJSON_Delete(json);
 }
 

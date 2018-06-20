@@ -83,6 +83,7 @@ struct t01_config {
     char remote_ip[32];
     uint16_t remote_port;
     int verbose;
+    int sampling;
     int id;
     int max_clients;
     int cpu_thread;

@@ -74,6 +74,7 @@ typedef struct ndpi_flow_info {
     u_int64_t bytes;
     u_int32_t packets;
     u_int8_t total_vlan;
+    u_int8_t log_flag;
 
     struct ndpi_flow_struct *ndpi_flow;
 
@@ -97,6 +98,8 @@ typedef struct ndpi_stats {
     u_int64_t protocol_counter[NDPI_MAX_SUPPORTED_PROTOCOLS + NDPI_MAX_NUM_CUSTOM_PROTOCOLS + 1];
     u_int64_t protocol_counter_bytes[NDPI_MAX_SUPPORTED_PROTOCOLS + NDPI_MAX_NUM_CUSTOM_PROTOCOLS + 1];
     u_int32_t protocol_flows[NDPI_MAX_SUPPORTED_PROTOCOLS + NDPI_MAX_NUM_CUSTOM_PROTOCOLS + 1];
+    u_int64_t port_counter[65536];
+    u_int64_t port_counter_bytes[65536];
     u_int32_t ndpi_flow_count;
     u_int64_t tcp_count, udp_count;
     u_int64_t mpls_count, pppoe_count, vlan_count, fragmented_count;

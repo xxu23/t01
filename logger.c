@@ -70,7 +70,7 @@ void t01_lograw(int level, const char *msg) {
 
         gettimeofday(&tv,NULL);
         off = strftime(buf,sizeof(buf),"%Y-%m-%d %H:%M:%S.",localtime(&tv.tv_sec));
-        snprintf(buf+off,sizeof(buf)-off,"%03d",(int)tv.tv_usec/1000);
+        snprintf(buf+off,sizeof(buf)-off,"%06d",(int)tv.tv_usec);
         fprintf(fp,"[%d] %s %c %s\n",(int)getpid(),buf,c[level],msg);
     }
     fflush(fp);

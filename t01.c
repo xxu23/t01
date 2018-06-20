@@ -37,6 +37,7 @@
 #include <errno.h>
 #include <sys/poll.h>
 #include <sys/types.h>
+#include <inttypes.h>
 #include <net/if.h>
 #include <sys/wait.h>
 #include <sched.h>
@@ -278,11 +279,15 @@ static void mirror_match_filter(struct ndpi_workflow * workflow, struct nm_pkthd
         struct tcphdr *tcppkt = (struct tcphdr *)(ippkt + 1);
         src_port = htons(tcppkt->source);
         dst_port = htons(tcppkt->dest);
+        workflow->stats.port_counter[dst_port]++;
+        workflow->stats.port_counter_bytes[dst_port] += header->len;
     } else if(protocol == 17){
         workflow->stats.udp_count++;
         struct udphdr *udppkt = (struct udphdr *)(ippkt + 1);
         src_port = htons(udppkt->source);
         dst_port = htons(udppkt->dest);
+        workflow->stats.port_counter[dst_port]++;
+        workflow->stats.port_counter_bytes[dst_port] += header->len;
     } else {
         return;
     } 
@@ -397,6 +402,12 @@ static void signal_hander(int sig) {
 static void on_protocol_discovered(struct ndpi_workflow *workflow,
                                    struct ndpi_flow_info *flow, void *header,
                                    void *packet) {
+    if (tconfig.verbose && flow->log_flag) {
+        t01_log(T01_NOTICE, "Completed nDPI : %x:%d <--> %x:%d",
+                flow->src_ip, flow->src_port,
+                flow->dst_ip, flow->dst_port);
+    }
+
     if (flow->detected_protocol.protocol == NDPI_PROTOCOL_UNKNOWN) {
         flow->detected_protocol =
                 ndpi_guess_undetected_protocol(workflow->ndpi_struct,
@@ -410,6 +421,11 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
 
     total_pkts_ndpi++;
     struct rule *rule = match_rule_from_htable_after_detected(flow);
+    if (tconfig.verbose && flow->log_flag) {
+        t01_log(T01_NOTICE, "Completed rule matching : %x:%d <--> %x:%d",
+                flow->src_ip, flow->src_port,
+                flow->dst_ip, flow->dst_port);
+    }
     if (!rule)
         return;
 
@@ -440,6 +456,11 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
     } else {
         total_ip_bytes_out += len;
         ip_packet_count_out++;
+    }
+    if (tconfig.verbose && flow->log_flag) {
+        t01_log(T01_NOTICE, "Completed packet faking : %x:%d <--> %x:%d",
+                flow->src_ip, flow->src_port,
+                flow->dst_ip, flow->dst_port);
     }
 }
 
@@ -524,6 +545,10 @@ struct ndpi_workflow *setup_detection() {
            sizeof(workflow->stats.protocol_counter_bytes));
     memset(workflow->stats.protocol_flows, 0,
            sizeof(workflow->stats.protocol_flows));
+    memset(workflow->stats.port_counter_bytes, 0,
+           sizeof(workflow->stats.port_counter_bytes));
+    memset(workflow->stats.port_counter, 0,
+           sizeof(workflow->stats.port_counter));
 
     return workflow;
 }
@@ -640,6 +665,11 @@ static void *attack_thread(void *args) {
                     send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
                 }
             }
+        }
+        if (tconfig.verbose && flow->log_flag) {
+            t01_log(T01_NOTICE, "Completed packet sending : %x:%d <--> %x:%d",
+                    flow->src_ip, flow->src_port,
+                    flow->dst_ip, flow->dst_port);
         }
 
         if (flow && tconfig.verbose) {
@@ -836,6 +866,39 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
         printf("\tOutcoming throughput:  %s pps / %s/sec\n",
                format_packets(pkts_per_second_out, buf),
                format_traffic(bytes_per_second_out, 1, buf1));
+        if (is_mirror) {
+            if (tconfig.verbose) {
+                int j;
+                u_int64_t totalpkts = 0, totalbytes = 0;
+                u_int64_t *counts = stat->port_counter;
+                u_int64_t *bytes = stat->port_counter_bytes;
+                u_int16_t ports[] = {21, 22, 23, 25, 53, 80, 110, 143, 443,
+                                     465, 587, 993, 995, 1080, 1812, 1813,
+                                     3306, 3389, 4000, 6379, 8000, 8080, 9200};
+                char portss[20480];
+                int offset = 0;
+
+                for (j = 0; j < sizeof(ports) / sizeof(ports[0]); j++) {
+                    u_int16_t p = ports[j];
+                    offset += snprintf(portss + offset, sizeof(portss) - offset,
+                                       "%d:%llu pkt(%llu bytes), ",
+                                       p, counts[p], bytes[p]);
+                }
+                for (j = 0; j < 65536; j++) {
+                    totalpkts += counts[j];
+                    totalbytes += bytes[j];
+                }
+                snprintf(portss + offset, sizeof(portss) - offset,
+                         "total:%llu pkt (%llu bytes)",
+                         totalpkts, totalbytes);
+                printf("\tPort distribution:     %s\n", portss);
+            }
+
+            uint64_t qin = curr_mirrored_in * 1000000.0 / tot_usec;
+            uint64_t qout = curr_mirrored_out * 1000000.0 / tot_usec;
+            printf("\tMirroring throughput:  in %s pps / out %s pps\n",
+                   format_packets(qin, buf), format_packets(qout, buf1));
+        }
     }
 
     curr_hits = total_hits - hits;
