@@ -265,7 +265,7 @@ static void mirror_match_filter(struct ndpi_workflow * workflow, struct nm_pkthd
     workflow->last_time = time;
     workflow->stats.raw_packet_count++;
 
-    if (n_filters == 0)
+    if (n_filters == 0 || header->len <= 64)
         return;
 
     uint8_t protocol;
@@ -457,7 +457,7 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
         total_ip_bytes_out += len;
         ip_packet_count_out++;
     }
-    if (tconfig.verbose && flow->log_flag) {
+    if (tconfig.verbose) {
         t01_log(T01_NOTICE, "Completed packet faking : %x:%d <--> %x:%d",
                 flow->src_ip, flow->src_port,
                 flow->dst_ip, flow->dst_port);
@@ -666,7 +666,7 @@ static void *attack_thread(void *args) {
                 }
             }
         }
-        if (tconfig.verbose && flow->log_flag) {
+        if (tconfig.verbose) {
             t01_log(T01_NOTICE, "Completed packet sending : %x:%d <--> %x:%d",
                     flow->src_ip, flow->src_port,
                     flow->dst_ip, flow->dst_port);
