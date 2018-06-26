@@ -264,6 +264,9 @@ static void mirror_match_filter(struct ndpi_workflow * workflow, struct nm_pkthd
     }
     workflow->last_time = time;
     workflow->stats.raw_packet_count++;
+    workflow->stats.ip_packet_count++;
+    workflow->stats.total_wire_bytes += header->len + 24 ;
+    workflow->stats.total_ip_bytes += header->len;
 
     if (n_filters == 0 || header->len <= 64)
         return;
@@ -292,21 +295,20 @@ static void mirror_match_filter(struct ndpi_workflow * workflow, struct nm_pkthd
         return;
     } 
 
-    workflow->stats.ip_packet_count++;
-    workflow->stats.total_wire_bytes += header->len + 24 /* CRC etc */, workflow->stats.total_ip_bytes += header->len;
-
     int i;
     int matched = 0;
     for (i = 0; i < n_filters; i++) {
-        if (filters[i].protocol == 0) {
-            if (filters[i].port == 0){
+        uint8_t fprotocol = filters[i].protocol;
+        uint16_t fport = filters[i].port;
+        if (fprotocol == 0) {
+            if (fport == 0){
                 matched = 1;
                 break;
-            } else if (filters[i].port == dst_port || filters[i].port == src_port){
+            } else if (fport == dst_port || fport == src_port){
                 matched = 1;
                 break;
             }
-        } else if (filters[i].protocol == protocol && (filters[i].port == 0 || filters[i].port == dst_port || filters[i].port == src_port)){
+        } else if (fprotocol == protocol && (fport == 0 || fport == dst_port || fport == src_port)){
                 matched = 1;
                 break;
         }
@@ -849,7 +851,7 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
         printf("\tTraffic duration:      %.3f sec (total %.3f sec)\n",
                tot_usec / 1000000.0, since_usec / 1000000.0);
         printf("\tTraffic throughput:    %s pps / %s/sec\n",
-               format_packets(curr_ip_packet_count, buf),
+               format_packets(curr_ip_packet_count*1000000.0/tot_usec, buf),
                format_traffic(cur_bytes_per_second_in, 1, buf1));
         printf("\tnDPI throughput:       %s pps (total %s pkt)\n",
                format_packets(pkts_ndpi_per_second, buf),
