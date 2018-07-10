@@ -514,26 +514,26 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 
 		t01_log(T01_NOTICE, "Original packet");
 		for (i = 0; i < flow->pktlen; i++) {
-			offset += snprintf(msg+offset, sizeof(msg)-offset, "%02x ", hdr[i]);
-			if (i + 1 % 15 == 0) {
+			offset += snprintf(msg+offset, sizeof(msg)-offset, "%02x ", ((unsigned char*)hdr)[i]);
+            if ((i + 1) % 16 == 0) {
 				t01_log(T01_NOTICE, msg);
 				offset = 0;
 			}
 		}
-		if (i + 1 % 15 != 0) {
+		if ((i + 1) % 16 != 0) {
 			t01_log(T01_NOTICE, msg);
 		}
 
 		t01_log(T01_NOTICE, "Faking packet");
         offset = 0;
 		for (i = 0; i < result_len; i++) {
-			offset += snprintf(msg+offset, sizeof(msg)-offset, "%02x ", result[i]);
-			if (i + 1 % 15 == 0) {
+			offset += snprintf(msg+offset, sizeof(msg)-offset, "%02x ", ((unsigned char*)result)[i]);
+			if ((i + 1) % 16 == 0) {
 				t01_log(T01_NOTICE, msg);
 				offset = 0;
 			}
 		}
-		if (i + 1 % 15 != 0) {
+		if ((i + 1) % 16 != 0) {
 			t01_log(T01_NOTICE, msg);
 			offset = 0;
 		}
