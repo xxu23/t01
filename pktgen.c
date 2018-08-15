@@ -45,6 +45,7 @@
 #include "rule.h"
 #include "ndpi_api.h"
 #include "ndpi_protocol_ids.h"
+#include "logger.h"
 #include "ndpi_util.h"
 #include "t01.h"
 
@@ -241,8 +242,8 @@ int make_http_redirect_packet_vlan(const char *target_url, const char *hdr,
 	iph->tot_len =
 			htons(sizeof(struct iphdr) + sizeof(struct tcphdr) + data_len);
 	iph->id = htons(flow->dst_ipid + 1);
-	iph->frag_off = htons(16384);
-	iph->ttl = flow->dst_ttl;
+	iph->frag_off = 0;
+	iph->ttl = 128;
 	iph->protocol = IPPROTO_TCP;
 	iph->check = 0;
 	iph->saddr = src_iph->daddr;
@@ -267,7 +268,7 @@ int make_http_redirect_packet_vlan(const char *target_url, const char *hdr,
 	tcph->ack = 1;
 	tcph->urg = 0;
 
-	tcph->window = htons(64240);    /* maximum allowed window size */
+	tcph->window = htons(65535);    /* maximum allowed window size */
 	tcph->check = 0;
 	tcph->urg_ptr = 0;
 
@@ -315,8 +316,8 @@ int make_dns_spoof_packet_vlan(const char *target, const char *hdr, char *datagr
 	iph->tot_len =
 			htons((sizeof(struct iphdr) + sizeof(struct udphdr)) + data_len);
 	iph->id = htons(36742);	//Id of this packet
-	iph->frag_off = htons(16384);
-	iph->ttl = flow->src_ttl;
+	iph->frag_off = 0;
+	iph->ttl = 128;
 	iph->protocol = 17;	//IPPROTO_UDP;
 	iph->check = 0;
 	iph->saddr = ippkt->daddr;
@@ -391,8 +392,8 @@ int make_tcp_rst_packet_vlan(const char *hdr, char *datagram, int datagram_len,
 	iph->tot_len =
 			htons((int)(sizeof(struct iphdr) + sizeof(struct tcphdr)));
 	iph->id = htons(flow->dst_ipid+1);
-	iph->frag_off = htons(16384);
-	iph->ttl = flow->dst_ttl;
+	iph->frag_off = 0;
+	iph->ttl = 128;
 	iph->protocol = 6;	//IPPROTO_TCP;
 	iph->check = 0;
 	iph->saddr = ippkt->daddr;
@@ -415,7 +416,7 @@ int make_tcp_rst_packet_vlan(const char *hdr, char *datagram, int datagram_len,
 	tcph->psh = 0;
 	tcph->ack = 1;
 	tcph->urg = 0;
-	tcph->window = htons(64240);	/* maximum allowed window size */
+	tcph->window = htons(65535);	/* maximum allowed window size */
 	tcph->check = 0;	//leave checksum 0 now, filled later by pseudo header
 	tcph->urg_ptr = 0;
 
@@ -442,7 +443,7 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 	char *payload = (char *)(tcph + 1);
 	char *pp = strstr(target_url, "https://");
 	char *qq = strstr(target_url, "http://");
-	int data_len;
+	int data_len, result_len;
 	const char *http_redirect_header = "HTTP/1.1 301 Moved Permanently\r\n"
 	    "Connection: keep-alive\r\n"
 	    "Location: %s://%s\r\n"
@@ -458,6 +459,8 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 	data_len =
 	    snprintf(payload, len - sizeof(*eth) - sizeof(*iph) - sizeof(*tcph),
 		     http_redirect_header, pp ? "https" : "http", target_url);
+	result_len = sizeof(struct ether_header) + sizeof(struct iphdr) +
+				 sizeof(struct tcphdr) + data_len;
 
 	memcpy(eth->ether_shost, tconfig.this_mac_addr[0] ? tconfig.this_mac : src_eth->ether_dhost, 6);
 	memcpy(eth->ether_dhost, tconfig.next_mac_addr[0] ? tconfig.next_mac : src_eth->ether_shost, 6);
@@ -470,8 +473,8 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 	iph->tot_len =
 	    htons(sizeof(struct iphdr) + sizeof(struct tcphdr) + data_len);
 	iph->id = htons(flow->dst_ipid + 1);
-	iph->frag_off = htons(16384);
-	iph->ttl = flow->dst_ttl;
+	iph->frag_off = 0;
+	iph->ttl = 128;
 	iph->protocol = IPPROTO_TCP;
 	iph->check = 0;
 	iph->saddr = src_iph->daddr;
@@ -496,7 +499,7 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 	tcph->ack = 1;
 	tcph->urg = 0;
 
-	tcph->window = htons(64240);	/* maximum allowed window size */
+	tcph->window = htons(65525);	/* maximum allowed window size */
 	tcph->check = 0;
 	tcph->urg_ptr = 0;
 
@@ -505,8 +508,38 @@ int make_http_redirect_packet(const char *target_url, const char *hdr,
 			 iph->daddr, do_csum((unsigned char *)(tcph),
 					     sizeof(struct tcphdr) + data_len));
 
-	return sizeof(struct ether_header) + sizeof(struct iphdr) +
-	    sizeof(struct tcphdr) + data_len;
+	if (tconfig.verbose & 8) {
+		int i, offset = 0;
+		char msg[128];
+
+		t01_log(T01_NOTICE, "Original packet");
+		for (i = 0; i < flow->pktlen; i++) {
+			offset += snprintf(msg+offset, sizeof(msg)-offset, "%02x ", ((unsigned char*)hdr)[i]);
+            if ((i + 1) % 16 == 0) {
+				t01_log(T01_NOTICE, msg);
+				offset = 0;
+			}
+		}
+		if ((i + 1) % 16 != 0) {
+			t01_log(T01_NOTICE, msg);
+		}
+
+		t01_log(T01_NOTICE, "Faking packet");
+        offset = 0;
+		for (i = 0; i < result_len; i++) {
+			offset += snprintf(msg+offset, sizeof(msg)-offset, "%02x ", ((unsigned char*)result)[i]);
+			if ((i + 1) % 16 == 0) {
+				t01_log(T01_NOTICE, msg);
+				offset = 0;
+			}
+		}
+		if ((i + 1) % 16 != 0) {
+			t01_log(T01_NOTICE, msg);
+			offset = 0;
+		}
+	}
+
+	return result_len;
 }
 
 int make_dns_spoof_packet(const char *target, const char *hdr, char *datagram,
@@ -542,8 +575,8 @@ int make_dns_spoof_packet(const char *target, const char *hdr, char *datagram,
 	iph->tot_len =
 	    htons((sizeof(struct iphdr) + sizeof(struct udphdr)) + data_len);
 	iph->id = htons(36742);	//Id of this packet
-	iph->frag_off = htons(16384);
-	iph->ttl = flow->src_ttl;
+	iph->frag_off = 0;
+	iph->ttl = 128;
 	iph->protocol = 17;	//IPPROTO_UDP;
 	iph->check = 0;
 	iph->saddr = ippkt->daddr;
@@ -616,8 +649,8 @@ int make_tcp_rst_packet(const char *hdr, char *datagram, int datagram_len,
 	iph->tot_len =
 	    htons((int)(sizeof(struct iphdr) + sizeof(struct tcphdr)));
 	iph->id = htons(flow->dst_ipid+1);
-	iph->frag_off = htons(16384);
-	iph->ttl = flow->dst_ttl;
+	iph->frag_off = 0;
+	iph->ttl = 128;
 	iph->protocol = 6;	//IPPROTO_TCP;
 	iph->check = 0;
 	iph->saddr = ippkt->daddr;
@@ -640,7 +673,7 @@ int make_tcp_rst_packet(const char *hdr, char *datagram, int datagram_len,
 	tcph->psh = 0;
 	tcph->ack = 1;
 	tcph->urg = 0;
-	tcph->window = htons(64240);	/* maximum allowed window size */
+	tcph->window = htons(65535);	/* maximum allowed window size */
 	tcph->check = 0;	//leave checksum 0 now, filled later by pseudo header
 	tcph->urg_ptr = 0;
 

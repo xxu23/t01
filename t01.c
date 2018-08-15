@@ -404,7 +404,7 @@ static void signal_hander(int sig) {
 static void on_protocol_discovered(struct ndpi_workflow *workflow,
                                    struct ndpi_flow_info *flow, void *header,
                                    void *packet) {
-    if (tconfig.verbose && flow->log_flag) {
+    if ((tconfig.verbose & 2) && flow->log_flag) {
         t01_log(T01_NOTICE, "Completed nDPI : %x:%d <--> %x:%d",
                 flow->src_ip, flow->src_port,
                 flow->dst_ip, flow->dst_port);
@@ -423,7 +423,7 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
 
     total_pkts_ndpi++;
     struct rule *rule = match_rule_from_htable_after_detected(flow);
-    if (tconfig.verbose && flow->log_flag) {
+    if ((tconfig.verbose & 2) && flow->log_flag) {
         t01_log(T01_NOTICE, "Completed rule matching : %x:%d <--> %x:%d",
                 flow->src_ip, flow->src_port,
                 flow->dst_ip, flow->dst_port);
@@ -459,7 +459,7 @@ static void on_protocol_discovered(struct ndpi_workflow *workflow,
         total_ip_bytes_out += len;
         ip_packet_count_out++;
     }
-    if (tconfig.verbose) {
+    if (tconfig.verbose & 2) {
         t01_log(T01_NOTICE, "Completed packet faking : %x:%d <--> %x:%d",
                 flow->src_ip, flow->src_port,
                 flow->dst_ip, flow->dst_port);
@@ -668,16 +668,17 @@ static void *attack_thread(void *args) {
                 }
             }
         }
-        if (tconfig.verbose) {
-            t01_log(T01_NOTICE, "Completed packet sending : %x:%d <--> %x:%d",
-                    flow->src_ip, flow->src_port,
-                    flow->dst_ip, flow->dst_port);
-        }
 
         if (flow && tconfig.verbose) {
             char l[48], u[48];
             char msg[4096];
             int offset = 0;
+
+            if (tconfig.verbose & 2)
+                t01_log(T01_NOTICE, "Completed packet sending : %x:%d <--> %x:%d",
+                    flow->src_ip, flow->src_port,
+                    flow->dst_ip, flow->dst_port);
+
             inet_ntop(AF_INET, &flow->src_ip, l, sizeof(l));
             inet_ntop(AF_INET, &flow->dst_ip, u, sizeof(u));
             offset +=
@@ -869,7 +870,7 @@ static void statistics_cb(evutil_socket_t fd, short event, void *arg) {
                format_packets(pkts_per_second_out, buf),
                format_traffic(bytes_per_second_out, 1, buf1));
         if (is_mirror) {
-            if (tconfig.verbose) {
+            if (tconfig.verbose & 4) {
                 int j;
                 u_int64_t totalpkts = 0, totalbytes = 0;
                 u_int64_t *counts = stat->port_counter;
