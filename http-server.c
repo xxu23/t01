@@ -618,6 +618,23 @@ static int client_delete_rule(struct cmd *cmd)
 	return ret;
 }
 
+int client_reset_rulehit(struct cmd *cmd)
+{
+	uint32_t id = atoi(cmd->argv[1]);
+	int ret = reset_rule_hit(id);
+	if (ret == 0) {
+		if (tconfig.work_mode & MASTER_MODE) {
+			char path[128];
+			snprintf(path, sizeof(path), "/resetrulehit/%u", id);
+			sync_slaves_rules(path, EVHTTP_REQ_POST, NULL, 0);
+		}
+		send_client_reply(cmd->req, NULL, 0, "application/json");
+	} else {
+		send_client_error(cmd->req, 400, "Bad Request");
+	}
+	return ret;
+}
+
 static int client_get_server_info(struct cmd *cmd)
 {
 	cJSON *root = cJSON_CreateObject();
@@ -903,7 +920,8 @@ static struct http_cmd_table {
 	{EVHTTP_REQ_POST, "rules", 0, client_create_rule},
 	{EVHTTP_REQ_POST, "enablerule", 1, client_enable_rule},
 	{EVHTTP_REQ_POST, "disablerule", 1, client_disable_rule},
-	{EVHTTP_REQ_PUT, "rule", 1, client_update_rule},
+    {EVHTTP_REQ_POST, "resetrulehit", 1, client_reset_rulehit},
+    {EVHTTP_REQ_PUT, "rule", 1, client_update_rule},
 	{EVHTTP_REQ_DELETE, "rule", 1, client_delete_rule},
 	{EVHTTP_REQ_GET, "summary", 0, client_get_summary},
 	{EVHTTP_REQ_GET, "info", 0, client_get_server_info},

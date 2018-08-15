@@ -1234,6 +1234,30 @@ int update_rule(uint32_t id, const char *body, int body_len) {
     return -1;
 }
 
+int reset_rule_hit(uint32_t id) {
+    struct list_head *pos, *n;
+    struct rule *rule;
+    struct hit_record *hit;
+    list_for_each_safe(pos, n, &rule_list) {
+        rule = list_entry(pos, struct rule, list);
+        if (rule->id == id) {
+            struct list_head *pos2, *n2, *hhead;
+            hhead = &rule->hit_head;
+            rule->hits = 0;
+            if (list_empty(hhead) == 0)
+                list_for_each_safe(pos2, n2, hhead) {
+                    list_del(pos2);
+                    hit = list_entry(pos2, struct hit_record, list);
+                    zfree(hit);
+                }
+            dirty += HITS_THRESHOLD_PER_SECOND;
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
 int delete_rule(uint32_t id) {
     struct list_head *pos, *n;
     struct rule *rule;
