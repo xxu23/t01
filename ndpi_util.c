@@ -414,8 +414,7 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
       newflow->lower_ip = lower_ip, newflow->upper_ip = upper_ip;
       newflow->lower_port = lower_port, newflow->upper_port = upper_port;
       newflow->ip_version = version;
-      newflow->src_ipid = id; 
-      newflow->src_ttl = ttl;
+      newflow->src_ipid = id;
       newflow->total_vlan = total_vlan;
       newflow->hash_idx = idx;
       
@@ -478,8 +477,8 @@ static struct ndpi_flow_info *get_ndpi_flow_info(struct ndpi_workflow * workflow
                                         flow->protocol, workflow->last_time);
     }
 
-    if(flag == 0) flow->src_ipid = id, flow->src_ttl = ttl;
-    else          flow->dst_ipid = id, flow->dst_ttl = ttl;
+    if(flag == 0) flow->src_ipid = id;
+    else          flow->dst_ipid = id;
 
     return flow;
   }

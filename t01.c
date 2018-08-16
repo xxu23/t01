@@ -35,13 +35,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <inttypes.h>
+#include <sched.h>
 #include <sys/poll.h>
 #include <sys/types.h>
-#include <inttypes.h>
-#include <net/if.h>
 #include <sys/wait.h>
-#include <sched.h>
 #include <sys/resource.h>
+#include <net/if.h>
+#include <net/ethernet.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
 
 #include <ndpi_api.h>
 #include <event.h>
@@ -79,8 +82,7 @@ struct attack_header {
 
 #define MAGIC "\x7aT\x85@\xaf$\xd0$"
 
-#define INIT_HEADER(sip, dip, sport, dport, len) \
-    {MAGIC, sip, dip, sport, dport, sizeof(struct attack_header), len};
+#define INIT_HEADER(len) {MAGIC, sizeof(struct attack_header), len}
 
 struct attack_data {
     struct ndpi_flow_info *flow;
@@ -203,16 +205,6 @@ static void process_hitslog(struct rule *rule, struct ndpi_flow_info *flow,
                        smac, dmac,
                        0, flow->protocol, flow->pktlen);
     }
-}
-
-static int mirror_filter_from_rule(struct ndpi_flow_info *flow, void *packet) {
-    struct rule *rule = match_rule_before_mirrored(flow);
-    if (!rule)
-        return 0;
-
-    process_hitslog(rule, flow, (uint8_t *) packet + 6, (uint8_t *) packet);
-
-    return 1;
 }
 
 static inline int netflow_data_filter(struct ndpi_flow_info *flow, void *packet) {
@@ -571,8 +563,7 @@ static void setup_cpuaffinity(int index, const char *name) {
             index, name);
 }
 
-static void send_via_socket(uint32_t sip, uint32_t dip, uint16_t src_port, uint16_t dst_port,
-                            const char *data, int len) {
+static void send_via_socket(const char *data, int len) {
     if (sendfd <= 0)
         return;
 
@@ -590,7 +581,7 @@ static void send_via_socket(uint32_t sip, uint32_t dip, uint16_t src_port, uint1
             return;
         }
     } else if (pfds[0].revents & POLLOUT) {
-        struct attack_header header = INIT_HEADER(sip, dip, src_port, dst_port, len);
+        struct attack_header header = INIT_HEADER(len);
         int n;
         if ( ((n=anetWrite(sendfd, &header, sizeof(header))) < 0
               || (n=anetWrite(sendfd, data, len)) < 0) && tconfig.raw_socket == 2) {
@@ -644,7 +635,7 @@ static void *attack_thread(void *args) {
                 if (tconfig.raw_socket == 1) {
                     anetWrite(sendfd, result, len);
                 } else {
-                    send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+                    send_via_socket(result, len);
                 }
             }
         } else if (eth_mode & LIBPCAP_MODE) {
@@ -654,7 +645,7 @@ static void *attack_thread(void *args) {
                 if (tconfig.raw_socket == 1) {
                     anetWrite(sendfd, result, len);
                 } else {
-                    send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+                    send_via_socket(result, len);
                 }
             }
         } else if (eth_mode & PFRING_MODE) {
@@ -664,7 +655,7 @@ static void *attack_thread(void *args) {
                 if (tconfig.raw_socket == 1) {
                     anetWrite(sendfd, result, len);
                 } else {
-                    send_via_socket(flow->src_ip, flow->dst_ip, flow->src_port, flow->dst_port, result, len);
+                    send_via_socket(result, len);
                 }
             }
         }
@@ -692,13 +683,10 @@ static void *attack_thread(void *args) {
                 offset +=
                         snprintf(msg + offset, sizeof(msg) - offset,
                                  "[proto: %u.%u/%s]",
-                                 flow->detected_protocol.
-                                         master_protocol,
+                                 flow->detected_protocol.master_protocol,
                                  flow->detected_protocol.protocol,
-                                 ndpi_protocol2name(workflow->
-                                                            ndpi_struct,
-                                                    flow->
-                                                            detected_protocol,
+                                 ndpi_protocol2name(workflow->ndpi_struct,
+                                                    flow->detected_protocol,
                                                     buf,
                                                     sizeof(buf)));
             } else
@@ -1132,8 +1120,8 @@ static void *libevent_thread(void *args) {
 }
 
 static void reject_tcp(const u_char *packet, struct attack_data *attack, struct rule *rule){
-    struct ndpi_ethhdr *ethhdr = (struct ndpi_ethhdr *)packet;
-    struct ndpi_iphdr *iph = (struct ndpi_iphdr *)(ethhdr + 1);
+    struct ether_header *ethhdr = (struct ether_header *)packet;
+    struct iphdr *iph = (struct iphdr *)(ethhdr + 1);
     struct tcphdr *tcppkt = (struct tcphdr *)(iph + 1);
     char *result = attack->buffer;
     int len = sizeof(attack->buffer);
@@ -1149,7 +1137,7 @@ static void reject_tcp(const u_char *packet, struct attack_data *attack, struct 
     memcpy(attack->smac, (uint8_t *) packet + 6, 6);
     memcpy(attack->dmac, (uint8_t *) packet, 6);
     if (myqueue_push(attack_queue, attack) < 0) {
-        t01_log(T01_WARNING, "Cannot send attack packet from attack_queue");
+        t01_log(T01_WARNING, "Cannot push data into attack_queue");
         zfree(attack);
     } else {
         total_ip_bytes_out += len;

@@ -67,8 +67,6 @@ typedef struct ndpi_flow_info {
     u_int16_t vlan_ids[MAX_VLAN_COUNT];
     u_int8_t ip_version;
     u_int8_t payload_offset;
-    u_int8_t src_ttl;
-    u_int8_t dst_ttl;
     u_int16_t pktlen;
     u_int64_t last_seen;
     u_int64_t bytes;

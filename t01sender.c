@@ -56,10 +56,6 @@
 #pragma pack(1)
 struct attack_header {
     char magic[8];
-    uint32_t sip;
-    uint32_t dip;
-    uint16_t sport;
-    uint16_t dport;
     int self_len;
     int data_len;
 };
