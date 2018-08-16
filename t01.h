@@ -63,7 +63,7 @@ extern char **argv_;
 extern time_t upstart;
 
 struct t01_config {
-    char ifname[32];
+    char ifname[128];
     char ofname[32];
     char mfname[32];
     char ruledb[256];

@@ -1568,7 +1568,7 @@ static void init_system() {
 
 static void init_netmap() {
     struct nmreq req;
-    char interface[64];
+    char interface[sizeof(tconfig.ifname) + 16];
     unsigned char mac_address[6];
     char buf[32];
     int rc;
@@ -1620,6 +1620,9 @@ static void init_netmap() {
 }
 
 static void init_libpcap() {
+    int is_device = 0;
+
+    t01_log(T01_NOTICE, "Using %s", pcap_lib_version());
     if((device = pcap_open_live(tconfig.ifname, MAX_PCAP_DATA, PCAP_PROMISC,
                                 PCAP_TIMEOUT, errBuf)) == NULL) {
         t01_log(T01_WARNING, "Could not open device %s: %s, try to read it as pcap file",
@@ -1634,6 +1637,7 @@ static void init_libpcap() {
 
     } else {
         t01_log(T01_NOTICE, "Capturing live traffic from device %s...", tconfig.ifname);
+        is_device = 1;
     }
 
     if (tconfig.ofname[0] == 0 || strcmp(tconfig.ifname, tconfig.ofname) == 0) {
@@ -1644,21 +1648,22 @@ static void init_libpcap() {
         char err[ANET_ERR_LEN];
         sendfd = anetTcpConnect(err, tconfig.remote_ip, tconfig.remote_port);
     } else {
-        out_device = pcap_open_live(tconfig.ofname, MAX_PCAP_DATA, PCAP_PROMISC, PCAP_TIMEOUT, errBuf);
+        out_device = pcap_open_live(tconfig.ofname, MAX_PCAP_DATA, PCAP_PROMISC,
+                                    PCAP_TIMEOUT, errBuf);
         if (!out_device) {
-            t01_log(T01_WARNING, "error out_device pcap_open_live(): %s", errBuf);
+            t01_log(T01_WARNING, "Could not open device %s: %s", tconfig.ofname, errBuf);
             exit(1);
         }
     }
 
-    t01_log(T01_NOTICE, "Using %s", pcap_lib_version());
-
-    unsigned char mac_address[6];
-    char buf[32];
-    int rc = get_interface_mac(tconfig.ifname, mac_address);
-    t01_log(T01_NOTICE, "Capturing from %s [mac: %s][speed: %uMb/s]",
-            tconfig.ifname, rc == 0 ? etheraddr_string(mac_address, buf) : "unknown",
-            ethtool_get_interface_speed(tconfig.ifname));
+    if (is_device == 1) {
+        unsigned char mac[6];
+        char buf[32];
+        int rc = get_interface_mac(tconfig.ifname, mac);
+        t01_log(T01_NOTICE, "Capturing from %s [mac: %s][speed: %uMb/s]",
+                tconfig.ifname, rc == 0 ? etheraddr_string(mac, buf) : "unknown",
+                ethtool_get_interface_speed(tconfig.ifname));
+    }
 
     if (tconfig.bpf != NULL && tconfig.bpf[0] != 0) {
         struct bpf_program filter;
