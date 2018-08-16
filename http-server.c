@@ -396,6 +396,7 @@ static int client_get_ruleids(struct cmd *cmd)
 	size_t len = 0;
 	int32_t type = -1, offset = 0, limit = 0;
 	uint8_t match = 0, disabled = 0xff, action = 0;
+    int sort = T01_SORT_NONE;
 	int query_count = cmd->query_count, i;
 	char *keyword = NULL;
 
@@ -412,12 +413,14 @@ static int client_get_ruleids(struct cmd *cmd)
 			match = atoi(cmd->queries[i].val);
 		else if (strcasecmp(cmd->queries[i].key, "disabled") == 0)
 			disabled = atoi(cmd->queries[i].val);
-		else if (strcasecmp(cmd->queries[i].key, "action") == 0)
-			action = atoi(cmd->queries[i].val);
+        else if (strcasecmp(cmd->queries[i].key, "action") == 0)
+            action = atoi(cmd->queries[i].val);
+        else if (strcasecmp(cmd->queries[i].key, "sort") == 0)
+            sort = atoi(cmd->queries[i].val);
 	}
 
 	get_ruleids(type,  match, disabled, action, 
-			keyword, offset, limit, &result, &len, 1);
+			keyword, sort, offset, limit, &result, &len, 1);
 
 	send_client_reply(cmd->req, result, len, "application/json");
 	release_buffer(&result);
@@ -1112,7 +1115,7 @@ int master_check_slaves()
 			cksum, version, s->ip, s->port, s->cksum, s->version);
 
 		if (!ids && get_ruleids(0, 0, -1, 0, 
-					NULL, 0, 0, 
+					NULL, 0, 0, 0,
 					(char **)&ids, &len, 0) < 0)
 			continue;
 		len /= sizeof(uint32_t);

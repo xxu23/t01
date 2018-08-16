@@ -120,6 +120,12 @@ struct rule {
 #define T01_MATCH_STARTSWITH	3
 #define T01_MATCH_ENDSWITH		4
 
+#define T01_SORT_NONE           0
+#define T01_SORT_RULEID         1
+#define T01_SORT_RULEID_DESC    2
+#define T01_SORT_RULEHITS       3
+#define T01_SORT_RULEHITS_DESC  4
+
 int init_rules(int hsize);
 
 int load_rules(const char *filename);
@@ -156,7 +162,7 @@ int add_log_rz(struct log_rz *lr);
 void release_buffer(char **out);
 
 int get_ruleids(int type, uint8_t match, uint8_t disabled, uint8_t action,
-		const char *kw, int offset, int limit, 
+		const char *kw, int sort, int offset, int limit,
 		char **out, size_t *out_len, int json);
 
 int get_rule(uint32_t id, char **out, size_t *out_len);

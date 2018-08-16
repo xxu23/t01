@@ -922,14 +922,46 @@ static char *rule2jsonstr(struct rule *rule) {
     return cjson2string(root);
 }
 
+struct rule_hit {
+    uint32_t id;
+    uint64_t hits;
+};
+
+static int rule_hit_id_cmp(const void *a, const void *b) {
+    struct rule_hit *ra = (struct rule_hit *) a;
+    struct rule_hit *rb = (struct rule_hit *) b;
+    return ra->id - rb->id;
+}
+
+static int rule_hit_id_cmp_desc(const void *a, const void *b) {
+    struct rule_hit *ra = (struct rule_hit *) a;
+    struct rule_hit *rb = (struct rule_hit *) b;
+    return rb->id - ra->id;
+}
+
+static int rule_hit_hit_cmp(const void *a, const void *b) {
+    struct rule_hit *ra = (struct rule_hit *) a;
+    struct rule_hit *rb = (struct rule_hit *) b;
+    return ra->hits - rb->hits;
+}
+
+static int rule_hit_hit_cmp_desc(const void *a, const void *b) {
+    struct rule_hit *ra = (struct rule_hit *) a;
+    struct rule_hit *rb = (struct rule_hit *) b;
+    return rb->hits - ra->hits;
+}
+
 int get_ruleids(int type, uint8_t match, uint8_t disabled, uint8_t action,
-                const char *kw, int offset, int limit,
+                const char *kw, int sort, int offset, int limit,
                 char **out, size_t *out_len, int json) {
     uint32_t *ids;
+    struct rule_hit *rule_hits;
     struct list_head *pos;
-    int n = 0, i = 0, j = 0;
+    int total = 0, i = 0, j = 0;
     if (type < 0)
         type = 0;
+
+    /* Calculate how many rules matched? */
     list_for_each(pos, &rule_list) {
         struct rule *rule = list_entry(pos, struct rule, list);
         if (rule->used == 0 || (type && rule->type != type))
@@ -947,25 +979,20 @@ int get_ruleids(int type, uint8_t match, uint8_t disabled, uint8_t action,
             continue;
         if (disabled != 0xff && rule->disabled != disabled)
             continue;
-        if (limit == 0) {
-            n++;
-        } else if (j++ >= offset && n < limit) {
-            n++;
-        }
+        total++;
     }
 
-    if (n == 0) {
-        cJSON *array = cJSON_CreateIntArray(NULL, n);
+    if (total == 0) {
+        cJSON *array = cJSON_CreateIntArray(NULL, 0);
         *out = cjson2string(array);
         *out_len = strlen(*out);
         return 0;
     }
 
-    ids = (uint32_t *) zmalloc(sizeof(uint32_t) * n);
-    bzero(ids, sizeof(uint32_t) * n);
+    /* Organize matched rules together */
+    rule_hits = (struct rule_hit *)zmalloc(sizeof(struct rule_hit) * total);
+    bzero(rule_hits, sizeof(struct rule_hit) * total);
     j = 0;
-    if (!ids)
-        return -1;
     list_for_each(pos, &rule_list) {
         struct rule *rule = list_entry(pos, struct rule, list);
         if (rule->used == 0 || (type && rule->type != type))
@@ -983,21 +1010,53 @@ int get_ruleids(int type, uint8_t match, uint8_t disabled, uint8_t action,
             continue;
         if (disabled != 0xff && rule->disabled != disabled)
             continue;
-        if (limit == 0) {
-            ids[i++] = rule->id;
-        } else if (j++ >= offset && i < limit) {
-            ids[i++] = rule->id;
-        }
+        rule_hits[j].hits = rule->hits;
+        rule_hits[j].id = rule->id;
+        j++;
     }
+
+    /* Sort matched rules together */
+    if (sort == T01_SORT_RULEID){
+        qsort(rule_hits, total, sizeof(struct rule_hit), rule_hit_id_cmp);
+    } else if (sort == T01_SORT_RULEID_DESC) {
+        qsort(rule_hits, total, sizeof(struct rule_hit), rule_hit_id_cmp_desc);
+    } else if (sort == T01_SORT_RULEHITS) {
+        qsort(rule_hits, total, sizeof(struct rule_hit), rule_hit_hit_cmp);
+    } else if (sort == T01_SORT_RULEHITS_DESC) {
+        qsort(rule_hits, total, sizeof(struct rule_hit), rule_hit_hit_cmp_desc);
+    }
+
+    /* Fetch offet/limit from matched rules*/
+    if (offset < 0) {
+        offset = 0;
+    } else if (offset > total) {
+        offset = total;
+    }
+    if (limit <= 0)
+        limit = total;
+    if (limit + offset > total)
+        limit = total - offset;
+    ids = (uint32_t *) zmalloc(sizeof(uint32_t) * limit);
+    bzero(ids, sizeof(uint32_t) * limit);
+    if (!ids) {
+        zfree(rule_hits);
+        return -1;
+    }
+
+    for (j = 0, i = offset; i < offset + limit; i++) {
+        ids[j++] = rule_hits[i].id;
+    }
+
     if (!json) {
         *out = (char *) ids;
-        *out_len = sizeof(uint32_t) * n;
+        *out_len = sizeof(uint32_t) * limit;
         return 0;
     }
 
-    cJSON *array = cJSON_CreateIntArray((int *) ids, n);
+    cJSON *array = cJSON_CreateIntArray((int *) ids, limit);
     *out = cjson2string(array);
     *out_len = strlen(*out);
+    zfree(rule_hits);
 
     return 0;
 }
@@ -1097,11 +1156,11 @@ int get_rules(uint32_t *ids, size_t len, char **out, size_t *out_len) {
     struct list_head *pos;
     cJSON *root = cJSON_CreateArray();
 
-    list_for_each(pos, &rule_list) {
-        struct rule *rule = list_entry(pos, struct rule, list);
-        if (rule->used == 0)
-            continue;
-        for (i = 0; i < len; i++) {
+    for (i = 0; i < len; i++) {
+        list_for_each(pos, &rule_list) {
+            struct rule *rule = list_entry(pos, struct rule, list);
+            if (rule->used == 0)
+                continue;
             if (rule->id == ids[i]) {
                 cJSON_AddItemToArray(root, rule2cjson(rule));
                 break;
